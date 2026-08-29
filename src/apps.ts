@@ -1,0 +1,187 @@
+import { execFileSync, execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { home, readJsonIfExists } from "./fsutil.js";
+
+export interface AppPackage {
+  id: string;
+  name: string;
+  /** binary probed for the installed version; undefined = not CLI-managed */
+  binary?: string;
+  versionArgs?: string[];
+  /** where the latest version is looked up */
+  latest?: { kind: "npm" | "pypi" | "brew" | "github"; name: string };
+  /** shell command that installs the app */
+  installCmd?: string;
+  /** shell command that upgrades it (defaults to installCmd) */
+  upgradeCmd?: string;
+  /** fallback local version probe for non-CLI apps */
+  localVersion?: () => string | undefined;
+}
+
+export const appPackages: AppPackage[] = [
+  {
+    id: "claude",
+    name: "Claude Code",
+    binary: "claude",
+    latest: { kind: "npm", name: "@anthropic-ai/claude-code" },
+    installCmd: "curl -fsSL https://claude.ai/install.sh | bash",
+    upgradeCmd: "claude update",
+  },
+  {
+    id: "codex",
+    name: "Codex CLI",
+    binary: "codex",
+    latest: { kind: "npm", name: "@openai/codex" },
+    installCmd: "npm install -g @openai/codex@latest",
+  },
+  {
+    id: "omp",
+    name: "Oh My Pi",
+    binary: "omp",
+    latest: { kind: "brew", name: "omp" },
+    installCmd: "brew install omp",
+    upgradeCmd: "brew upgrade omp",
+  },
+  {
+    id: "pi",
+    name: "pi",
+    binary: "pi",
+    latest: { kind: "npm", name: "@earendil-works/pi-coding-agent" },
+    installCmd: "npm install -g @earendil-works/pi-coding-agent@latest",
+  },
+  {
+    id: "prime",
+    name: "prime-agent",
+    binary: "prime-agent",
+    latest: { kind: "github", name: "PrimeIntellect-ai/prime-agent" },
+    installCmd: "curl -fsSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent/main/install.sh | bash",
+  },
+  {
+    id: "opencode",
+    name: "opencode",
+    binary: "opencode",
+    latest: { kind: "npm", name: "opencode-ai" },
+    installCmd: "curl -fsSL https://opencode.ai/install | bash",
+    upgradeCmd: "opencode upgrade",
+  },
+  {
+    id: "hermes",
+    name: "Hermes",
+    binary: "hermes",
+    latest: { kind: "pypi", name: "hermes-agent" },
+    installCmd: "uv tool install hermes-agent || pipx install hermes-agent",
+    upgradeCmd: "uv tool upgrade hermes-agent || pipx upgrade hermes-agent",
+  },
+  {
+    id: "workbuddy",
+    name: "WorkBuddy",
+    // Electron desktop app: version from its data dir; managed by its own updater.
+    localVersion: () => {
+      const j = readJsonIfExists<Record<string, unknown>>(path.join(home, ".workbuddy", "last-launch.json"));
+      const v = (j?.version ?? j?.appVersion) as string | undefined;
+      if (v) return v;
+      const r = readJsonIfExists<Record<string, unknown>>(
+        path.join(home, ".workbuddy", "app", "renderer-version.json"),
+      );
+      return (r?.version as string | undefined) ?? undefined;
+    },
+  },
+];
+
+const SEMVERISH = /\d+\.\d+(\.\d+)?([-.+][\w.-]+)?/;
+
+export function installedVersion(app: AppPackage): string | undefined {
+  if (app.binary) {
+    try {
+      const out = execFileSync(app.binary, app.versionArgs ?? ["--version"], {
+        encoding: "utf8",
+        timeout: 15000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return SEMVERISH.exec(out)?.[0];
+    } catch {
+      // binary present but probe failed (e.g. runtime version gate) -> installed, version unknown
+      if (binaryOnPath(app.binary)) return "?";
+      return app.localVersion?.();
+    }
+  }
+  return app.localVersion?.();
+}
+
+async function fetchJson(url: string, headers?: Record<string, string>): Promise<unknown> {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+export async function latestVersion(app: AppPackage): Promise<string | undefined> {
+  const src = app.latest;
+  if (!src) return undefined;
+  try {
+    switch (src.kind) {
+      case "npm": {
+        const data = (await fetchJson(`https://registry.npmjs.org/${src.name}/latest`)) as { version?: string };
+        return data.version;
+      }
+      case "pypi": {
+        const data = (await fetchJson(`https://pypi.org/pypi/${src.name}/json`)) as { info?: { version?: string } };
+        return data.info?.version;
+      }
+      case "github": {
+        const data = (await fetchJson(`https://api.github.com/repos/${src.name}/releases/latest`, {
+          "user-agent": "smart-switch",
+        })) as { tag_name?: string };
+        return data.tag_name ? (SEMVERISH.exec(data.tag_name)?.[0] ?? data.tag_name) : undefined;
+      }
+      case "brew": {
+        // Local tap metadata first (works for taps; refreshed by `brew update`), then core API.
+        try {
+          const out = execSync(`brew info --json=v2 ${src.name}`, { encoding: "utf8", timeout: 30000 });
+          const data = JSON.parse(out) as { formulae?: Array<{ versions?: { stable?: string } }> };
+          const stable = data.formulae?.[0]?.versions?.stable;
+          if (stable) return stable;
+        } catch {
+          /* brew missing or formula unknown locally */
+        }
+        const data = (await fetchJson(`https://formulae.brew.sh/api/formula/${src.name}.json`)) as {
+          versions?: { stable?: string };
+        };
+        return data.versions?.stable;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** numeric-aware semver-ish comparison; true when b is newer than a */
+export function isNewer(installed: string, latest: string): boolean {
+  const pa = installed.split(/[.+-]/).map(Number);
+  const pb = latest.split(/[.+-]/).map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const a = pa[i] ?? 0;
+    const b = pb[i] ?? 0;
+    if (Number.isNaN(a) || Number.isNaN(b)) break;
+    if (b > a) return true;
+    if (b < a) return false;
+  }
+  return false;
+}
+
+/** Run an install/upgrade command with live output. Throws on nonzero exit. */
+export function runShell(command: string): void {
+  execSync(command, { stdio: "inherit", env: process.env });
+}
+
+export function binaryOnPath(binary: string): boolean {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter);
+  return dirs.some((d) => {
+    try {
+      fs.accessSync(path.join(d, binary), fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}

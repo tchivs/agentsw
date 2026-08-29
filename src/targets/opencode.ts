@@ -30,6 +30,17 @@ export const opencode: TargetApp = {
       models[m.id] = {
         ...(m.name ? { name: m.name } : {}),
         ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+        ...(m.imageInput ? { attachment: true } : {}),
+        ...(m.cost
+          ? {
+              cost: {
+                input: m.cost.input ?? 0,
+                output: m.cost.output ?? 0,
+                ...(m.cost.cacheRead !== undefined ? { cache_read: m.cost.cacheRead } : {}),
+                ...(m.cost.cacheWrite !== undefined ? { cache_write: m.cost.cacheWrite } : {}),
+              },
+            }
+          : {}),
         ...(m.contextWindow || m.maxOutput
           ? {
               limit: {

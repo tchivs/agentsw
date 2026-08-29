@@ -10,6 +10,19 @@ import type { TargetApp } from "./types.js";
  *   <dir>/settings.json — { defaultProvider, defaultModel }
  * prime-agent is a pi fork with configDir ".prime/agent" instead of ".pi/agent".
  */
+/**
+ * Map models.dev reasoning-effort values onto pi thinking levels.
+ * pi grammar: value string = provider value, null = level unsupported.
+ */
+function thinkingLevelMap(efforts: string[]): Record<string, string | null> {
+  const map: Record<string, string | null> = {};
+  map.off = efforts.includes("none") ? "none" : null;
+  for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"]) {
+    map[level] = efforts.includes(level) ? level : null;
+  }
+  return map;
+}
+
 export function piStyleTarget(opts: { id: string; name: string; configDirName: string; dirEnvVar: string }): TargetApp {
   const resolveDir = () => {
     const env = process.env[opts.dirEnvVar];
@@ -43,6 +56,9 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
           id: m.id,
           ...(m.name ? { name: m.name } : {}),
           ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+          ...(m.reasoning && m.reasoningEfforts?.length
+            ? { thinkingLevelMap: thinkingLevelMap(m.reasoningEfforts) }
+            : {}),
           input: m.imageInput ? ["text", "image"] : ["text"],
           ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
           ...(m.maxOutput ? { maxTokens: m.maxOutput } : {}),

@@ -3,6 +3,8 @@ import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
 import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
+import { discoverProviderModels } from "./discover.js";
+import { appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
 import type { ApplyResult, ModelSpec, Protocol, Provider } from "./types.js";
 
 function fail(message: string): never {
@@ -85,6 +87,7 @@ export interface AddOptions {
   smallModel?: string;
   reasoningEffort?: string;
   modelsDev?: string;
+  discover?: boolean;
   yes?: boolean;
 }
 
@@ -122,12 +125,19 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
         },
         { type: "text", name: "baseUrl", message: "base URL", validate: (v: string) => (/^https?:\/\//.test(v) ? true : "must start with http(s)://") },
         { type: "password", name: "apiKey", message: "API key" },
-        { type: "text", name: "models", message: "model ids (comma separated)" },
+        {
+          type: opts.discover ? null : "text",
+          name: "models",
+          message: "model ids (comma separated)",
+        },
       ],
       { onCancel: () => fail("cancelled") },
     );
   } else {
-    for (const field of ["id", "protocol", "baseUrl", "apiKey", "models"] as const) {
+    const required = opts.discover
+      ? (["id", "protocol", "baseUrl", "apiKey"] as const)
+      : (["id", "protocol", "baseUrl", "apiKey", "models"] as const);
+    for (const field of required) {
       if (!opts[field]) fail(`--${field === "baseUrl" ? "base-url" : field === "apiKey" ? "api-key" : field} is required in non-interactive mode`);
     }
     answers = {
@@ -136,14 +146,21 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
       protocol: opts.protocol!,
       baseUrl: opts.baseUrl!,
       apiKey: opts.apiKey!,
-      models: opts.models!,
+      models: opts.models ?? "",
     };
   }
 
   const protocol = answers.protocol as Protocol;
   if (protocol !== "openai" && protocol !== "anthropic") fail(`protocol must be "openai" or "anthropic"`);
-  const modelIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (modelIds.length === 0) fail("at least one model id is required");
+  const baseUrl = answers.baseUrl!.replace(/\/+$/, "");
+  let modelIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (opts.discover) {
+    process.stderr.write(pc.dim(`discovering models from ${baseUrl} ...\n`));
+    const discovered = await discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol });
+    console.log(`provider lists ${discovered.length} model(s) via /v1/models`);
+    modelIds = [...new Set([...modelIds, ...discovered])];
+  }
+  if (modelIds.length === 0) fail("at least one model id is required (or pass --discover)");
 
   const catalog = await loadCatalog();
   const hint = opts.modelsDev ?? guessProviderHint(catalog, answers.baseUrl!);
@@ -158,7 +175,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     id: answers.id!,
     name: answers.name || answers.id!,
     protocol,
-    baseUrl: answers.baseUrl!.replace(/\/+$/, ""),
+    baseUrl,
     apiKey: answers.apiKey!,
     models,
     defaultModel,
@@ -330,4 +347,135 @@ export async function cmdRefreshMeta(): Promise<void> {
   saveStore(store);
   console.log(pc.green(`refreshed models.dev metadata (${updated} provider(s) changed)`));
   if (updated > 0) console.log(pc.dim("run `smart-switch sync` to push updated metadata into app configs"));
+}
+
+export async function cmdDiscover(id: string, opts: { sync?: boolean; apps?: string }): Promise<void> {
+  const store = loadStore();
+  const provider = getProvider(store, id);
+  process.stderr.write(pc.dim(`discovering models from ${provider.baseUrl} ...\n`));
+  const ids = await discoverProviderModels(provider);
+  const known = provider.models.map((m) => m.id);
+  const added = ids.filter((m) => !known.includes(m));
+  const gone = known.filter((m) => !ids.includes(m));
+  const catalog = await loadCatalog();
+  provider.models = enrichModels(catalog, ids, provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl));
+  if (!ids.includes(provider.defaultModel)) {
+    console.log(pc.yellow(`default model ${provider.defaultModel} no longer listed; keeping it anyway`));
+    provider.models.push({ id: provider.defaultModel });
+  }
+  saveStore(store);
+  console.log(
+    `${pc.bold(id)}: ${ids.length} models (${pc.green(`+${added.length}`)} / ${pc.red(`-${gone.length}`)})` +
+      (added.length ? `\n  new: ${added.join(", ")}` : "") +
+      (gone.length ? `\n  removed upstream: ${gone.join(", ")}` : ""),
+  );
+  console.log(table(modelRows(provider.models), MODEL_HEADER));
+  if (opts.sync) {
+    console.log("");
+    await cmdSync({ provider: id, apps: opts.apps });
+  } else {
+    console.log(pc.dim("\nrun `smart-switch sync` to push into app configs"));
+  }
+}
+
+interface AppRow {
+  id: string;
+  name: string;
+  installed?: string;
+  latest?: string;
+  upgradable: boolean;
+  installable: boolean;
+}
+
+async function collectAppRows(): Promise<AppRow[]> {
+  return Promise.all(
+    appPackages.map(async (app) => {
+      const [installed, latest] = await Promise.all([
+        Promise.resolve(installedVersion(app)),
+        latestVersion(app),
+      ]);
+      return {
+        id: app.id,
+        name: app.name,
+        installed,
+        latest,
+        upgradable: !!installed && installed !== "?" && !!latest && isNewer(installed, latest),
+        installable: !installed && !!app.installCmd,
+      };
+    }),
+  );
+}
+
+export async function cmdApps(): Promise<void> {
+  process.stderr.write(pc.dim("checking installed and latest versions ...\n"));
+  const rows = await collectAppRows();
+  console.log(
+    table(
+      rows.map((r) => [
+        r.id,
+        r.installed ?? pc.dim("not installed"),
+        r.latest ?? pc.dim("?"),
+        r.upgradable
+          ? pc.yellow("upgrade available")
+          : r.installed
+            ? pc.green("up to date")
+            : r.installable
+              ? pc.dim("installable")
+              : pc.dim("-"),
+      ]),
+      ["APP", "INSTALLED", "LATEST", "STATUS"],
+    ),
+  );
+  const upgradable = rows.filter((r) => r.upgradable).map((r) => r.id);
+  if (upgradable.length) console.log(pc.dim(`\nupgrade with: smart-switch upgrade ${upgradable.join(" ")}`));
+}
+
+export async function cmdInstall(id: string): Promise<void> {
+  const app = appPackages.find((a) => a.id === id);
+  if (!app) fail(`unknown app "${id}" (supported: ${appPackages.map((a) => a.id).join(", ")})`);
+  if (!app.installCmd) fail(`${app.name} is not CLI-installable (desktop app manages itself)`);
+  const installed = installedVersion(app);
+  if (installed) {
+    console.log(`${app.name} already installed (${installed}); use \`smart-switch upgrade ${id}\``);
+    return;
+  }
+  console.log(`installing ${app.name}: ${pc.dim(app.installCmd)}`);
+  runShell(app.installCmd);
+  console.log(pc.green(`${app.name} installed: ${installedVersion(app) ?? "version unknown"}`));
+}
+
+export async function cmdUpgrade(ids: string[]): Promise<void> {
+  let selected = appPackages.filter((a) => ids.length === 0 || ids.includes(a.id));
+  const unknown = ids.filter((id) => !appPackages.some((a) => a.id === id));
+  if (unknown.length) fail(`unknown app(s): ${unknown.join(", ")}`);
+  if (ids.length === 0) {
+    // no args: upgrade everything that is installed and outdated
+    process.stderr.write(pc.dim("checking versions ...\n"));
+    const rows = await collectAppRows();
+    const upgradable = rows.filter((r) => r.upgradable).map((r) => r.id);
+    if (upgradable.length === 0) {
+      console.log("everything is up to date");
+      return;
+    }
+    selected = appPackages.filter((a) => upgradable.includes(a.id));
+  }
+  for (const app of selected) {
+    const cmd = app.upgradeCmd ?? app.installCmd;
+    if (!cmd) {
+      console.log(`${pc.yellow("skip")} ${app.id}: not CLI-upgradable`);
+      continue;
+    }
+    if (!installedVersion(app)) {
+      console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`smart-switch install ${app.id}\`)`);
+      continue;
+    }
+    console.log(`upgrading ${app.name}: ${pc.dim(cmd)}`);
+    try {
+      runShell(cmd);
+      console.log(pc.green(`${app.id} -> ${installedVersion(app) ?? "?"}`));
+    } catch (err) {
+      console.log(pc.red(`${app.id} upgrade failed: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  }
 }

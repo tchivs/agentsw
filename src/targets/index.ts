@@ -6,8 +6,9 @@ import { omp } from "./omp.js";
 import { opencode } from "./opencode.js";
 import { hermes } from "./hermes.js";
 import { pi, prime } from "./pistyle.js";
+import { workbuddy } from "./workbuddy.js";
 
-export const targets: TargetApp[] = [claudecode, codex, omp, pi, prime, opencode, hermes];
+export const targets: TargetApp[] = [claudecode, codex, omp, pi, prime, opencode, hermes, workbuddy];
 
 export function resolveTargets(filter?: string): TargetApp[] {
   if (!filter || filter === "all") return targets;

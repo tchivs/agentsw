@@ -2,12 +2,16 @@
 import { Command } from "commander";
 import {
   cmdAdd,
+  cmdApps,
+  cmdDiscover,
+  cmdInstall,
   cmdList,
   cmdModels,
   cmdRefreshMeta,
   cmdRemove,
   cmdStatus,
   cmdSync,
+  cmdUpgrade,
   cmdUse,
 } from "./commands.js";
 
@@ -34,6 +38,7 @@ program
   .option("--default-model <id>", "default model (defaults to first)")
   .option("--small-model <id>", "small/fast model (Claude Code haiku slot)")
   .option("--reasoning-effort <level>", "preferred reasoning effort (codex): minimal|low|medium|high")
+  .option("-d, --discover", "list model ids from the provider's /v1/models endpoint")
   .option("--models-dev <id>", "models.dev provider id for metadata matching")
   .option("-y, --yes", "non-interactive; require all flags")
   .action(cmdAdd);
@@ -65,6 +70,25 @@ program
   .option("-r, --refresh", "force-refresh the models.dev cache")
   .option("-l, --limit <n>", "max results", "30")
   .action(cmdModels);
+
+program
+  .command("discover <id>")
+  .description("re-list a provider's models via /v1/models and re-enrich from models.dev")
+  .option("-s, --sync", "push the refreshed provider into app configs afterwards")
+  .option("-a, --apps <apps>", "apps to sync when --sync is set")
+  .action(cmdDiscover);
+
+program
+  .command("apps")
+  .description("check installed agents: current version vs latest (like cc-switch 本地环境检查)")
+  .action(cmdApps);
+
+program.command("install <app>").description("install an agent CLI").action(cmdInstall);
+
+program
+  .command("upgrade [apps...]")
+  .description("upgrade agent CLIs (no args = everything outdated)")
+  .action(cmdUpgrade);
 
 program
   .command("refresh")
