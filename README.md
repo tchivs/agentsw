@@ -31,12 +31,17 @@ carry no metadata; this closes that gap.
 ## Install
 
 ```bash
-npm install -g smart-switch   # requires Node >= 22.12
+npx smart-switch             # zero install: opens the interactive menu
+npm install -g smart-switch  # requires Node >= 22.12
 ```
 
 ## Quick start
 
 ```bash
+smart-switch                        # no args (or `npx smart-switch`): interactive menu
+                                    # pick "add / update provider", then answer the
+                                    # prompts — protocol, base URL, API key, models
+
 # add a provider: interactive, or fully flagged with model discovery
 smart-switch add
 smart-switch add -y --id myproxy --protocol openai \

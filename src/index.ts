@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import {
   cmdAdd,
@@ -15,17 +16,35 @@ import {
   cmdUpgrade,
   cmdUse,
 } from "./commands.js";
+import { cmdMenu } from "./menu.js";
 
 const program = new Command();
+
+// read the real version from package.json instead of a drifting literal
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string;
+};
 
 program
   .name("smart-switch")
   .description(
     "Manage OpenAI/Anthropic-protocol model providers and sync them into coding agents\n" +
       "(claude code, codex, omp, pi, prime-agent, opencode, hermes). Model metadata\n" +
-      "(context window, input/output limits, reasoning levels) is enriched from models.dev.",
+      "(context window, input/output limits, reasoning levels) is enriched from models.dev.\n\n" +
+      "Run without arguments (or via `npx smart-switch`) for the interactive menu.",
   )
-  .version("0.1.0");
+  .version(version);
+
+// bare invocation -> interactive menu (help on non-TTY); unknown subcommand -> error.
+// excess arguments are surfaced by us, so the message names the offending command.
+program
+  .allowExcessArguments()
+  .action((...handlerArgs: unknown[]) => {
+    const cmd = handlerArgs[handlerArgs.length - 1] as Command;
+    if (cmd.args.length > 0) program.error(`unknown command '${cmd.args[0]}', see --help`);
+    if (process.stdin.isTTY) return cmdMenu();
+    program.outputHelp();
+  });
 
 program
   .command("add")

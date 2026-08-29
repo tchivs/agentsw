@@ -6,6 +6,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Interactive main menu on bare invocation — `npx smart-switch` (zero install) or
+  `smart-switch` with no arguments: add/update a provider via guided prompts
+  (protocol, base URL, API key, discover-or-manual model list), switch providers
+  (with optional default-model override), status, list, sync, discover,
+  remove, and agent version check/upgrade. Non-TTY bare invocation prints help.
+- `.version` now reads package.json instead of a hardcoded literal.
+
 ## [0.1.1] - 2026-08-30
 
 ### Changed

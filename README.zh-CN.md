@@ -31,12 +31,17 @@
 ## 安装
 
 ```bash
-npm install -g smart-switch   # 需要 Node >= 22.12
+npx smart-switch             # 免安装,直接打开交互菜单
+npm install -g smart-switch  # 需要 Node >= 22.12
 ```
 
 ## 快速开始
 
 ```bash
+smart-switch                        # 不带参数(或 `npx smart-switch`):交互菜单
+                                    # 选「add / update provider」,按提示填协议 /
+                                    # base URL / API key / 模型,无需记命令
+
 # 添加供应商:交互式,或全参数 + 自动发现模型
 smart-switch add
 smart-switch add -y --id myproxy --protocol openai \
