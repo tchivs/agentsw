@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "description": "Multi-app model provider switcher: manage OpenAI/Anthropic-protocol providers and sync them into claude code, codex, omp, pi, prime-agent, opencode, hermes, workbuddy",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tchivs/smart-switch.git"
+  },
+  "homepage": "https://github.com/tchivs/smart-switch#readme",
+  "bugs": "https://github.com/tchivs/smart-switch/issues",
+  "keywords": [
+    "cli",
+    "model-provider",
+    "claude-code",
+    "codex",
+    "opencode",
+    "models.dev",
+    "cc-switch"
+  ],
   "license": "MIT",
   "bin": {
     "smart-switch": "dist/index.js",
