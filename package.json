@@ -1,6 +1,6 @@
 {
   "name": "smart-switch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Multi-app model provider switcher: manage OpenAI/Anthropic-protocol providers and sync them into claude code, codex, omp, pi, prime-agent, opencode, hermes, workbuddy",
   "type": "module",
   "repository": {
