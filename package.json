@@ -1,0 +1,35 @@
+{
+  "name": "smart-switch",
+  "version": "0.1.0",
+  "description": "Multi-app model provider switcher: manage OpenAI/Anthropic-protocol providers and sync them into claude code, codex, omp, pi, prime-agent, opencode, hermes",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "smart-switch": "dist/index.js",
+    "ssw": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2",
+    "smol-toml": "^1.3.1",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/prompts": "^2.4.9",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
