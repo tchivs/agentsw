@@ -97,6 +97,11 @@ export const hermes: TargetApp = {
       doc.deleteIn(["model", "default"]);
       notes.push("model selection reset (was pointing at this provider)");
     }
+    // drop now-empty sections instead of leaving "model: {}" / "providers: {}"
+    for (const key of ["model", "providers"]) {
+      const node = doc.get(key);
+      if (YAML.isMap(node) && node.items.length === 0) doc.delete(key);
+    }
     const changed = [configFile];
     const configBackup = backupFile(configFile);
     if (configBackup) notes.push(`backup: ${configBackup}`);
