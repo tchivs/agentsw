@@ -1,5 +1,10 @@
 # smart-switch
 
+[![npm version](https://img.shields.io/npm/v/smart-switch?logo=npm&logoColor=white)](https://www.npmjs.com/package/smart-switch)
+[![CI](https://img.shields.io/github/actions/workflow/status/tchivs/smart-switch/ci.yml?branch=main&logo=github&logoColor=white&label=CI)](https://github.com/tchivs/smart-switch/actions/workflows/ci.yml)
+[![node version](https://img.shields.io/node/v/smart-switch?logo=nodedotjs&logoColor=white)](#install)
+[![license](https://img.shields.io/npm/l/smart-switch?color=blue)](./LICENSE)
+
 [English] | [简体中文](./README.zh-CN.md)
 
 Multi-app model provider switcher. Manage OpenAI-protocol and Anthropic-protocol

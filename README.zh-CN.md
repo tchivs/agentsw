@@ -1,5 +1,10 @@
 # smart-switch
 
+[![npm version](https://img.shields.io/npm/v/smart-switch?logo=npm&logoColor=white)](https://www.npmjs.com/package/smart-switch)
+[![CI](https://img.shields.io/github/actions/workflow/status/tchivs/smart-switch/ci.yml?branch=main&logo=github&logoColor=white&label=CI)](https://github.com/tchivs/smart-switch/actions/workflows/ci.yml)
+[![node version](https://img.shields.io/node/v/smart-switch?logo=nodedotjs&logoColor=white)](#安装)
+[![license](https://img.shields.io/npm/l/smart-switch?color=blue)](./LICENSE)
+
 [English](./README.md) | [简体中文]
 
 多应用模型供应商切换器。在一处管理 OpenAI 协议 / Anthropic 协议的供应商
