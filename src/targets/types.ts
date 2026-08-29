@@ -12,6 +12,7 @@ export interface TargetApp {
   detect(): boolean;
   /** write the provider into the app's config; must preserve unrelated settings */
   apply(provider: Provider): Promise<ApplyResult>;
-  /** short human description of what the app currently points at */
+  /** remove this provider's entries from the app's config; must not touch unrelated settings */
+  prune(provider: Provider): Promise<ApplyResult>;
   current(): string | undefined;
 }

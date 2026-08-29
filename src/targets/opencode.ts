@@ -72,6 +72,28 @@ export const opencode: TargetApp = {
     return { app: this.id, changed: [configFile], notes };
   },
 
+  async prune(provider: Provider): Promise<ApplyResult> {
+    const config = readJsonIfExists<Record<string, unknown>>(configFile);
+    const providerMap = config?.provider as Record<string, unknown> | undefined;
+    if (!config || !providerMap?.[provider.id]) {
+      return { app: this.id, changed: [], notes: [], skipped: `no provider.${provider.id} entry` };
+    }
+    delete providerMap[provider.id];
+    if (Object.keys(providerMap).length === 0) delete config.provider;
+    const notes: string[] = [];
+    if (typeof config.model === "string" && config.model.startsWith(`${provider.id}/`)) {
+      delete config.model;
+      notes.push("default model reset (was pointing at this provider)");
+    }
+    if (typeof config.small_model === "string" && config.small_model.startsWith(`${provider.id}/`)) {
+      delete config.small_model;
+    }
+    const backup = backupFile(configFile);
+    if (backup) notes.push(`backup: ${backup}`);
+    writeFileAtomic(configFile, JSON.stringify(config, null, 2) + "\n");
+    return { app: this.id, changed: [configFile], notes };
+  },
+
   current(): string | undefined {
     const config = readJsonIfExists<{ model?: string }>(configFile);
     return config?.model;

@@ -5,6 +5,7 @@ import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./models
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels } from "./discover.js";
 import { appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
+import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import type { ApplyResult, ModelSpec, Protocol, Provider } from "./types.js";
 
 function fail(message: string): never {
@@ -216,14 +217,28 @@ export function cmdList(): void {
   console.log(table(rows, [" ", "ID", "PROTOCOL", "BASE URL", "DEFAULT MODEL", "#MODELS"]));
 }
 
-export function cmdRemove(id: string): void {
+export async function cmdRemove(id: string, opts: { prune?: boolean }): Promise<void> {
   const store = loadStore();
-  getProvider(store, id);
+  const provider = getProvider(store, id);
+  if (opts.prune) {
+    console.log(`pruning ${pc.bold(id)} from app configs\n`);
+    reportResults(await runTargets("prune", provider, undefined));
+    console.log("");
+  }
   delete store.providers[id];
   if (store.active === id) store.active = undefined;
   saveStore(store);
   console.log(pc.green(`removed provider ${id}`));
-  console.log(pc.dim("note: target app configs are left as-is; run `smart-switch use <other>` to repoint them"));
+  if (!opts.prune) {
+    console.log(pc.dim("note: target app configs are left as-is; use --prune (or `smart-switch prune <id>`) to clean them"));
+  }
+}
+
+export async function cmdPrune(id: string, opts: { apps?: string }): Promise<void> {
+  const store = loadStore();
+  const provider = getProvider(store, id);
+  console.log(`pruning ${pc.bold(id)} from app configs\n`);
+  reportResults(await runTargets("prune", provider, opts.apps));
 }
 
 function reportResults(results: ApplyResult[]): void {
@@ -237,12 +252,12 @@ function reportResults(results: ApplyResult[]): void {
   }
 }
 
-async function applyProvider(provider: Provider, appsFilter?: string): Promise<ApplyResult[]> {
+async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string): Promise<ApplyResult[]> {
   const selected = resolveTargets(appsFilter);
   const explicit = appsFilter !== undefined && appsFilter !== "all";
   const results: ApplyResult[] = [];
   for (const target of selected) {
-    if (!supportsProtocol(target, provider.protocol)) {
+    if (op === "apply" && !supportsProtocol(target, provider.protocol)) {
       results.push({
         app: target.id,
         changed: [],
@@ -256,7 +271,7 @@ async function applyProvider(provider: Provider, appsFilter?: string): Promise<A
       continue;
     }
     try {
-      results.push(await target.apply(provider));
+      results.push(await target[op](provider));
     } catch (err) {
       results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${(err as Error).message}`) });
       process.exitCode = 1;
@@ -265,7 +280,55 @@ async function applyProvider(provider: Provider, appsFilter?: string): Promise<A
   return results;
 }
 
-export async function cmdUse(id: string, opts: { apps?: string; model?: string }): Promise<void> {
+/** naive line diff for config previews: order-preserving added/removed lines */
+function printFileDiff(file: string, next: string): void {
+  const before = readTextIfExists(file) ?? "";
+  if (before === next) {
+    console.log(`${pc.dim("unchanged")} ${file}`);
+    return;
+  }
+  console.log(pc.bold(`--- ${file}`));
+  const oldLines = before.split("\n");
+  const newLines = next.split("\n");
+  const oldSeen: Record<string, number> = {};
+  for (const l of oldLines) oldSeen[l] = (oldSeen[l] ?? 0) + 1;
+  const newSeen: Record<string, number> = {};
+  for (const l of newLines) newSeen[l] = (newSeen[l] ?? 0) + 1;
+  for (const l of oldLines) {
+    if ((newSeen[l] ?? 0) > 0) newSeen[l]!--;
+    else console.log(pc.red(`- ${l}`));
+  }
+  for (const l of newLines) {
+    if ((oldSeen[l] ?? 0) > 0) oldSeen[l]!--;
+    else console.log(pc.green(`+ ${l}`));
+  }
+}
+
+async function runWithOptionalDryRun(
+  op: "apply" | "prune",
+  provider: Provider,
+  apps: string | undefined,
+  dryRun: boolean | undefined,
+): Promise<void> {
+  if (!dryRun) {
+    reportResults(await runTargets(op, provider, apps));
+    return;
+  }
+  setDryRun(true);
+  try {
+    const results = await runTargets(op, provider, apps);
+    const writes = drainPendingWrites();
+    for (const r of results) {
+      if (r.skipped) console.log(`${pc.yellow("skip")} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
+    }
+    console.log(pc.bold(`\ndry run — ${writes.length} file(s) would be written:\n`));
+    for (const w of writes) printFileDiff(w.file, w.content);
+  } finally {
+    setDryRun(false);
+  }
+}
+
+export async function cmdUse(id: string, opts: { apps?: string; model?: string; dryRun?: boolean }): Promise<void> {
   const store = loadStore();
   const provider = getProvider(store, id);
   if (opts.model) {
@@ -274,19 +337,21 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string }
     }
     provider.defaultModel = opts.model;
   }
-  store.active = id;
-  saveStore(store);
+  if (!opts.dryRun) {
+    store.active = id;
+    saveStore(store);
+  }
   console.log(`switching to ${pc.bold(id)} (${provider.protocol}) · default model ${provider.defaultModel}\n`);
-  reportResults(await applyProvider(provider, opts.apps));
+  await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
 }
 
-export async function cmdSync(opts: { apps?: string; provider?: string }): Promise<void> {
+export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean }): Promise<void> {
   const store = loadStore();
   const id = opts.provider ?? store.active;
   if (!id) fail("no active provider; run `smart-switch use <id>` first");
   const provider = getProvider(store, id);
   console.log(`syncing provider ${pc.bold(id)} · default model ${provider.defaultModel}\n`);
-  reportResults(await applyProvider(provider, opts.apps));
+  await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
 }
 
 export function cmdStatus(): void {

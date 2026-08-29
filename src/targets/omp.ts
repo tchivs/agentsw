@@ -69,6 +69,24 @@ export const omp: TargetApp = {
     return { app: this.id, changed: [file], notes };
   },
 
+  async prune(provider: Provider): Promise<ApplyResult> {
+    const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
+    if (!file) return { app: this.id, changed: [], notes: [], skipped: "no models.yml" };
+    const doc = YAML.parseDocument(readTextIfExists(file) ?? "");
+    if (doc.errors.length) {
+      throw new Error(`${file} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
+    }
+    if (!doc.hasIn(["providers", provider.id])) {
+      return { app: this.id, changed: [], notes: [], skipped: `no providers.${provider.id} entry` };
+    }
+    doc.deleteIn(["providers", provider.id]);
+    const notes: string[] = [];
+    const backup = backupFile(file);
+    if (backup) notes.push(`backup: ${backup}`);
+    writeFileAtomic(file, doc.toString());
+    return { app: this.id, changed: [file], notes };
+  },
+
   current(): string | undefined {
     const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
     if (!file) return undefined;

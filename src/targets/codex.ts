@@ -61,6 +61,30 @@ export const codex: TargetApp = {
     return { app: this.id, changed: [configFile, authFile], notes };
   },
 
+  async prune(provider: Provider): Promise<ApplyResult> {
+    const text = readTextIfExists(configFile);
+    if (!text) return { app: this.id, changed: [], notes: [], skipped: "no config.toml" };
+    const config = parseToml(text) as Record<string, unknown>;
+    const providers = config.model_providers as Record<string, unknown> | undefined;
+    if (!providers?.[provider.id]) {
+      return { app: this.id, changed: [], notes: [], skipped: `no model_providers.${provider.id} entry` };
+    }
+    delete providers[provider.id];
+    if (Object.keys(providers).length === 0) delete config.model_providers;
+    const notes: string[] = [];
+    if (config.model_provider === provider.id) {
+      delete config.model_provider;
+      delete config.model;
+      delete config.model_reasoning_effort;
+      notes.push("codex was pointing at this provider; model selection reset to defaults");
+    }
+    const backup = backupFile(configFile);
+    if (backup) notes.push(`backup: ${backup}`);
+    writeFileAtomic(configFile, stringifyToml(config) + "\n");
+    notes.push("auth.json OPENAI_API_KEY left in place (not attributable to one provider)");
+    return { app: this.id, changed: [configFile], notes };
+  },
+
   current(): string | undefined {
     const text = readTextIfExists(configFile);
     if (!text) return undefined;

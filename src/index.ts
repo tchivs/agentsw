@@ -8,6 +8,7 @@ import {
   cmdList,
   cmdModels,
   cmdRefreshMeta,
+  cmdPrune,
   cmdRemove,
   cmdStatus,
   cmdSync,
@@ -45,13 +46,25 @@ program
 
 program.command("list").alias("ls").description("list configured providers").action(cmdList);
 
-program.command("remove <id>").alias("rm").description("remove a provider").action(cmdRemove);
+program
+  .command("remove <id>")
+  .alias("rm")
+  .description("remove a provider")
+  .option("--prune", "also remove the provider's entries from app configs")
+  .action(cmdRemove);
+
+program
+  .command("prune <id>")
+  .description("remove a provider's entries from app configs (keeps it in smart-switch)")
+  .option("-a, --apps <apps>", "comma-separated apps or 'all'")
+  .action(cmdPrune);
 
 program
   .command("use <id>")
   .description("set the active provider and write it into app configs")
   .option("-a, --apps <apps>", "comma-separated apps (claude,codex,omp,pi,prime,opencode,hermes) or 'all'")
   .option("-m, --model <id>", "override the default model while switching")
+  .option("-n, --dry-run", "preview the config diff without writing")
   .action(cmdUse);
 
 program
@@ -59,6 +72,7 @@ program
   .description("re-apply the active provider (or --provider) to app configs")
   .option("-a, --apps <apps>", "comma-separated apps or 'all'")
   .option("-p, --provider <id>", "sync this provider instead of the active one")
+  .option("-n, --dry-run", "preview the config diff without writing")
   .action(cmdSync);
 
 program.command("status").description("show detected apps and what they currently point at").action(cmdStatus);

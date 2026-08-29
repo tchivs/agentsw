@@ -26,8 +26,26 @@ export function readJsonIfExists<T = unknown>(file: string): T | undefined {
   return JSON.parse(text) as T;
 }
 
-/** Atomic write: tmp file + rename. Creates parent dirs. */
+
+/** dry-run mode: writeFileAtomic records intents instead of touching disk; backups are skipped */
+let dryRun = false;
+const pendingWrites: Array<{ file: string; content: string }> = [];
+
+export function setDryRun(on: boolean): void {
+  dryRun = on;
+  pendingWrites.length = 0;
+}
+
+export function drainPendingWrites(): Array<{ file: string; content: string }> {
+  return pendingWrites.splice(0);
+}
+
+/** Atomic write: tmp file + rename. Creates parent dirs. In dry-run mode, records the intent instead. */
 export function writeFileAtomic(file: string, content: string, mode?: number): void {
+  if (dryRun) {
+    pendingWrites.push({ file, content });
+    return;
+  }
   ensureDir(path.dirname(file));
   const tmp = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, content, mode !== undefined ? { mode } : undefined);
@@ -38,7 +56,7 @@ export const backupsDir = path.join(home, ".config", "smart-switch", "backups");
 
 /** Copy `file` into the backups dir with a timestamp suffix. No-op if file missing. */
 export function backupFile(file: string): string | undefined {
-  if (!fs.existsSync(file)) return undefined;
+  if (!fs.existsSync(file) || dryRun) return undefined;
   ensureDir(backupsDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const dest = path.join(backupsDir, `${path.basename(file)}.${stamp}`);

@@ -77,6 +77,42 @@ export const hermes: TargetApp = {
     return { app: this.id, changed: [configFile, envFile], notes };
   },
 
+  async prune(provider: Provider): Promise<ApplyResult> {
+    const home = hermesHome();
+    const configFile = path.join(home, "config.yaml");
+    const envFile = path.join(home, ".env");
+    const text = readTextIfExists(configFile);
+    if (!text) return { app: this.id, changed: [], notes: [], skipped: "no config.yaml" };
+    const doc = YAML.parseDocument(text);
+    if (doc.errors.length) {
+      throw new Error(`${configFile} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
+    }
+    if (!doc.hasIn(["providers", provider.id])) {
+      return { app: this.id, changed: [], notes: [], skipped: `no providers.${provider.id} entry` };
+    }
+    doc.deleteIn(["providers", provider.id]);
+    const notes: string[] = [];
+    if (doc.getIn(["model", "provider"]) === provider.id) {
+      doc.deleteIn(["model", "provider"]);
+      doc.deleteIn(["model", "default"]);
+      notes.push("model selection reset (was pointing at this provider)");
+    }
+    const changed = [configFile];
+    const configBackup = backupFile(configFile);
+    if (configBackup) notes.push(`backup: ${configBackup}`);
+    writeFileAtomic(configFile, doc.toString());
+
+    const keyVar = `SMART_SWITCH_${provider.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+    const envText = readTextIfExists(envFile);
+    if (envText && new RegExp(`^${keyVar}=`, "m").test(envText)) {
+      const envBackup = backupFile(envFile);
+      if (envBackup) notes.push(`backup: ${envBackup}`);
+      writeFileAtomic(envFile, envText.replace(new RegExp(`^${keyVar}=.*\\n?`, "m"), ""), 0o600);
+      changed.push(envFile);
+    }
+    return { app: this.id, changed, notes };
+  },
+
   current(): string | undefined {
     const text = readTextIfExists(path.join(hermesHome(), "config.yaml"));
     if (!text) return undefined;

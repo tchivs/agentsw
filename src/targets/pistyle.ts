@@ -90,6 +90,35 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       return { app: opts.id, changed: [modelsFile, settingsFile], notes };
     },
 
+    async prune(provider: Provider): Promise<ApplyResult> {
+      const dir = resolveDir();
+      const modelsFile = path.join(dir, "models.json");
+      const settingsFile = path.join(dir, "settings.json");
+      const modelsConfig = readJsonIfExists<Record<string, unknown>>(modelsFile);
+      const providers = modelsConfig?.providers as Record<string, unknown> | undefined;
+      if (!modelsConfig || !providers?.[provider.id]) {
+        return { app: opts.id, changed: [], notes: [], skipped: `no providers.${provider.id} entry` };
+      }
+      delete providers[provider.id];
+      const notes: string[] = [];
+      const changed: string[] = [modelsFile];
+      const modelsBackup = backupFile(modelsFile);
+      if (modelsBackup) notes.push(`backup: ${modelsBackup}`);
+      writeFileAtomic(modelsFile, JSON.stringify(modelsConfig, null, 2) + "\n");
+
+      const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
+      if (settings?.defaultProvider === provider.id) {
+        delete settings.defaultProvider;
+        delete settings.defaultModel;
+        const settingsBackup = backupFile(settingsFile);
+        if (settingsBackup) notes.push(`backup: ${settingsBackup}`);
+        writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+        changed.push(settingsFile);
+        notes.push("default model reset (was pointing at this provider)");
+      }
+      return { app: opts.id, changed, notes };
+    },
+
     current(): string | undefined {
       const settings = readJsonIfExists<{ defaultProvider?: string; defaultModel?: string }>(
         path.join(resolveDir(), "settings.json"),

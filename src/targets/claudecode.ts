@@ -42,6 +42,31 @@ export const claudecode: TargetApp = {
     return { app: this.id, changed: [settingsFile], notes };
   },
 
+  async prune(provider: Provider): Promise<ApplyResult> {
+    const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
+    const env = settings?.env as Record<string, string> | undefined;
+    if (!settings || !env || env.ANTHROPIC_BASE_URL !== provider.baseUrl) {
+      return { app: this.id, changed: [], notes: [], skipped: "claude env does not point at this provider" };
+    }
+    for (const key of [
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_REASONING_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+    ]) {
+      delete env[key];
+    }
+    const notes: string[] = [];
+    const backup = backupFile(settingsFile);
+    if (backup) notes.push(`backup: ${backup}`);
+    writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+    return { app: this.id, changed: [settingsFile], notes };
+  },
+
   current(): string | undefined {
     const env = readJsonIfExists<{ env?: Record<string, string> }>(settingsFile)?.env;
     if (!env?.ANTHROPIC_BASE_URL) return undefined;
