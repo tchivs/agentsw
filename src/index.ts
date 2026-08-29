@@ -40,6 +40,9 @@ program
   .option("--small-model <id>", "small/fast model (Claude Code haiku slot)")
   .option("--reasoning-effort <level>", "preferred reasoning effort (codex): minimal|low|medium|high")
   .option("-d, --discover", "list model ids from the provider's /v1/models endpoint")
+  .option("--include <globs>", "keep only discovered models matching these comma-separated globs")
+  .option("--exclude <globs>", "drop discovered models matching these comma-separated globs")
+  .option("--dedup", "collapse snapshot variants (-latest, date suffixes) onto one id")
   .option("--models-dev <id>", "models.dev provider id for metadata matching")
   .option("-y, --yes", "non-interactive; require all flags")
   .action(cmdAdd);
@@ -90,6 +93,10 @@ program
   .description("re-list a provider's models via /v1/models and re-enrich from models.dev")
   .option("-s, --sync", "push the refreshed provider into app configs afterwards")
   .option("-a, --apps <apps>", "apps to sync when --sync is set")
+  .option("--include <globs>", "set + persist include filter (comma-separated globs)")
+  .option("--exclude <globs>", "set + persist exclude filter")
+  .option("--dedup", "set + persist snapshot dedup")
+  .option("--no-filter", "clear the persisted filter")
   .action(cmdDiscover);
 
 program

@@ -34,6 +34,14 @@ npm install -g smart-switch   # requires Node >= 22.12
 smart-switch add
 smart-switch add -y --id myproxy --protocol openai \
   --base-url https://api.example.com/v1 --api-key sk-... --discover
+# noisy reseller lists: filter + dedup (persisted; reapplied on every discover)
+smart-switch add -y --discover --dedup --exclude "*embedding*,*video*" \
+  --id myproxy --protocol openai --base-url ... --api-key ...
+# --dedup collapses snapshot variants (gpt-5.2-latest, glm-4.7-250414 -> base id);
+# real variants (-air, -thinking, ...) are kept
+smart-switch discover myproxy --include "gpt-*,glm-*"   # update the persisted filter
+smart-switch discover myproxy --no-filter               # clear it
+
 
 # --discover lists model ids from the provider's /v1/models,
 # then enriches each id from models.dev

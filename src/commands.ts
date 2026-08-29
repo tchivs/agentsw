@@ -6,6 +6,7 @@ import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels } from "./discover.js";
 import { appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
+import { applyModelFilter, type ModelFilter } from "./filter.js";
 import type { ApplyResult, ModelSpec, Protocol, Provider } from "./types.js";
 
 function fail(message: string): never {
@@ -89,7 +90,24 @@ export interface AddOptions {
   reasoningEffort?: string;
   modelsDev?: string;
   discover?: boolean;
+  include?: string;
+  exclude?: string;
+  dedup?: boolean;
   yes?: boolean;
+}
+
+function parseFilterOpts(opts: { include?: string; exclude?: string; dedup?: boolean }): ModelFilter | undefined {
+  const split = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
+  const include = split(opts.include);
+  const exclude = split(opts.exclude);
+  if (!include?.length && !exclude?.length && !opts.dedup) return undefined;
+  return { include, exclude, dedup: opts.dedup || undefined };
+}
+
+function reportDropped(dropped: Array<{ id: string; reason: string }>): void {
+  if (!dropped.length) return;
+  console.log(pc.dim(`filtered out ${dropped.length} model(s):`));
+  for (const d of dropped) console.log(pc.dim(`  - ${d.id} (${d.reason})`));
 }
 
 export async function cmdAdd(opts: AddOptions): Promise<void> {
@@ -154,13 +172,19 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const protocol = answers.protocol as Protocol;
   if (protocol !== "openai" && protocol !== "anthropic") fail(`protocol must be "openai" or "anthropic"`);
   const baseUrl = answers.baseUrl!.replace(/\/+$/, "");
-  let modelIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let modelIds = manualIds;
+  const modelFilter = parseFilterOpts(opts);
   if (opts.discover) {
     process.stderr.write(pc.dim(`discovering models from ${baseUrl} ...\n`));
     const discovered = await discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol });
     console.log(`provider lists ${discovered.length} model(s) via /v1/models`);
-    modelIds = [...new Set([...modelIds, ...discovered])];
+    modelIds = [...new Set([...manualIds, ...discovered])];
   }
+  const pinned = [...manualIds, ...(opts.defaultModel ? [opts.defaultModel] : [])];
+  const outcome = applyModelFilter(modelIds, modelFilter, pinned);
+  reportDropped(outcome.dropped);
+  modelIds = outcome.kept;
   if (modelIds.length === 0) fail("at least one model id is required (or pass --discover)");
 
   const catalog = await loadCatalog();
@@ -183,6 +207,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     smallModel: opts.smallModel,
     reasoningEffort: opts.reasoningEffort,
     modelsDevId: hint,
+    modelFilter,
   };
 
   const existed = store.providers[provider.id] !== undefined;
@@ -414,11 +439,21 @@ export async function cmdRefreshMeta(): Promise<void> {
   if (updated > 0) console.log(pc.dim("run `smart-switch sync` to push updated metadata into app configs"));
 }
 
-export async function cmdDiscover(id: string, opts: { sync?: boolean; apps?: string }): Promise<void> {
+export async function cmdDiscover(
+  id: string,
+  opts: { sync?: boolean; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
+): Promise<void> {
   const store = loadStore();
   const provider = getProvider(store, id);
+  // flags override and re-persist the filter; --no-filter clears it
+  const flagFilter = parseFilterOpts(opts);
+  if (opts.filter === false) provider.modelFilter = undefined;
+  else if (flagFilter) provider.modelFilter = flagFilter;
   process.stderr.write(pc.dim(`discovering models from ${provider.baseUrl} ...\n`));
-  const ids = await discoverProviderModels(provider);
+  const listed = await discoverProviderModels(provider);
+  const outcome = applyModelFilter(listed, provider.modelFilter, [provider.defaultModel]);
+  reportDropped(outcome.dropped);
+  const ids = outcome.kept;
   const known = provider.models.map((m) => m.id);
   const added = ids.filter((m) => !known.includes(m));
   const gone = known.filter((m) => !ids.includes(m));

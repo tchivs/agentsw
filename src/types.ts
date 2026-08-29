@@ -1,3 +1,5 @@
+import type { ModelFilter } from "./filter.js";
+
 export type Protocol = "openai" | "anthropic";
 
 /** Per-model metadata, enriched from models.dev when available. */
@@ -41,6 +43,8 @@ export interface Provider {
   reasoningEffort?: string;
   /** models.dev provider id used to enrich model metadata */
   modelsDevId?: string;
+  /** persisted discovery filter (re-applied on every `discover`) */
+  modelFilter?: ModelFilter;
 }
 
 export interface Store {
