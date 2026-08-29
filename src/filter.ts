@@ -4,7 +4,7 @@ export interface ModelFilter {
   include?: string[];
   /** drop ids matching any of these globs */
   exclude?: string[];
-  /** collapse snapshot variants (date suffixes, -latest) onto one id per base name */
+  /** set false to keep snapshot duplicates (-latest, date suffixes); dropping them is the default */
   dedup?: boolean;
 }
 
@@ -33,15 +33,15 @@ export interface FilterOutcome {
 }
 
 /**
- * Apply include/exclude globs and snapshot dedup.
+ * Apply include/exclude globs, then drop snapshot duplicates.
+ * A suffixed id (-latest, date stamps) is a duplicate only when its bare base id is
+ * also listed; snapshot-only models are kept as-is (no collapsing onto a "winner").
+ * Dropping duplicates is the DEFAULT; disable with filter.dedup === false.
  * `pinned` ids (explicit --models entries, current default model) are never dropped.
  */
 export function applyModelFilter(ids: string[], filter: ModelFilter | undefined, pinned: string[] = []): FilterOutcome {
-  if (!filter || (!filter.include?.length && !filter.exclude?.length && !filter.dedup)) {
-    return { kept: ids, dropped: [] };
-  }
-  const includes = (filter.include ?? []).map(globToRegex);
-  const excludes = (filter.exclude ?? []).map(globToRegex);
+  const includes = (filter?.include ?? []).map(globToRegex);
+  const excludes = (filter?.exclude ?? []).map(globToRegex);
   const dropped: Array<{ id: string; reason: string }> = [];
 
   let kept = ids.filter((id) => {
@@ -58,23 +58,19 @@ export function applyModelFilter(ids: string[], filter: ModelFilter | undefined,
     return true;
   });
 
-  if (filter.dedup) {
-    const groups: Record<string, string[]> = {};
-    for (const id of kept) (groups[snapshotBase(id)] ??= []).push(id);
+  if (filter?.dedup !== false) {
+    const present: Record<string, string> = {};
+    for (const id of kept) present[id.toLowerCase()] = id;
     kept = kept.filter((id) => {
       if (pinned.includes(id)) return true;
-      const group = groups[snapshotBase(id)]!;
-      if (group.length === 1) return true;
-      // prefer a pinned member, then the bare base name, then the newest (lexicographically last) snapshot
-      const winner =
-        group.find((g) => pinned.includes(g)) ??
-        group.find((g) => g.toLowerCase() === snapshotBase(id)) ??
-        [...group].sort().at(-1)!;
-      if (id !== winner) {
-        dropped.push({ id, reason: `dedup -> ${winner}` });
+      const base = snapshotBase(id);
+      if (base === id.toLowerCase()) return true; // already a bare id
+      const bare = present[base];
+      if (bare !== undefined) {
+        dropped.push({ id, reason: `duplicate of ${bare}` });
         return false;
       }
-      return true;
+      return true; // snapshot-only model: nothing it duplicates
     });
   }
 

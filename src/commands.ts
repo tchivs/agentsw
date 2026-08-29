@@ -100,8 +100,9 @@ function parseFilterOpts(opts: { include?: string; exclude?: string; dedup?: boo
   const split = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
   const include = split(opts.include);
   const exclude = split(opts.exclude);
-  if (!include?.length && !exclude?.length && !opts.dedup) return undefined;
-  return { include, exclude, dedup: opts.dedup || undefined };
+  // dedup (dropping snapshot duplicates) is on by default; persist only the opt-out
+  if (!include?.length && !exclude?.length && opts.dedup !== false) return undefined;
+  return { include, exclude, ...(opts.dedup === false ? { dedup: false as const } : {}) };
 }
 
 function reportDropped(dropped: Array<{ id: string; reason: string }>): void {
