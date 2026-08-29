@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-30
+
+### Changed
+
+- Release pipeline now publishes via npm OIDC trusted publishing (no token secrets).
+- Bilingual docs (English / 简体中文), CHANGELOG, LICENSE, CI matrix (ubuntu/macos × Node 22/24).
+
+
 ## [0.1.0] - 2026-08-30
 
 ### Added
@@ -34,5 +42,6 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/smart-switch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tchivs/smart-switch/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/tchivs/smart-switch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tchivs/smart-switch/releases/tag/v0.1.0
