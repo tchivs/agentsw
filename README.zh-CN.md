@@ -41,6 +41,8 @@ npm install -g smart-switch  # 需要 Node >= 22.12
 smart-switch                        # 不带参数(或 `npx smart-switch`):交互菜单
                                     # 选「add / update provider」,按提示填协议 /
                                     # base URL / API key / 模型,无需记命令
+                                    # 首次启动还会扫描并导入各应用已有的
+                                    # custom provider
 
 # 添加供应商:交互式,或全参数 + 自动发现模型
 smart-switch add
@@ -51,9 +53,33 @@ smart-switch use myproxy            # 切换所有检测到的应用
 smart-switch status                 # 查看各应用当前指向
 ```
 
+### 导入已有供应商
+
+smart-switch 存储为空时,首次打开交互菜单会主动询问是否扫描 Claude Code、
+Codex、omp、pi、prime-agent、opencode、Hermes 和 WorkBuddy 的配置。导入前
+完整展示发现项;相同「协议 + base URL」自动合并,模型列表与来源应用取并集。
+不同协议不会误合并:例如 Codex 中的 `sub` 保持 OpenAI Responses 协议,
+omp 中的 `sub-anthropic` 保持 Anthropic 协议。
+
+```bash
+smart-switch import        # 扫描、预览、多选、去重、导入
+smart-switch import --all  # 不进入多选,导入所有新供应商
+```
+
+### 语言
+
+首次打开交互菜单会选择 English 或简体中文并持久化,之后可在菜单中切换。
+单次覆盖优先于已保存设置;未设置时自动检测系统语言。
+
+```bash
+smart-switch --lang zh-CN
+SMART_SWITCH_LANG=en smart-switch
+```
+
 ## 命令
 
 ```bash
+smart-switch import                 # 导入各应用已有 custom provider(自动去重)
 smart-switch list                   # 已配置的供应商
 smart-switch use myproxy -a codex,omp -m glm-5.2
 smart-switch use myproxy --dry-run  # 预览配置 diff,不写盘

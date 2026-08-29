@@ -4,6 +4,7 @@ import {
   cmdAdd,
   cmdApps,
   cmdDiscover,
+  cmdImport,
   cmdList,
   cmdRemove,
   cmdStatus,
@@ -11,10 +12,12 @@ import {
   cmdUpgrade,
   cmdUse,
 } from "./commands.js";
-import { loadStore } from "./store.js";
+import { getLocale, setLocale, t } from "./i18n.js";
+import { loadStore, saveStore } from "./store.js";
+import type { Locale } from "./types.js";
 
 function bye(): never {
-  console.log(pc.dim("\nbye"));
+  console.log(pc.dim(`\n${t("menu.bye")}`));
   process.exit(0);
 }
 
@@ -22,10 +25,32 @@ const cancel = { onCancel: () => bye() };
 
 async function askToggle(message: string, initial = false): Promise<boolean> {
   const { v } = await prompts(
-    { type: "toggle", name: "v", message, active: "yes", inactive: "no", initial },
+    { type: "toggle", name: "v", message, active: t("menu.yes"), inactive: t("menu.no"), initial },
     cancel,
   );
   return v === true;
+}
+
+async function chooseLanguage(): Promise<void> {
+  const { language } = await prompts(
+    {
+      type: "select",
+      name: "language",
+      message: t("language.prompt"),
+      hint: t("menu.selectInstructions"),
+      initial: getLocale() === "zh-CN" ? 1 : 0,
+      choices: [
+        { title: "English", value: "en" },
+        { title: "简体中文", value: "zh-CN" },
+      ],
+    },
+    cancel,
+  );
+  setLocale(language);
+  const store = loadStore();
+  store.language = language as Locale;
+  saveStore(store);
+  console.log(pc.green(t("language.saved")));
 }
 
 /** select an existing provider; prints a hint and returns undefined when none configured */
@@ -33,7 +58,7 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
   const store = loadStore();
   const ids = Object.keys(store.providers);
   if (ids.length === 0) {
-    console.log(pc.yellow('no providers configured yet — pick "add / update provider" first'));
+    console.log(pc.yellow(t("menu.noProvidersHint")));
     return undefined;
   }
   const { id } = await prompts(
@@ -41,10 +66,11 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
       type: "select",
       name: "id",
       message,
+      hint: t("menu.selectInstructions"),
       choices: ids.map((pid) => {
         const p = store.providers[pid]!;
         return {
-          title: `${pid} · ${p.protocol} · default ${p.defaultModel}${store.active === pid ? "  (active)" : ""}`,
+          title: `${pid} · ${p.protocol} · ${t("menu.defaultModel")} ${p.defaultModel}${store.active === pid ? `  (${t("menu.active")})` : ""}`,
           value: pid,
         };
       }),
@@ -57,24 +83,32 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
 }
 
 export async function cmdMenu(): Promise<void> {
-  console.log(pc.bold("smart-switch") + pc.dim(" · interactive menu — Ctrl+C quits, ↑/↓ selects"));
+  if (!loadStore().language) await chooseLanguage();
+  console.log(pc.bold("smart-switch") + pc.dim(t("menu.title")));
+  if (Object.keys(loadStore().providers).length === 0) {
+    console.log(pc.yellow(t("menu.noProviders")));
+    if (await askToggle(t("menu.firstScan"), true)) await cmdImport({});
+  }
   for (;;) {
     console.log("");
     const { action } = await prompts(
       {
         type: "select",
         name: "action",
-        message: "what to do?",
+        message: t("menu.what"),
+        hint: t("menu.selectInstructions"),
         choices: [
-          { title: "add / update provider   (id · protocol · base URL · API key)", value: "add" },
-          { title: "switch provider         (use and sync into app configs)", value: "use" },
-          { title: "status                  (what each app currently points at)", value: "status" },
-          { title: "list providers", value: "list" },
-          { title: "sync active provider    (re-apply to app configs)", value: "sync" },
-          { title: "discover models         (refresh a provider's list + metadata)", value: "discover" },
-          { title: "remove provider", value: "remove" },
-          { title: "agent versions          (check installed CLIs / upgrade)", value: "apps" },
-          { title: "quit", value: "quit" },
+          { title: t("menu.add"), value: "add" },
+          { title: t("menu.import"), value: "import" },
+          { title: t("menu.use"), value: "use" },
+          { title: t("menu.status"), value: "status" },
+          { title: t("menu.list"), value: "list" },
+          { title: t("menu.sync"), value: "sync" },
+          { title: t("menu.discover"), value: "discover" },
+          { title: t("menu.remove"), value: "remove" },
+          { title: t("menu.apps"), value: "apps" },
+          { title: t("menu.language"), value: "language" },
+          { title: t("menu.quit"), value: "quit" },
         ],
       },
       cancel,
@@ -86,25 +120,29 @@ export async function cmdMenu(): Promise<void> {
         {
           type: "select",
           name: "src",
-          message: "how to fill the model list?",
+          message: t("menu.modelSource"),
+          hint: t("menu.selectInstructions"),
           choices: [
-            { title: "discover from the provider's /v1/models (recommended)", value: "discover" },
-            { title: "type model ids manually", value: "manual" },
+            { title: t("menu.modelDiscover"), value: "discover" },
+            { title: t("menu.modelManual"), value: "manual" },
           ],
         },
         cancel,
       );
       await cmdAdd({ discover: src === "discover" });
+    } else if (action === "import") {
+      await cmdImport({});
     } else if (action === "use") {
-      const picked = await pickProvider("switch to provider");
+      const picked = await pickProvider(t("menu.pickProvider"));
       if (!picked) continue;
       const { model } = await prompts(
         {
           type: picked.models.length > 1 ? "select" : null,
           name: "model",
-          message: "default model",
+          message: t("menu.defaultModel"),
+          hint: t("menu.selectInstructions"),
           choices: [
-            { title: `keep current default (${picked.defaultModel})`, value: "" },
+            { title: t("menu.keepDefault", { model: picked.defaultModel }), value: "" },
             ...picked.models.filter((m) => m !== picked.defaultModel).map((m) => ({ title: m, value: m })),
           ],
         },
@@ -118,19 +156,21 @@ export async function cmdMenu(): Promise<void> {
     } else if (action === "sync") {
       await cmdSync({});
     } else if (action === "discover") {
-      const picked = await pickProvider("discover models for");
+      const picked = await pickProvider(t("menu.discoverFor"));
       if (!picked) continue;
-      const sync = await askToggle("push the refreshed provider into app configs?");
+      const sync = await askToggle(t("menu.pushRefresh"));
       await cmdDiscover(picked.id, { sync });
     } else if (action === "remove") {
-      const picked = await pickProvider("remove provider");
+      const picked = await pickProvider(t("menu.removeProvider"));
       if (!picked) continue;
-      if (!(await askToggle(`really remove ${pc.bold(picked.id)}?`))) continue;
-      const prune = await askToggle("also remove its entries from app configs?");
+      if (!(await askToggle(t("menu.reallyRemove", { id: pc.bold(picked.id) })))) continue;
+      const prune = await askToggle(t("menu.pruneConfigs"));
       await cmdRemove(picked.id, { prune });
     } else if (action === "apps") {
       await cmdApps();
-      if (await askToggle("upgrade everything outdated?")) await cmdUpgrade([]);
+      if (await askToggle(t("menu.upgrade"))) await cmdUpgrade([]);
+    } else if (action === "language") {
+      await chooseLanguage();
     }
   }
 }

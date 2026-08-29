@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { slugFromBaseUrl } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function configDir(): string {
   return process.env.WORKBUDDY_CONFIG_DIR ?? process.env.CODEBUDDY_CONFIG_DIR ?? path.join(home, ".workbuddy");
@@ -128,5 +129,38 @@ export const workbuddy: TargetApp = {
   current(): string | undefined {
     const settings = readJsonIfExists<{ model?: string }>(path.join(configDir(), "settings.json"));
     return settings?.model;
+  },
+
+  candidates(): ProviderCandidate[] {
+    // every entry carries its own full chat/completions url + key; group by the underlying base URL
+    const { models } = readWorkbuddyModels(path.join(configDir(), "models.json"));
+    if (models.length === 0) return [];
+    const settings = readJsonIfExists<{ model?: string }>(path.join(configDir(), "settings.json"));
+    interface Group {
+      ids: string[];
+      apiKey?: string;
+      vendor?: string;
+    }
+    const groups = new Map<string, Group>();
+    for (const m of models) {
+      const row = m as Record<string, unknown>;
+      if (typeof row.url !== "string" || !row.url) continue;
+      const baseUrl = row.url.replace(/\/+$/, "").replace(/\/chat\/completions$/, "");
+      if (!/^https?:\/\//.test(baseUrl)) continue;
+      let g = groups.get(baseUrl);
+      if (!g) {
+        g = { ids: [] };
+        groups.set(baseUrl, g);
+      }
+      if (!g.ids.includes(m.id)) g.ids.push(m.id);
+      if (!g.apiKey && typeof row.apiKey === "string") g.apiKey = row.apiKey;
+      if (!g.vendor && typeof row.vendor === "string") g.vendor = row.vendor;
+    }
+    const self = this.id;
+    return [...groups.entries()].map(([baseUrl, g]) => {
+      const id = slugFromBaseUrl(baseUrl);
+      const defaultModel = settings?.model && g.ids.includes(settings.model) ? settings.model : undefined;
+      return { id, name: g.vendor ?? id, protocol: "openai" as const, baseUrl, apiKey: g.apiKey, models: g.ids, defaultModel, source: self };
+    });
   },
 };

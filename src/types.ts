@@ -1,6 +1,7 @@
 import type { ModelFilter } from "./filter.js";
 
 export type Protocol = "openai" | "anthropic";
+export type Locale = "en" | "zh-CN";
 
 /** Per-model metadata, enriched from models.dev when available. */
 export interface ModelSpec {
@@ -49,6 +50,8 @@ export interface Provider {
 
 export interface Store {
   version: 1;
+  /** preferred CLI language; absent means auto-detect system locale */
+  language?: Locale;
   /** id of the currently active provider */
   active?: string;
   providers: Record<string, Provider>;

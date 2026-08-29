@@ -6,6 +6,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- First-run provider import: scan custom providers from Claude Code, Codex, omp,
+  pi, prime-agent, opencode, Hermes and WorkBuddy configs; preview and multi-select
+  candidates; merge duplicates by normalized base URL + wire protocol while
+  preserving different protocols on the same host; union model ids/source apps;
+  resolve inline/env-backed API keys; enrich imported models from models.dev.
+  Available from the empty-store menu and `smart-switch import [--all]`.
+- English / 简体中文 CLI i18n: first-run language selection, persisted menu
+  preference, system-locale auto-detection, `SMART_SWITCH_LANG` and `--lang`
+  overrides, plus localized help, provider add/import prompts, and core menu
+  command output.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added

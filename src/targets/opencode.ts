@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 const configFile = path.join(home, ".config", "opencode", "opencode.json");
 
@@ -97,5 +97,34 @@ export const opencode: TargetApp = {
   current(): string | undefined {
     const config = readJsonIfExists<{ model?: string }>(configFile);
     return config?.model;
+  },
+
+  candidates(): ProviderCandidate[] {
+    const config = readJsonIfExists<{
+      provider?: Record<string, { npm?: string; name?: string; options?: { baseURL?: string; apiKey?: string }; models?: Record<string, unknown> }>;
+      model?: string;
+    }>(configFile);
+    if (!config?.provider) return [];
+    const activeProvider = config.model?.includes("/") ? config.model.split("/")[0] : undefined;
+    const activeModel =
+      activeProvider && config.model && config.model.includes("/") ? config.model.split("/").slice(1).join("/") : undefined;
+    const self = this.id;
+    return Object.entries(config.provider).flatMap(([id, entry]) => {
+      const baseUrl = entry?.options?.baseURL;
+      if (!entry || !baseUrl || baseUrl.startsWith("{")) return [];
+      if (!entry.npm) return []; // built-in provider without a custom npm loader
+      const protocol = entry.npm.includes("anthropic") ? "anthropic" : "openai";
+      let apiKey = entry.options?.apiKey;
+      let keyEnv: string | undefined;
+      const ref = apiKey?.match(/^\{env:([A-Za-z0-9_]+)\}$/);
+      if (ref?.[1]) {
+        keyEnv = ref[1];
+        apiKey = process.env[ref[1]];
+      }
+      const models = Object.keys(entry.models ?? {});
+      const defaultModel = activeProvider === id ? activeModel : undefined;
+      if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
+      return [{ id, name: entry.name ?? id, protocol, baseUrl, apiKey, keyEnv, models, defaultModel, source: self }];
+    });
   },
 };

@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { slugFromBaseUrl } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 const dir = path.join(home, ".claude");
 const settingsFile = path.join(dir, "settings.json");
@@ -71,5 +72,32 @@ export const claudecode: TargetApp = {
     const env = readJsonIfExists<{ env?: Record<string, string> }>(settingsFile)?.env;
     if (!env?.ANTHROPIC_BASE_URL) return undefined;
     return `${env.ANTHROPIC_BASE_URL} · ${env.ANTHROPIC_MODEL ?? "?"}`;
+  },
+
+  candidates(): ProviderCandidate[] {
+    const env = readJsonIfExists<{ env?: Record<string, string> }>(settingsFile)?.env;
+    const baseUrl = env?.ANTHROPIC_BASE_URL;
+    if (!baseUrl) return [];
+    const models = [
+      env.ANTHROPIC_MODEL,
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+      env.ANTHROPIC_REASONING_MODEL,
+      env.ANTHROPIC_SMALL_FAST_MODEL,
+    ].filter((m): m is string => !!m);
+    const id = slugFromBaseUrl(baseUrl);
+    return [
+      {
+        id,
+        name: id,
+        protocol: "anthropic",
+        baseUrl,
+        apiKey: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || undefined,
+        models: [...new Set(models)],
+        defaultModel: env.ANTHROPIC_MODEL,
+        source: this.id,
+      },
+    ];
   },
 };

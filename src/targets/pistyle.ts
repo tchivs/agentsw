@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import { looksLikeEnvName } from "../slug.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 /**
  * pi-family agents (pi, prime-agent) share the same config layout:
@@ -125,6 +126,56 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       );
       if (!settings?.defaultProvider) return undefined;
       return `${settings.defaultProvider} · ${settings.defaultModel ?? "?"}`;
+    },
+
+    candidates(): ProviderCandidate[] {
+      const dir = resolveDir();
+      const mc = readJsonIfExists<{ providers?: Record<string, Record<string, unknown>> }>(path.join(dir, "models.json"));
+      if (!mc?.providers) return [];
+      const settings = readJsonIfExists<{ defaultProvider?: string; defaultModel?: string }>(path.join(dir, "settings.json"));
+      const self = opts.id;
+      return Object.entries(mc.providers).flatMap(([id, entry]) => {
+        if (!entry || typeof entry.baseUrl !== "string") return [];
+        const protocol =
+          entry.api === "anthropic-messages" ? "anthropic" : entry.api === "openai-completions" ? "openai" : undefined;
+        if (!protocol) return [];
+        let apiKey: string | undefined;
+        let keyEnv: string | undefined;
+        const raw = typeof entry.apiKey === "string" && entry.apiKey ? entry.apiKey : undefined;
+        if (raw) {
+          if (raw.startsWith("$") && raw.length > 1) {
+            keyEnv = raw.slice(1);
+            apiKey = process.env[keyEnv];
+          } else if (opts.id === "prime" && looksLikeEnvName(raw)) {
+            // prime resolves bare env names; falls back to the literal string
+            keyEnv = raw;
+            apiKey = process.env[raw] ?? raw;
+          } else {
+            apiKey = raw;
+          }
+        }
+        const models = Array.isArray(entry.models)
+          ? (entry.models as Array<Record<string, unknown>>)
+              .map((m) => (typeof m?.id === "string" ? m.id : ""))
+              .filter(Boolean)
+          : [];
+        const defaultModel =
+          settings?.defaultProvider === id && settings?.defaultModel ? settings.defaultModel : undefined;
+        if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
+        return [
+          {
+            id,
+            name: typeof entry.name === "string" ? entry.name : id,
+            protocol,
+            baseUrl: entry.baseUrl,
+            apiKey,
+            keyEnv,
+            models,
+            defaultModel,
+            source: self,
+          },
+        ];
+      });
     },
   };
 }

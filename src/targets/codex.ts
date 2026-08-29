@@ -3,7 +3,7 @@ import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { backupFile, home, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 const dir = path.join(home, ".codex");
 const configFile = path.join(dir, "config.toml");
@@ -95,5 +95,42 @@ export const codex: TargetApp = {
     } catch {
       return undefined;
     }
+  },
+
+  candidates(): ProviderCandidate[] {
+    const text = readTextIfExists(configFile);
+    if (!text) return [];
+    let config: Record<string, unknown>;
+    try {
+      config = parseToml(text) as Record<string, unknown>;
+    } catch {
+      return [];
+    }
+    const providers = config.model_providers as Record<string, Record<string, unknown>> | undefined;
+    if (!providers) return [];
+    const auth = readJsonIfExists<{ OPENAI_API_KEY?: string; tokens?: { access_token?: string } }>(authFile);
+    const authKey = auth?.OPENAI_API_KEY || auth?.tokens?.access_token;
+    const active = typeof config.model_provider === "string" ? config.model_provider : undefined;
+    const self = this.id;
+    return Object.entries(providers).flatMap(([id, entry]) => {
+      if (!entry || typeof entry.base_url !== "string") return [];
+      const envKey = typeof entry.env_key === "string" ? entry.env_key : undefined;
+      const apiKey =
+        (envKey ? process.env[envKey] : undefined) ?? (active === id && entry.requires_openai_auth ? authKey : undefined);
+      const models = active === id && typeof config.model === "string" ? [config.model] : [];
+      return [
+        {
+          id,
+          name: typeof entry.name === "string" ? entry.name : id,
+          protocol: "openai" as const,
+          baseUrl: entry.base_url,
+          apiKey: apiKey || undefined,
+          keyEnv: envKey,
+          models,
+          defaultModel: models[0],
+          source: self,
+        },
+      ];
+    });
   },
 };

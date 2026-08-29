@@ -41,6 +41,8 @@ npm install -g smart-switch  # requires Node >= 22.12
 smart-switch                        # no args (or `npx smart-switch`): interactive menu
                                     # pick "add / update provider", then answer the
                                     # prompts — protocol, base URL, API key, models
+                                    # first run also offers to import existing
+                                    # custom providers from app configs
 
 # add a provider: interactive, or fully flagged with model discovery
 smart-switch add
@@ -51,9 +53,35 @@ smart-switch use myproxy            # switch every detected app to this provider
 smart-switch status                 # what each app currently points at
 ```
 
+### Import existing providers
+
+On first interactive launch with an empty smart-switch store, the menu offers to
+scan Claude Code, Codex, omp, pi, prime-agent, opencode, Hermes and WorkBuddy
+configs. It displays every custom provider before import and merges duplicates
+with the same protocol + base URL (model lists and source apps are combined).
+Different protocols stay separate: for example, `sub` from Codex remains an
+OpenAI Responses provider while `sub-anthropic` from omp remains Anthropic.
+
+```bash
+smart-switch import        # scan, preview, select, dedupe and import
+smart-switch import --all  # import every new provider without selection
+```
+
+### Language
+
+The first interactive launch asks for English or 简体中文 and saves the choice.
+The menu can change it later. One-run overrides take precedence over the saved
+choice; otherwise smart-switch auto-detects the system locale.
+
+```bash
+smart-switch --lang zh-CN
+SMART_SWITCH_LANG=en smart-switch
+```
+
 ## Commands
 
 ```bash
+smart-switch import                 # adopt existing custom providers (auto-deduped)
 smart-switch list                   # configured providers
 smart-switch use myproxy -a codex,omp -m glm-5.2
 smart-switch use myproxy --dry-run  # preview config diffs without writing

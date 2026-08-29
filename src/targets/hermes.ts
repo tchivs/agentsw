@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
   const env = process.env.HERMES_HOME?.trim();
@@ -128,5 +128,42 @@ export const hermes: TargetApp = {
     } catch {
       return undefined;
     }
+  },
+
+  candidates(): ProviderCandidate[] {
+    const hh = hermesHome();
+    const text = readTextIfExists(path.join(hh, "config.yaml"));
+    if (!text) return [];
+    type HermesConfig = {
+      providers?: Record<
+        string,
+        { name?: string; api?: string; key_env?: string; transport?: string; default_model?: string; models?: Record<string, unknown> }
+      >;
+      model?: { provider?: string; default?: string; model?: string };
+    };
+    let parsed: HermesConfig | undefined;
+    try {
+      parsed = YAML.parse(text) as HermesConfig | undefined;
+    } catch {
+      return [];
+    }
+    if (!parsed?.providers) return [];
+    const envText = readTextIfExists(path.join(hh, ".env")) ?? "";
+    const readEnv = (key: string): string | undefined =>
+      process.env[key] ?? (envText.match(new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(.*)$`, "m"))?.[1]?.trim() || undefined);
+    const self = this.id;
+    return Object.entries(parsed.providers).flatMap(([id, entry]) => {
+      if (!entry || typeof entry.api !== "string" || !entry.api) return [];
+      const protocol =
+        entry.transport === "anthropic_messages" ? "anthropic" : entry.transport === "chat_completions" ? "openai" : undefined;
+      if (!protocol) return [];
+      const keyEnv = typeof entry.key_env === "string" && entry.key_env ? entry.key_env : undefined;
+      const apiKey = keyEnv ? readEnv(keyEnv) : undefined;
+      const models = Object.keys(entry.models ?? {});
+      const active = parsed?.model?.provider === id ? parsed?.model?.default ?? parsed?.model?.model : undefined;
+      const defaultModel = entry.default_model ?? active;
+      if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
+      return [{ id, name: entry.name ?? id, protocol, baseUrl: entry.api, apiKey, keyEnv, models, defaultModel, source: self }];
+    });
   },
 };

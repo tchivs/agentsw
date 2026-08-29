@@ -1,12 +1,14 @@
 import pc from "picocolors";
 import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
+import { scanCandidates, normalizeUrl, type MergedCandidate } from "./import.js";
 import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels } from "./discover.js";
 import { appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
+import { t } from "./i18n.js";
 import type { ApplyResult, ModelSpec, Protocol, Provider } from "./types.js";
 
 function fail(message: string): never {
@@ -130,35 +132,36 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
         {
           type: "text",
           name: "id",
-          message: "provider id (slug)",
-          validate: (v: string) => (/^[a-z0-9][a-z0-9_-]*$/.test(v) ? true : "lowercase slug, e.g. glm or my-proxy"),
+          message: t("add.id"),
+          validate: (v: string) => (/^[a-z0-9][a-z0-9_-]*$/.test(v) ? true : t("add.idInvalid")),
         },
-        { type: "text", name: "name", message: "display name", initial: (prev: string) => prev },
+        { type: "text", name: "name", message: t("add.name"), initial: (prev: string) => prev },
         {
           type: "select",
           name: "protocol",
-          message: "wire protocol",
+          message: t("add.protocol"),
+          hint: t("menu.selectInstructions"),
           choices: [
-            { title: "openai (chat completions)", value: "openai" },
-            { title: "anthropic (messages)", value: "anthropic" },
+            { title: t("add.openai"), value: "openai" },
+            { title: t("add.anthropic"), value: "anthropic" },
           ],
         },
-        { type: "text", name: "baseUrl", message: "base URL", validate: (v: string) => (/^https?:\/\//.test(v) ? true : "must start with http(s)://") },
-        { type: "password", name: "apiKey", message: "API key" },
+        { type: "text", name: "baseUrl", message: t("add.baseUrl"), validate: (v: string) => (/^https?:\/\//.test(v) ? true : t("add.baseUrlInvalid")) },
+        { type: "password", name: "apiKey", message: t("add.apiKey") },
         {
           type: opts.discover ? null : "text",
           name: "models",
-          message: "model ids (comma separated)",
+          message: t("add.models"),
         },
       ],
-      { onCancel: () => fail("cancelled") },
+      { onCancel: () => fail(t("add.cancelled")) },
     );
   } else {
     const required = opts.discover
       ? (["id", "protocol", "baseUrl", "apiKey"] as const)
       : (["id", "protocol", "baseUrl", "apiKey", "models"] as const);
     for (const field of required) {
-      if (!opts[field]) fail(`--${field === "baseUrl" ? "base-url" : field === "apiKey" ? "api-key" : field} is required in non-interactive mode`);
+      if (!opts[field]) fail(t("add.fieldRequired", { field: field === "baseUrl" ? "base-url" : field === "apiKey" ? "api-key" : field }));
     }
     answers = {
       id: opts.id!,
@@ -171,22 +174,22 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   }
 
   const protocol = answers.protocol as Protocol;
-  if (protocol !== "openai" && protocol !== "anthropic") fail(`protocol must be "openai" or "anthropic"`);
+  if (protocol !== "openai" && protocol !== "anthropic") fail(t("add.protocolInvalid"));
   const baseUrl = answers.baseUrl!.replace(/\/+$/, "");
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
   const modelFilter = parseFilterOpts(opts);
   if (opts.discover) {
-    process.stderr.write(pc.dim(`discovering models from ${baseUrl} ...\n`));
+    process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })}\n`));
     const discovered = await discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol });
-    console.log(`provider lists ${discovered.length} model(s) via /v1/models`);
+    console.log(t("add.providerLists", { count: discovered.length }));
     modelIds = [...new Set([...manualIds, ...discovered])];
   }
   const pinned = [...manualIds, ...(opts.defaultModel ? [opts.defaultModel] : [])];
   const outcome = applyModelFilter(modelIds, modelFilter, pinned);
   reportDropped(outcome.dropped);
   modelIds = outcome.kept;
-  if (modelIds.length === 0) fail("at least one model id is required (or pass --discover)");
+  if (modelIds.length === 0) fail(t("add.atLeastOne"));
 
   const catalog = await loadCatalog();
   const hint = opts.modelsDev ?? guessProviderHint(catalog, answers.baseUrl!);
@@ -194,8 +197,8 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
 
   const defaultModel = opts.defaultModel ?? modelIds[0]!;
-  if (!modelIds.includes(defaultModel)) fail(`default model "${defaultModel}" is not in the model list`);
-  if (opts.smallModel && !modelIds.includes(opts.smallModel)) fail(`small model "${opts.smallModel}" is not in the model list`);
+  if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
+  if (opts.smallModel && !modelIds.includes(opts.smallModel)) fail(t("add.smallMissing", { model: opts.smallModel }));
 
   const provider: Provider = {
     id: answers.id!,
@@ -216,17 +219,18 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   if (!store.active) store.active = provider.id;
   saveStore(store);
 
-  console.log(pc.green(`${existed ? "updated" : "added"} provider ${pc.bold(provider.id)} (${protocol})`));
-  console.log(`models.dev metadata: ${matched}/${models.length} models matched${hint ? ` (provider hint: ${hint})` : ""}`);
+  const savedStatus = t(existed ? "add.updated" : "add.added");
+  console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
+  console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
   console.log(table(modelRows(models), MODEL_HEADER));
-  console.log(pc.dim(`\nnext: smart-switch use ${provider.id}`));
+  console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
 }
 
 export function cmdList(): void {
   const store = loadStore();
   const ids = Object.keys(store.providers);
   if (ids.length === 0) {
-    console.log(`no providers configured (config: ${configFile})\nrun: smart-switch add`);
+    console.log(t("list.none", { file: configFile }));
     return;
   }
   const rows = ids.map((id) => {
@@ -240,37 +244,35 @@ export function cmdList(): void {
       String(p.models.length),
     ];
   });
-  console.log(table(rows, [" ", "ID", "PROTOCOL", "BASE URL", "DEFAULT MODEL", "#MODELS"]));
+  console.log(table(rows, [" ", "ID", t("table.protocol"), "BASE URL", t("table.defaultModel"), t("table.models")]));
 }
 
 export async function cmdRemove(id: string, opts: { prune?: boolean }): Promise<void> {
   const store = loadStore();
   const provider = getProvider(store, id);
   if (opts.prune) {
-    console.log(`pruning ${pc.bold(id)} from app configs\n`);
+    console.log(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
     reportResults(await runTargets("prune", provider, undefined));
     console.log("");
   }
   delete store.providers[id];
   if (store.active === id) store.active = undefined;
   saveStore(store);
-  console.log(pc.green(`removed provider ${id}`));
-  if (!opts.prune) {
-    console.log(pc.dim("note: target app configs are left as-is; use --prune (or `smart-switch prune <id>`) to clean them"));
-  }
+  console.log(pc.green(t("remove.removed", { id })));
+  if (!opts.prune) console.log(pc.dim(t("remove.note")));
 }
 
 export async function cmdPrune(id: string, opts: { apps?: string }): Promise<void> {
   const store = loadStore();
   const provider = getProvider(store, id);
-  console.log(`pruning ${pc.bold(id)} from app configs\n`);
+  console.log(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
   reportResults(await runTargets("prune", provider, opts.apps));
 }
 
 function reportResults(results: ApplyResult[]): void {
   for (const r of results) {
     if (r.skipped) {
-      console.log(`${pc.yellow("skip")} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
+      console.log(`${pc.yellow(t("common.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
       continue;
     }
     console.log(`${pc.green("ok  ")} ${r.app.padEnd(9)} ${r.changed.join(", ")}`);
@@ -359,7 +361,7 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
   const provider = getProvider(store, id);
   if (opts.model) {
     if (!provider.models.some((m) => m.id === opts.model)) {
-      fail(`model "${opts.model}" is not configured on provider ${id} (have: ${provider.models.map((m) => m.id).join(", ")})`);
+      fail(t("use.modelMissing", { model: opts.model, id, have: provider.models.map((m) => m.id).join(", ") }));
     }
     provider.defaultModel = opts.model;
   }
@@ -367,31 +369,31 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
     store.active = id;
     saveStore(store);
   }
-  console.log(`switching to ${pc.bold(id)} (${provider.protocol}) · default model ${provider.defaultModel}\n`);
+  console.log(`${t("use.switching", { id: pc.bold(id), protocol: provider.protocol, model: provider.defaultModel })}\n`);
   await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
 }
 
 export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean }): Promise<void> {
   const store = loadStore();
   const id = opts.provider ?? store.active;
-  if (!id) fail("no active provider; run `smart-switch use <id>` first");
+  if (!id) fail(t("sync.noActive"));
   const provider = getProvider(store, id);
-  console.log(`syncing provider ${pc.bold(id)} · default model ${provider.defaultModel}\n`);
+  console.log(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
   await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
 }
 
 export function cmdStatus(): void {
   const store = loadStore();
-  console.log(`config: ${configFile}`);
-  console.log(`active provider: ${store.active ? pc.bold(store.active) : pc.dim("(none)")}\n`);
-  const rows = targets.map((t) => [
-    t.id,
-    t.detect() ? pc.green("yes") : pc.dim("no"),
-    t.protocols.join("+"),
-    t.current() ?? pc.dim("-"),
-    pc.dim(t.configPaths[0] ?? ""),
+  console.log(t("status.config", { file: configFile }));
+  console.log(`${t("status.active", { id: store.active ? pc.bold(store.active) : pc.dim(t("status.none")) })}\n`);
+  const rows = targets.map((target) => [
+    target.id,
+    target.detect() ? pc.green(t("common.yes")) : pc.dim(t("common.no")),
+    target.protocols.join("+"),
+    target.current() ?? pc.dim("-"),
+    pc.dim(target.configPaths[0] ?? ""),
   ]);
-  console.log(table(rows, ["APP", "FOUND", "PROTOCOLS", "CURRENT", "CONFIG"]));
+  console.log(table(rows, ["APP", t("table.found"), t("table.protocols"), t("table.current"), t("table.config")]));
 }
 
 export async function cmdModels(
@@ -579,4 +581,122 @@ export async function cmdUpgrade(ids: string[]): Promise<void> {
       process.exitCode = 1;
     }
   }
+}
+
+export interface ImportOptions {
+  all?: boolean;
+}
+
+/** Collect custom providers from app configs, dedupe by protocol+baseUrl, import what is new. */
+export async function cmdImport(opts: ImportOptions): Promise<void> {
+  const rows = scanCandidates();
+  const fresh = rows.filter((r) => !r.configured);
+  for (const r of rows) {
+    if (r.configured) {
+      console.log(`${pc.yellow(t("import.skip"))} ${pc.bold(r.id)} · ${r.protocol} · ${r.baseUrl} — ${t("import.already", { id: pc.bold(r.configured) })}`);
+    }
+  }
+  if (fresh.length === 0) {
+    console.log(rows.length ? t("import.noneNew") : t("import.noneFound"));
+    return;
+  }
+
+  console.log("");
+  console.log(
+    table(
+      fresh.map((r) => [
+        r.id,
+        r.protocol,
+        r.baseUrl,
+        String(r.models.length),
+        r.sources.join(","),
+        r.apiKey ? pc.green(t("import.keyYes")) : r.keyEnv ? pc.yellow(t("import.keyEnv", { name: r.keyEnv })) : pc.red(t("import.keyMissing")),
+      ]),
+      ["ID", t("table.protocol"), "BASE URL", t("table.models"), t("table.from"), t("table.key")],
+    ),
+  );
+
+  let chosen: MergedCandidate[];
+  if (process.stdin.isTTY && !opts.all) {
+    const { pick } = await prompts(
+      {
+        type: "multiselect",
+        name: "pick",
+        message: t("import.which"),
+        instructions: t("import.multiInstructions"),
+        choices: fresh.map((r, i) => ({
+          title: `${r.id} · ${r.protocol} · ${r.baseUrl} · ${r.models.length ? t("import.modelsCount", { count: r.models.length }) : t("import.noModels")}`,
+          value: i,
+          selected: true,
+        })),
+      },
+      { onCancel: () => fail(t("add.cancelled")) },
+    );
+    if (!Array.isArray(pick) || pick.length === 0) {
+      console.log(pc.dim(t("import.nothingSelected")));
+      return;
+    }
+    chosen = (pick as number[]).map((i) => fresh[i]).filter((r): r is MergedCandidate => r !== undefined);
+  } else {
+    chosen = fresh;
+  }
+
+  const store = loadStore();
+  const catalog = await loadCatalog();
+  const imported: string[] = [];
+  for (const c of chosen) {
+    let apiKey = c.apiKey;
+    if (!apiKey) {
+      const why = c.keyEnv ? t("import.keyRefMissing", { name: c.keyEnv }) : t("import.keyNotStored");
+      if (!process.stdin.isTTY || opts.all) {
+        fail(t("import.missingKey", { id: c.id, why }));
+      }
+      const a = await prompts(
+        {
+          type: "password",
+          name: "key",
+          message: t("import.keyPrompt", { id: c.id, url: c.baseUrl, why }),
+          validate: (v: string) => (v.trim() ? true : t("import.required")),
+        },
+        { onCancel: () => fail(t("add.cancelled")) },
+      );
+      apiKey = a.key;
+    }
+
+    let ids = [...c.models];
+    if (ids.length === 0) {
+      process.stderr.write(pc.dim(`${t("import.discovering", { id: c.id })}\n`));
+      try {
+        ids = await discoverProviderModels({ baseUrl: c.baseUrl, apiKey: apiKey!, protocol: c.protocol });
+      } catch (err) {
+        fail(t("import.discoveryFailed", { id: c.id, error: (err as Error).message }));
+      }
+      ids = applyModelFilter(ids, undefined, []).kept;
+    }
+    if (ids.length === 0) fail(t("import.noModelsImport", { id: c.id }));
+
+    let id = c.id;
+    for (let n = 2; store.providers[id]; n++) id = `${c.id}-${n}`;
+    const hint = guessProviderHint(catalog, c.baseUrl);
+    const models = enrichModels(catalog, ids, hint);
+    const defaultModel = c.defaultModel && ids.includes(c.defaultModel) ? c.defaultModel : ids[0]!;
+    const existed = store.providers[id] !== undefined;
+    store.providers[id] = {
+      id,
+      name: c.name || id,
+      protocol: c.protocol,
+      baseUrl: normalizeUrl(c.baseUrl),
+      apiKey: apiKey!,
+      models,
+      defaultModel,
+      modelsDevId: hint,
+    };
+    if (!store.active) store.active = id;
+    imported.push(id);
+    console.log(
+      `${pc.green(t(existed ? "import.updated" : "import.imported"))} ${pc.bold(id)} · ${c.protocol} · ${c.baseUrl} · ${t("import.modelsCount", { count: ids.length })} [${t("import.from")} ${c.sources.join(", ")}]`,
+    );
+  }
+  saveStore(store);
+  console.log(pc.dim(`\n${t("import.next", { id: imported[0]! })}`));
 }

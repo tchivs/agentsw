@@ -1,5 +1,26 @@
 import type { ApplyResult, Protocol, Provider } from "../types.js";
 
+/**
+ * A custom provider discovered inside an app's own config file, surfaced by
+ * `smart-switch import`. Adapters must resolve literal keys where the config
+ * stores them inline or via a set env var; otherwise leave apiKey undefined
+ * and report the referenced name in keyEnv.
+ */
+export interface ProviderCandidate {
+  /** provider id/slug as used inside the app's config */
+  id: string;
+  name: string;
+  protocol: Protocol;
+  baseUrl: string;
+  apiKey?: string;
+  /** env var name the config references when no literal key was resolvable */
+  keyEnv?: string;
+  models: string[];
+  defaultModel?: string;
+  /** source app id this candidate came from */
+  source: string;
+}
+
 export interface TargetApp {
   /** app slug used in --apps filters */
   id: string;
@@ -15,4 +36,6 @@ export interface TargetApp {
   /** remove this provider's entries from the app's config; must not touch unrelated settings */
   prune(provider: Provider): Promise<ApplyResult>;
   current(): string | undefined;
+  /** optional: read custom providers already present in this app's config (for `import`) */
+  candidates?(): ProviderCandidate[];
 }

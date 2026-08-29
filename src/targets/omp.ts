@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { backupFile, home, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { looksLikeEnvName } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { TargetApp } from "./types.js";
+import type { ProviderCandidate, TargetApp } from "./types.js";
 
 const agentDir = path.join(home, ".omp", "agent");
 const modelsYml = path.join(agentDir, "models.yml");
@@ -97,5 +98,42 @@ export const omp: TargetApp = {
     } catch {
       return undefined;
     }
+  },
+
+  candidates(): ProviderCandidate[] {
+    const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
+    if (!file) return [];
+    type OmpConfig = { providers?: Record<string, Record<string, unknown>> };
+    let parsed: OmpConfig | undefined;
+    try {
+      parsed = YAML.parse(readTextIfExists(file) ?? "") as OmpConfig | undefined;
+    } catch {
+      return [];
+    }
+    if (!parsed?.providers) return [];
+    const self = this.id;
+    return Object.entries(parsed.providers).flatMap(([id, entry]) => {
+      if (!entry || typeof entry.baseUrl !== "string") return [];
+      const protocol =
+        entry.api === "anthropic-messages" ? "anthropic" : entry.api === "openai-completions" ? "openai" : undefined;
+      if (!protocol) return [];
+      let apiKey: string | undefined;
+      let keyEnv: string | undefined;
+      if (typeof entry.apiKey === "string" && entry.apiKey) {
+        if (looksLikeEnvName(entry.apiKey) && process.env[entry.apiKey]) {
+          keyEnv = entry.apiKey;
+          apiKey = process.env[entry.apiKey];
+        } else {
+          // omp resolves env-var names first, then uses the value as a literal key
+          apiKey = entry.apiKey;
+        }
+      }
+      const models = Array.isArray(entry.models)
+        ? (entry.models as Array<Record<string, unknown>>)
+            .map((m) => (typeof m?.id === "string" ? m.id : ""))
+            .filter(Boolean)
+        : [];
+      return [{ id, name: typeof entry.name === "string" ? entry.name : id, protocol, baseUrl: entry.baseUrl, apiKey, keyEnv, models, source: self }];
+    });
   },
 };
