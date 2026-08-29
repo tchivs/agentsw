@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: CLI smoke (sandbox HOME)
+        env:
+          SSW_HOME: ${{ runner.temp }}/ssw-smoke
+        run: |
+          mkdir -p "$SSW_HOME/.pi/agent" "$SSW_HOME/.omp/agent" "$SSW_HOME/.config/opencode"
+          HOME="$SSW_HOME" node dist/index.js add -y --id smoke --protocol openai \
+            --base-url https://api.example.com/v1 --api-key test-key --models m1,m2
+          HOME="$SSW_HOME" node dist/index.js use smoke -a pi,omp,opencode
+          HOME="$SSW_HOME" node dist/index.js status
+          HOME="$SSW_HOME" node dist/index.js prune smoke -a pi,omp,opencode
