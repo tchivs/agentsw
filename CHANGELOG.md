@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-30
+
 ### Added
 
 - Interactive main menu on bare invocation — `npx smart-switch` (zero install) or
@@ -51,6 +53,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/smart-switch/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/tchivs/smart-switch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tchivs/smart-switch/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/tchivs/smart-switch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tchivs/smart-switch/releases/tag/v0.1.0
