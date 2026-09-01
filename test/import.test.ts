@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Provider } from "../src/types.js";
 import type { ProviderCandidate } from "../src/targets/types.js";
 
@@ -12,11 +13,13 @@ process.env.HOME = sandbox;
 delete process.env.HERMES_HOME;
 delete process.env.WORKBUDDY_CONFIG_DIR;
 delete process.env.CODEBUDDY_CONFIG_DIR;
+delete process.env.DSH_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
 
 const { targets } = await import("../src/targets/index.js");
 const { mergeCandidates } = await import("../src/import.js");
+const { ccSwitchCandidates } = await import("../src/sources/ccswitch.js");
 
 after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 
@@ -61,6 +64,7 @@ test("adapter candidates round-trip and dedupe by protocol plus base URL", async
   assert.deepEqual(responses.sources.sort(), ["codex", "pi"]);
   assert.deepEqual(responses.models, ["gpt-5", "glm-4.6"]);
   assert.equal(responses.apiKey, "sk-sub-openai");
+  assert.equal(responses.openaiApi, "responses", "codex's responses wire wins over pi's chat-completions entry");
   assert.equal(responses.configured, "existing-sub", "trailing slash is ignored for existing-provider dedupe");
 
   const messages = merged.find((c) => c.protocol === "anthropic")!;
@@ -71,7 +75,7 @@ test("adapter candidates round-trip and dedupe by protocol plus base URL", async
   assert.equal(messages.configured, undefined);
 });
 
-test("all eight adapters expose an applied custom provider for import", async () => {
+test("every adapter exposes an applied custom provider for import", async () => {
   for (const dir of [
     ".claude",
     ".codex",
@@ -81,6 +85,7 @@ test("all eight adapters expose an applied custom provider for import", async ()
     ".config/opencode",
     ".hermes",
     ".workbuddy",
+    ".dsh",
   ]) {
     fs.mkdirSync(path.join(sandbox, dir), { recursive: true });
   }
@@ -107,4 +112,63 @@ test("all eight adapters expose an applied custom provider for import", async ()
     assert.ok(candidate.models.includes(model), `${target.id} model list`);
     assert.equal(candidate.source, target.id, `${target.id} source marker`);
   }
+});
+
+test("cc-switch's own store imports, one row shape per managed app", async () => {
+  fs.mkdirSync(path.join(sandbox, ".cc-switch"), { recursive: true });
+  const db = new DatabaseSync(path.join(sandbox, ".cc-switch", "cc-switch.db"));
+  db.exec(
+    "CREATE TABLE providers (id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL," +
+      " settings_config TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (id, app_type))",
+  );
+  const insert = db.prepare("INSERT INTO providers (id, app_type, name, settings_config, meta) VALUES (?, ?, ?, ?, ?)");
+  // claude / claude-desktop: env block
+  insert.run("uuid-1", "claude", "Zhipu GLM", JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic", ANTHROPIC_AUTH_TOKEN: "sk-zhipu", ANTHROPIC_MODEL: "glm-5.1" },
+  }), "{}");
+  // codex: literal config.toml text plus auth.json contents
+  insert.run("uuid-2", "codex", "sub", JSON.stringify({
+    auth: { OPENAI_API_KEY: "sk-codex" },
+    config: 'model_provider = "custom"\nmodel = "gpt-5.6-sol"\n\n[model_providers]\n[model_providers.custom]\nwire_api = "responses"\nbase_url = "https://new.vfing.de/v1"\n',
+  }), "{}");
+  // opencode / openclaw / hermes / pi: the pi-family shape
+  insert.run("uuid-3", "openclaw", "Reseller", JSON.stringify({
+    api: "openai-completions",
+    apiKey: "sk-openclaw",
+    baseUrl: "https://gateway.example/v1",
+    models: [{ id: "model-a" }, { id: "model-b" }],
+  }), "{}");
+  // an official/empty row carries no endpoint and must be skipped, not imported blank
+  insert.run("uuid-4", "claude", "Claude Official", JSON.stringify({ env: {} }), "{}");
+  db.close();
+
+  const rows = ccSwitchCandidates();
+  assert.equal(rows.length, 3, "the keyless official row is skipped");
+  assert.ok(rows.every((r) => r.source === "cc-switch"));
+
+  const claude = rows.find((r) => r.id === "zhipu-glm")!;
+  assert.equal(claude.protocol, "anthropic");
+  assert.equal(claude.apiKey, "sk-zhipu");
+  assert.deepEqual(claude.models, ["glm-5.1"]);
+
+  const codex = rows.find((r) => r.id === "sub")!;
+  assert.equal(codex.protocol, "openai");
+  assert.equal(codex.openaiApi, "responses", "codex rows carry their wire");
+  assert.equal(codex.baseUrl, "https://new.vfing.de/v1");
+  assert.equal(codex.apiKey, "sk-codex");
+  assert.equal(codex.defaultModel, "gpt-5.6-sol");
+
+  const openclaw = rows.find((r) => r.id === "reseller")!;
+  assert.equal(openclaw.protocol, "openai");
+  assert.equal(openclaw.openaiApi, "completions");
+  assert.deepEqual(openclaw.models, ["model-a", "model-b"]);
+
+  // a cc-switch row and an app config pointing at the same endpoint are one provider
+  const merged = mergeCandidates(
+    [...rows, { id: "gw", name: "gw", protocol: "openai", baseUrl: "https://gateway.example/v1", models: ["model-c"], source: "omp" }],
+    [],
+  );
+  const gateway = merged.find((c) => c.baseUrl === "https://gateway.example/v1")!;
+  assert.deepEqual(gateway.sources.sort(), ["cc-switch", "omp"]);
+  assert.deepEqual(gateway.models, ["model-a", "model-b", "model-c"]);
 });

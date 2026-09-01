@@ -25,9 +25,20 @@ export const opencode: TargetApp = {
     };
 
     const anthropic = provider.protocol === "anthropic";
+    const providerMap = { ...(config.provider as Record<string, unknown> | undefined) };
+    // Keys agentsw does not model (custom options, per-model extras) are the user's,
+    // but a key it owns and no longer emits is cleared rather than inherited from last sync.
+    const existing = providerMap[provider.id];
+    const prev = (existing && typeof existing === "object" && !Array.isArray(existing)
+      ? existing
+      : {}) as Record<string, unknown>;
+    const prevModels = (prev.models ?? {}) as Record<string, Record<string, unknown>>;
     const models: Record<string, unknown> = {};
     for (const m of provider.models) {
+      const old = { ...prevModels[m.id] };
+      for (const key of ["name", "reasoning", "attachment", "cost", "limit"]) delete old[key];
       models[m.id] = {
+        ...old,
         ...(m.name ? { name: m.name } : {}),
         ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
         ...(m.imageInput ? { attachment: true } : {}),
@@ -52,11 +63,12 @@ export const opencode: TargetApp = {
       };
     }
 
-    const providerMap = { ...(config.provider as Record<string, unknown> | undefined) };
     providerMap[provider.id] = {
+      ...prev,
       npm: anthropic ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
       name: provider.name,
       options: {
+        ...(prev.options as Record<string, unknown> | undefined),
         baseURL: provider.baseUrl,
         apiKey: provider.apiKey,
       },

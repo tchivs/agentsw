@@ -123,6 +123,8 @@ export const codex: TargetApp = {
           id,
           name: typeof entry.name === "string" ? entry.name : id,
           protocol: "openai" as const,
+          // codex config declares its wire explicitly; legacy configs may still carry "chat"
+          openaiApi: entry.wire_api === "chat" ? ("completions" as const) : ("responses" as const),
           baseUrl: entry.base_url,
           apiKey: apiKey || undefined,
           keyEnv: envKey,

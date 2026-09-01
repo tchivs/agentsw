@@ -5,6 +5,10 @@ import { backupFile, home, readTextIfExists, writeFileAtomic } from "../fsutil.j
 import { looksLikeEnvName } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
+import { apiValue, classifyApi, entryApi, mergeModels, stripConflictingOverrides } from "./wire.js";
+
+/** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
+const OWNED_MODEL_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
 
 const agentDir = path.join(home, ".omp", "agent");
 const modelsYml = path.join(agentDir, "models.yml");
@@ -33,12 +37,14 @@ export const omp: TargetApp = {
     }
     if (doc.contents == null) doc.contents = doc.createNode({});
 
+    const prev = (doc.getIn(["providers", provider.id]) as YAML.YAMLMap | undefined)?.toJSON?.() as
+      | Record<string, unknown>
+      | undefined;
     const anthropic = provider.protocol === "anthropic";
-    const entry: Record<string, unknown> = {
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey, // omp treats value as env-var name first, then literal
-      api: anthropic ? "anthropic-messages" : "openai-completions",
-      models: provider.models.map((m) => ({
+    const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev ?? {}));
+    const models = mergeModels(
+      prev?.models,
+      provider.models.map((m) => ({
         id: m.id,
         ...(m.name ? { name: m.name } : {}),
         ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
@@ -56,12 +62,31 @@ export const omp: TargetApp = {
             }
           : {}),
       })),
+      OWNED_MODEL_KEYS,
+    );
+    const conflicts = stripConflictingOverrides(models, api, provider.baseUrl);
+    if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
+    const entry: Record<string, unknown> = {
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey, // omp treats value as env-var name first, then literal
+      api,
+      models,
     };
     if (anthropic) {
       // Most Anthropic-fronted proxies reject the strict tool field.
       entry.disableStrictTools = true;
     }
-    doc.setIn(["providers", provider.id], doc.createNode(entry));
+    // Key-by-key when the entry already exists: provider-level keys agentsw does not
+    // model (authHeader, headers, compat, auth, discovery, modelOverrides, ...) and their
+    // comments belong to the user; a sync must not drop them.
+    const at = ["providers", provider.id];
+    if (YAML.isMap(doc.getIn(at))) {
+      for (const [key, value] of Object.entries(entry)) doc.setIn([...at, key], doc.createNode(value));
+      // an anthropic-only key must not outlive a switch to an openai wire
+      if (!anthropic) doc.deleteIn([...at, "disableStrictTools"]);
+    } else {
+      doc.setIn(at, doc.createNode(entry));
+    }
 
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
@@ -114,9 +139,10 @@ export const omp: TargetApp = {
     const self = this.id;
     return Object.entries(parsed.providers).flatMap(([id, entry]) => {
       if (!entry || typeof entry.baseUrl !== "string") return [];
-      const protocol =
-        entry.api === "anthropic-messages" ? "anthropic" : entry.api === "openai-completions" ? "openai" : undefined;
-      if (!protocol) return [];
+      const modelEntries = Array.isArray(entry.models) ? (entry.models as Array<Record<string, unknown>>) : [];
+      // omp takes `api` at provider level or on every model; a mixed-protocol entry is skipped.
+      const wire = classifyApi(entryApi(entry));
+      if (!wire) return [];
       let apiKey: string | undefined;
       let keyEnv: string | undefined;
       if (typeof entry.apiKey === "string" && entry.apiKey) {
@@ -128,12 +154,20 @@ export const omp: TargetApp = {
           apiKey = entry.apiKey;
         }
       }
-      const models = Array.isArray(entry.models)
-        ? (entry.models as Array<Record<string, unknown>>)
-            .map((m) => (typeof m?.id === "string" ? m.id : ""))
-            .filter(Boolean)
-        : [];
-      return [{ id, name: typeof entry.name === "string" ? entry.name : id, protocol, baseUrl: entry.baseUrl, apiKey, keyEnv, models, source: self }];
+      const models = modelEntries.map((m) => (typeof m?.id === "string" ? m.id : "")).filter(Boolean);
+      return [
+        {
+          id,
+          name: typeof entry.name === "string" ? entry.name : id,
+          protocol: wire.protocol,
+          openaiApi: wire.openaiApi,
+          baseUrl: entry.baseUrl,
+          apiKey,
+          keyEnv,
+          models,
+          source: self,
+        },
+      ];
     });
   },
 };

@@ -23,7 +23,7 @@ import { loadStore } from "./store.js";
 import type { Locale } from "./types.js";
 
 // Locale precedence: CLI flag > environment > saved preference > system locale.
-setLocale(extractCliLocale() ?? process.env.SMART_SWITCH_LANG ?? loadStore().language ?? detectSystemLocale());
+setLocale(extractCliLocale() ?? process.env.AGENTSW_LANG ?? loadStore().language ?? detectSystemLocale());
 
 function parseLocale(value: string): Locale {
   const locale = normalizeLocale(value);
@@ -40,7 +40,7 @@ const { version } = JSON.parse(readFileSync(new URL("../package.json", import.me
 };
 
 program
-  .name("smart-switch")
+  .name("agentsw")
   .description(t("root.description"))
   .option("--lang <locale>", t("help.language"), parseLocale)
   .version(version);
@@ -62,6 +62,7 @@ program
   .option("--id <slug>", t("opt.id"))
   .option("--name <name>", t("opt.name"))
   .option("--protocol <p>", t("opt.protocol"))
+  .option("--openai-api <flavor>", t("opt.openaiApi"))
   .option("--base-url <url>", t("opt.baseUrl"))
   .option("--api-key <key>", t("opt.apiKey"))
   .option("--models <ids>", t("opt.models"))

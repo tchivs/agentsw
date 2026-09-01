@@ -1,9 +1,10 @@
 import { loadStore } from "./store.js";
+import { ccSwitchCandidates } from "./sources/ccswitch.js";
 import type { Protocol } from "./types.js";
 import { targets } from "./targets/index.js";
 import type { ProviderCandidate } from "./targets/types.js";
 
-/** candidates merged across apps: same protocol + base URL = one smart-switch provider */
+/** candidates merged across apps: same protocol + base URL = one agentsw provider */
 export interface MergedCandidate extends Omit<ProviderCandidate, "source"> {
   sources: string[];
   /** id of an already-configured provider covering the same protocol + base URL */
@@ -38,6 +39,9 @@ export function mergeCandidates(
     }
     for (const m of c.models) if (!cur.models.includes(m)) cur.models.push(m);
     if (!cur.defaultModel && c.defaultModel) cur.defaultModel = c.defaultModel;
+    // responses wins: an endpoint one app drives over /v1/responses serves it for all of them,
+    // and codex speaks nothing else
+    if (c.openaiApi === "responses" || !cur.openaiApi) cur.openaiApi = c.openaiApi ?? cur.openaiApi;
   }
   const out = [...merged.values()];
   for (const m of out) {
@@ -47,7 +51,7 @@ export function mergeCandidates(
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** scan every detected app config for custom providers and dedupe them */
+/** scan every detected app config — and cc-switch's own store — for custom providers */
 export function scanCandidates(): MergedCandidate[] {
   const rows: ProviderCandidate[] = [];
   for (const t of targets) {
@@ -57,6 +61,11 @@ export function scanCandidates(): MergedCandidate[] {
     } catch {
       // adapter configs that fail to parse are reported by status/apply; skip during scan
     }
+  }
+  try {
+    rows.push(...ccSwitchCandidates());
+  } catch {
+    // a cc-switch store this build cannot read is not this scan's problem
   }
   const store = loadStore();
   return mergeCandidates(

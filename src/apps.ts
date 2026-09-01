@@ -87,6 +87,13 @@ export const appPackages: AppPackage[] = [
       return (r?.version as string | undefined) ?? undefined;
     },
   },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    binary: "dsh",
+    latest: { kind: "npm", name: "@deepseek-ai/dsh" },
+    installCmd: "npm install -g @deepseek-ai/dsh@latest",
+  },
 ];
 
 const SEMVERISH = /\d+\.\d+(\.\d+)?([-.+][\w.-]+)?/;
@@ -130,7 +137,7 @@ export async function latestVersion(app: AppPackage): Promise<string | undefined
       }
       case "github": {
         const data = (await fetchJson(`https://api.github.com/repos/${src.name}/releases/latest`, {
-          "user-agent": "smart-switch",
+          "user-agent": "agentsw",
         })) as { tag_name?: string };
         return data.tag_name ? (SEMVERISH.exec(data.tag_name)?.[0] ?? data.tag_name) : undefined;
       }

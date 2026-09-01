@@ -84,7 +84,7 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
 
 export async function cmdMenu(): Promise<void> {
   if (!loadStore().language) await chooseLanguage();
-  console.log(pc.bold("smart-switch") + pc.dim(t("menu.title")));
+  console.log(pc.bold("agentsw") + pc.dim(t("menu.title")));
   if (Object.keys(loadStore().providers).length === 0) {
     console.log(pc.yellow(t("menu.noProviders")));
     if (await askToggle(t("menu.firstScan"), true)) await cmdImport({});

@@ -1,6 +1,7 @@
 import type { Protocol } from "../types.js";
 import type { TargetApp } from "./types.js";
 import { claudecode } from "./claudecode.js";
+import { dsh } from "./dsh.js";
 import { codex } from "./codex.js";
 import { omp } from "./omp.js";
 import { opencode } from "./opencode.js";
@@ -8,7 +9,7 @@ import { hermes } from "./hermes.js";
 import { pi, prime } from "./pistyle.js";
 import { workbuddy } from "./workbuddy.js";
 
-export const targets: TargetApp[] = [claudecode, codex, omp, pi, prime, opencode, hermes, workbuddy];
+export const targets: TargetApp[] = [claudecode, codex, omp, pi, prime, opencode, hermes, workbuddy, dsh];
 
 export function resolveTargets(filter?: string): TargetApp[] {
   if (!filter || filter === "all") return targets;

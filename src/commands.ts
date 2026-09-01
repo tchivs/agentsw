@@ -9,7 +9,7 @@ import { appPackages, installedVersion, isNewer, latestVersion, runShell } from 
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { t } from "./i18n.js";
-import type { ApplyResult, ModelSpec, Protocol, Provider } from "./types.js";
+import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
 
 function fail(message: string): never {
   process.stderr.write(pc.red(`error: ${message}\n`));
@@ -84,6 +84,7 @@ export interface AddOptions {
   id?: string;
   name?: string;
   protocol?: string;
+  openaiApi?: string;
   baseUrl?: string;
   apiKey?: string;
   models?: string;
@@ -126,6 +127,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
       baseUrl: opts.baseUrl,
       apiKey: opts.apiKey,
       models: opts.models,
+      openaiApi: opts.openaiApi,
     });
     answers = await prompts(
       [
@@ -144,6 +146,18 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
           choices: [
             { title: t("add.openai"), value: "openai" },
             { title: t("add.anthropic"), value: "anthropic" },
+          ],
+        },
+        {
+          // only openai endpoints have two wires; anthropic skips the question
+          type: (_prev: unknown, values: Record<string, unknown>) =>
+            values.protocol === "openai" ? "select" : null,
+          name: "openaiApi",
+          message: t("add.openaiApi"),
+          hint: t("menu.selectInstructions"),
+          choices: [
+            { title: t("add.completions"), value: "completions" },
+            { title: t("add.responses"), value: "responses" },
           ],
         },
         { type: "text", name: "baseUrl", message: t("add.baseUrl"), validate: (v: string) => (/^https?:\/\//.test(v) ? true : t("add.baseUrlInvalid")) },
@@ -170,11 +184,15 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
       baseUrl: opts.baseUrl!,
       apiKey: opts.apiKey!,
       models: opts.models ?? "",
+      ...(opts.openaiApi ? { openaiApi: opts.openaiApi } : {}),
     };
   }
 
   const protocol = answers.protocol as Protocol;
   if (protocol !== "openai" && protocol !== "anthropic") fail(t("add.protocolInvalid"));
+  const wire = answers.openaiApi ?? opts.openaiApi;
+  if (wire && wire !== "completions" && wire !== "responses") fail(t("add.openaiApiInvalid"));
+  const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) : undefined;
   const baseUrl = answers.baseUrl!.replace(/\/+$/, "");
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
@@ -204,6 +222,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     id: answers.id!,
     name: answers.name || answers.id!,
     protocol,
+    ...(openaiApi ? { openaiApi } : {}),
     baseUrl,
     apiKey: answers.apiKey!,
     models,
@@ -409,7 +428,7 @@ export async function cmdModels(
   }
   const catalog = await loadCatalog({ refresh: opts.refresh });
   if (!catalog) fail("models.dev catalog unavailable (offline and no cache)");
-  if (!query) fail("usage: smart-switch models <query> | smart-switch models --provider <id>");
+  if (!query) fail("usage: agentsw models <query> | agentsw models --provider <id>");
   const limit = opts.limit ? Number(opts.limit) : 30;
   const hits = searchCatalog(catalog, query, limit);
   if (hits.length === 0) {
@@ -439,7 +458,7 @@ export async function cmdRefreshMeta(): Promise<void> {
   }
   saveStore(store);
   console.log(pc.green(`refreshed models.dev metadata (${updated} provider(s) changed)`));
-  if (updated > 0) console.log(pc.dim("run `smart-switch sync` to push updated metadata into app configs"));
+  if (updated > 0) console.log(pc.dim("run `agentsw sync` to push updated metadata into app configs"));
 }
 
 export async function cmdDiscover(
@@ -477,7 +496,7 @@ export async function cmdDiscover(
     console.log("");
     await cmdSync({ provider: id, apps: opts.apps });
   } else {
-    console.log(pc.dim("\nrun `smart-switch sync` to push into app configs"));
+    console.log(pc.dim("\nrun `agentsw sync` to push into app configs"));
   }
 }
 
@@ -530,7 +549,7 @@ export async function cmdApps(): Promise<void> {
     ),
   );
   const upgradable = rows.filter((r) => r.upgradable).map((r) => r.id);
-  if (upgradable.length) console.log(pc.dim(`\nupgrade with: smart-switch upgrade ${upgradable.join(" ")}`));
+  if (upgradable.length) console.log(pc.dim(`\nupgrade with: agentsw upgrade ${upgradable.join(" ")}`));
 }
 
 export async function cmdInstall(id: string): Promise<void> {
@@ -539,7 +558,7 @@ export async function cmdInstall(id: string): Promise<void> {
   if (!app.installCmd) fail(`${app.name} is not CLI-installable (desktop app manages itself)`);
   const installed = installedVersion(app);
   if (installed) {
-    console.log(`${app.name} already installed (${installed}); use \`smart-switch upgrade ${id}\``);
+    console.log(`${app.name} already installed (${installed}); use \`agentsw upgrade ${id}\``);
     return;
   }
   console.log(`installing ${app.name}: ${pc.dim(app.installCmd)}`);
@@ -569,7 +588,7 @@ export async function cmdUpgrade(ids: string[]): Promise<void> {
       continue;
     }
     if (!installedVersion(app)) {
-      console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`smart-switch install ${app.id}\`)`);
+      console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`agentsw install ${app.id}\`)`);
       continue;
     }
     console.log(`upgrading ${app.name}: ${pc.dim(cmd)}`);
@@ -685,6 +704,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
       id,
       name: c.name || id,
       protocol: c.protocol,
+      ...(c.openaiApi ? { openaiApi: c.openaiApi } : {}),
       baseUrl: normalizeUrl(c.baseUrl),
       apiKey: apiKey!,
       models,

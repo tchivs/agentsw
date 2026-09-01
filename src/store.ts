@@ -2,7 +2,7 @@ import path from "node:path";
 import { home, readJsonIfExists, writeFileAtomic } from "./fsutil.js";
 import type { Provider, Store } from "./types.js";
 
-export const configDir = path.join(home, ".config", "smart-switch");
+export const configDir = path.join(home, ".config", "agentsw");
 export const configFile = path.join(configDir, "config.json");
 
 export function loadStore(): Store {
@@ -21,7 +21,7 @@ export function getProvider(store: Store, id: string): Provider {
   if (!p) {
     const known = Object.keys(store.providers);
     throw new Error(
-      `unknown provider "${id}"${known.length ? ` (known: ${known.join(", ")})` : " (none configured; run: smart-switch add)"}`,
+      `unknown provider "${id}"${known.length ? ` (known: ${known.join(", ")})` : " (none configured; run: agentsw add)"}`,
     );
   }
   return p;

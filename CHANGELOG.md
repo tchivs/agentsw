@@ -6,6 +6,53 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-02
+
+### Changed
+
+- **Renamed to `agentsw`** (was `smart-switch`, which collided with home-automation
+  switches and React switch components in every search). Binaries are `agentsw` and
+  `asw`; the store moves to `~/.config/agentsw/`, the locale override becomes
+  `AGENTSW_LANG`, and generated credential references become `AGENTSW_<ID>_API_KEY`.
+  A clean cutover — the old name has no released users to migrate.
+
+### Added
+
+- DeepSeek Harness (`dsh`) adapter: writes the `llm-pi-ai` provider route and the
+  `agent-default-model` selection into `$DSH_HOME/settings.yaml` (default `~/.dsh`),
+  stores the key as a credential reference in `$DSH_HOME/.credentials.yaml` (mode 0600,
+  pre-release flat documents migrated to the version 1 layout), imports existing routes,
+  and joins the apps manager (`npm i -g @deepseek-ai/dsh`).
+
+- OpenAI Responses wire support for omp/pi/prime/dsh providers: `openai-responses`
+  (plus the Azure/Codex variants) is recognized on import — provider-level or
+  declared on the models — persisted per provider and written back on sync. New
+  `agentsw add --openai-api <completions|responses>`, also asked interactively.
+
+- `import` also reads cc-switch's own provider store (`~/.cc-switch/cc-switch.db`,
+  opened read-only, never written back): its Claude env blocks, Codex `config.toml`
+  payloads and pi-family rows all become candidates, deduped against the same
+  providers found in the agents' configs.
+
+### Fixed
+
+- Import no longer skips omp/pi/prime providers whose `api` is `openai-responses`;
+  previously only `openai-completions` and `anthropic-messages` entries were seen,
+  so responses-only reseller endpoints were invisible to agentsw.
+- Sync no longer drops provider-level keys agentsw does not model when
+  rewriting an existing provider entry — omp/pi/prime (`authHeader`, `headers`,
+  `compat`, `auth`, `discovery`, ...), opencode (`options.headers`, per-model
+  fields) and Hermes — or per-model extras such as `thinkingLevelMap`. Only the
+  fields agentsw owns are overwritten, and an existing responses wire is
+  never downgraded to chat completions.
+- A re-sync now clears the per-model keys agentsw owns but no longer emits
+  (a stale `thinkingLevelMap` beside `reasoning: false`, sizes the catalog dropped),
+  removes `disableStrictTools` when a provider is re-applied on an openai wire, and
+  drops per-model `api`/`baseUrl` overrides that contradict the route it just wrote
+  (they would silently win over the provider entry). Dropped overrides are reported.
+- A provider whose models declare different wire protocols is skipped on import
+  instead of being adopted under the first model's protocol.
+
 ## [0.3.0] - 2026-08-30
 
 ### Added
@@ -15,9 +62,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   candidates; merge duplicates by normalized base URL + wire protocol while
   preserving different protocols on the same host; union model ids/source apps;
   resolve inline/env-backed API keys; enrich imported models from models.dev.
-  Available from the empty-store menu and `smart-switch import [--all]`.
+  Available from the empty-store menu and `agentsw import [--all]`.
 - English / 简体中文 CLI i18n: first-run language selection, persisted menu
-  preference, system-locale auto-detection, `SMART_SWITCH_LANG` and `--lang`
+  preference, system-locale auto-detection, `AGENTSW_LANG` and `--lang`
   overrides, plus localized help, provider add/import prompts, and core menu
   command output.
 
@@ -25,8 +72,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Interactive main menu on bare invocation — `npx smart-switch` (zero install) or
-  `smart-switch` with no arguments: add/update a provider via guided prompts
+- Interactive main menu on bare invocation — `npx agentsw` (zero install) or
+  `agentsw` with no arguments: add/update a provider via guided prompts
   (protocol, base URL, API key, discover-or-manual model list), switch providers
   (with optional default-model override), status, list, sync, discover,
   remove, and agent version check/upgrade. Non-TTY bare invocation prints help.
@@ -68,8 +115,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/smart-switch/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/tchivs/smart-switch/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/tchivs/smart-switch/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/tchivs/smart-switch/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/tchivs/smart-switch/releases/tag/v0.1.0
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tchivs/agentsw/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/tchivs/agentsw/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/tchivs/agentsw/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/tchivs/agentsw/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/tchivs/agentsw/releases/tag/v0.1.0
