@@ -1,27 +1,30 @@
 {
-  "name": "smart-switch",
+  "name": "agentsw",
   "version": "0.3.0",
-  "description": "Multi-app model provider switcher: manage OpenAI/Anthropic-protocol providers and sync them into claude code, codex, omp, pi, prime-agent, opencode, hermes, workbuddy",
+  "description": "CLI provider switcher for coding agents: manage OpenAI/Anthropic-protocol providers in one place and sync them, with models.dev metadata, into Claude Code, Codex, omp, pi, prime-agent, opencode, Hermes, WorkBuddy and DeepSeek Harness",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tchivs/smart-switch.git"
+    "url": "git+https://github.com/tchivs/agentsw.git"
   },
-  "homepage": "https://github.com/tchivs/smart-switch#readme",
-  "bugs": "https://github.com/tchivs/smart-switch/issues",
+  "homepage": "https://github.com/tchivs/agentsw#readme",
+  "bugs": "https://github.com/tchivs/agentsw/issues",
   "keywords": [
     "cli",
+    "coding-agent",
     "model-provider",
+    "provider-switcher",
     "claude-code",
     "codex",
     "opencode",
+    "deepseek-harness",
     "models.dev",
     "cc-switch"
   ],
   "license": "MIT",
   "bin": {
-    "smart-switch": "dist/index.js",
-    "ssw": "dist/index.js"
+    "agentsw": "dist/index.js",
+    "asw": "dist/index.js"
   },
   "files": [
     "dist"

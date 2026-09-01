@@ -52,7 +52,7 @@ export function writeFileAtomic(file: string, content: string, mode?: number): v
   fs.renameSync(tmp, file);
 }
 
-export const backupsDir = path.join(home, ".config", "smart-switch", "backups");
+export const backupsDir = path.join(home, ".config", "agentsw", "backups");
 
 /** Copy `file` into the backups dir with a timestamp suffix. No-op if file missing. */
 export function backupFile(file: string): string | undefined {

@@ -4,6 +4,19 @@ import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.j
 import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
+import { apiValue, classifyApi, entryApi, mergeModels, stripConflictingOverrides } from "./wire.js";
+
+/** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
+const OWNED_MODEL_KEYS = [
+  "id",
+  "name",
+  "reasoning",
+  "thinkingLevelMap",
+  "input",
+  "contextWindow",
+  "maxTokens",
+  "cost",
+] as const;
 
 /**
  * pi-family agents (pi, prime-agent) share the same config layout:
@@ -44,16 +57,19 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       const modelsFile = path.join(dir, "models.json");
       const settingsFile = path.join(dir, "settings.json");
       const notes: string[] = [];
-      const anthropic = provider.protocol === "anthropic";
 
       const modelsConfig = readJsonIfExists<Record<string, unknown>>(modelsFile) ?? {};
       const providers = { ...(modelsConfig.providers as Record<string, unknown> | undefined) };
-      providers[provider.id] = {
-        name: provider.name,
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey, // literal key; pi treats "$VAR"/"!cmd" as indirection, prime also accepts bare env names
-        api: anthropic ? "anthropic-messages" : "openai-completions",
-        models: provider.models.map((m) => ({
+      // Keys agentsw does not model (headers, authHeader, oauth, ...) and per-model extras
+      // are the user's; a re-sync overwrites only the fields it owns.
+      const existing = providers[provider.id];
+      const prev = (existing && typeof existing === "object" && !Array.isArray(existing)
+        ? existing
+        : {}) as Record<string, unknown>;
+      const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev));
+      const models = mergeModels(
+        prev.models,
+        provider.models.map((m) => ({
           id: m.id,
           ...(m.name ? { name: m.name } : {}),
           ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
@@ -74,6 +90,17 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
               }
             : {}),
         })),
+        OWNED_MODEL_KEYS,
+      );
+      const conflicts = stripConflictingOverrides(models, api, provider.baseUrl);
+      if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
+      providers[provider.id] = {
+        ...prev,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey, // literal key; pi treats "$VAR"/"!cmd" as indirection, prime also accepts bare env names
+        api,
+        models,
       };
       modelsConfig.providers = providers;
 
@@ -136,9 +163,10 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       const self = opts.id;
       return Object.entries(mc.providers).flatMap(([id, entry]) => {
         if (!entry || typeof entry.baseUrl !== "string") return [];
-        const protocol =
-          entry.api === "anthropic-messages" ? "anthropic" : entry.api === "openai-completions" ? "openai" : undefined;
-        if (!protocol) return [];
+        const modelEntries = Array.isArray(entry.models) ? (entry.models as Array<Record<string, unknown>>) : [];
+        // pi takes `api` at provider level or on every model; a mixed-protocol entry is skipped.
+        const wire = classifyApi(entryApi(entry));
+        if (!wire) return [];
         let apiKey: string | undefined;
         let keyEnv: string | undefined;
         const raw = typeof entry.apiKey === "string" && entry.apiKey ? entry.apiKey : undefined;
@@ -154,11 +182,7 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
             apiKey = raw;
           }
         }
-        const models = Array.isArray(entry.models)
-          ? (entry.models as Array<Record<string, unknown>>)
-              .map((m) => (typeof m?.id === "string" ? m.id : ""))
-              .filter(Boolean)
-          : [];
+        const models = modelEntries.map((m) => (typeof m?.id === "string" ? m.id : "")).filter(Boolean);
         const defaultModel =
           settings?.defaultProvider === id && settings?.defaultModel ? settings.defaultModel : undefined;
         if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
@@ -166,7 +190,8 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
           {
             id,
             name: typeof entry.name === "string" ? entry.name : id,
-            protocol,
+            protocol: wire.protocol,
+            openaiApi: wire.openaiApi,
             baseUrl: entry.baseUrl,
             apiKey,
             keyEnv,

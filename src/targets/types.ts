@@ -1,8 +1,8 @@
-import type { ApplyResult, Protocol, Provider } from "../types.js";
+import type { ApplyResult, OpenAIApi, Protocol, Provider } from "../types.js";
 
 /**
  * A custom provider discovered inside an app's own config file, surfaced by
- * `smart-switch import`. Adapters must resolve literal keys where the config
+ * `agentsw import`. Adapters must resolve literal keys where the config
  * stores them inline or via a set env var; otherwise leave apiKey undefined
  * and report the referenced name in keyEnv.
  */
@@ -11,6 +11,8 @@ export interface ProviderCandidate {
   id: string;
   name: string;
   protocol: Protocol;
+  /** OpenAI wire flavor the app config declares (`openai-responses` family vs chat completions) */
+  openaiApi?: OpenAIApi;
   baseUrl: string;
   apiKey?: string;
   /** env var name the config references when no literal key was resolvable */

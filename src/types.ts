@@ -1,6 +1,8 @@
 import type { ModelFilter } from "./filter.js";
 
 export type Protocol = "openai" | "anthropic";
+/** OpenAI-protocol endpoint flavor: chat completions (`/v1/chat/completions`) or responses (`/v1/responses`). */
+export type OpenAIApi = "completions" | "responses";
 export type Locale = "en" | "zh-CN";
 
 /** Per-model metadata, enriched from models.dev when available. */
@@ -42,6 +44,11 @@ export interface Provider {
   smallModel?: string;
   /** preferred reasoning effort for apps that support it (codex model_reasoning_effort) */
   reasoningEffort?: string;
+  /**
+   * OpenAI wire flavor for openai-protocol providers: `/v1/chat/completions` vs `/v1/responses`.
+   * Undefined means unspecified — adapters keep whatever the app config already had.
+   */
+  openaiApi?: OpenAIApi;
   /** models.dev provider id used to enrich model metadata */
   modelsDevId?: string;
   /** persisted discovery filter (re-applied on every `discover`) */

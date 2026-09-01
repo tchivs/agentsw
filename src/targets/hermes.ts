@@ -39,23 +39,31 @@ export const hermes: TargetApp = {
       throw new Error(`${configFile} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
     }
     if (doc.contents == null) doc.contents = doc.createNode({});
-
-    const keyVar = `SMART_SWITCH_${provider.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+    const keyVar = `AGENTSW_${provider.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+    const at = ["providers", provider.id];
+    const prev = (doc.getIn(at) as YAML.YAMLMap | undefined)?.toJSON?.() as Record<string, unknown> | undefined;
+    const prevModels = (prev?.models ?? {}) as Record<string, Record<string, unknown>>;
     const models: Record<string, unknown> = {};
     for (const m of provider.models) {
-      models[m.id] = m.contextWindow ? { context_length: m.contextWindow } : {};
+      const old = { ...prevModels[m.id] };
+      delete old.context_length; // owned: a model that loses its size must not keep the old one
+      models[m.id] = { ...old, ...(m.contextWindow ? { context_length: m.contextWindow } : {}) };
     }
-    doc.setIn(
-      ["providers", provider.id],
-      doc.createNode({
-        name: provider.name,
-        api: provider.baseUrl,
-        key_env: keyVar,
-        transport: provider.protocol === "anthropic" ? "anthropic_messages" : "chat_completions",
-        default_model: provider.defaultModel,
-        models,
-      }),
-    );
+    const entry: Record<string, unknown> = {
+      name: provider.name,
+      api: provider.baseUrl,
+      key_env: keyVar,
+      transport: provider.protocol === "anthropic" ? "anthropic_messages" : "chat_completions",
+      default_model: provider.defaultModel,
+      models,
+    };
+    // Key-by-key when the route exists: provider-level keys agentsw does not model
+    // (and their comments) belong to the user.
+    if (YAML.isMap(doc.getIn(at))) {
+      for (const [key, value] of Object.entries(entry)) doc.setIn([...at, key], doc.createNode(value));
+    } else {
+      doc.setIn(at, doc.createNode(entry));
+    }
     doc.setIn(["model", "provider"], provider.id);
     doc.setIn(["model", "default"], provider.defaultModel);
 
@@ -107,7 +115,7 @@ export const hermes: TargetApp = {
     if (configBackup) notes.push(`backup: ${configBackup}`);
     writeFileAtomic(configFile, doc.toString());
 
-    const keyVar = `SMART_SWITCH_${provider.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+    const keyVar = `AGENTSW_${provider.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
     const envText = readTextIfExists(envFile);
     if (envText && new RegExp(`^${keyVar}=`, "m").test(envText)) {
       const envBackup = backupFile(envFile);
