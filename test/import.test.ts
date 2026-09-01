@@ -172,3 +172,37 @@ test("cc-switch's own store imports, one row shape per managed app", async () =>
   assert.deepEqual(gateway.sources.sort(), ["cc-switch", "omp"]);
   assert.deepEqual(gateway.models, ["model-a", "model-b", "model-c"]);
 });
+
+test("a base URL with and without the /v1 segment is one provider", () => {
+  // Codex (and cc-switch's Codex rows) leave `/v1` off because the client appends it;
+  // omp/pi/opencode carry it. Both name the same upstream.
+  const merged = mergeCandidates(
+    [
+      { id: "sub", name: "sub", protocol: "openai", openaiApi: "responses", baseUrl: "https://new.vfing.de", apiKey: "sk-codex", models: ["gpt-5.6-sol"], source: "cc-switch" },
+      { id: "sub", name: "sub", protocol: "openai", baseUrl: "https://new.vfing.de/v1", apiKey: "sk-omp", models: ["glm-5.3-flash"], source: "omp" },
+    ],
+    [],
+  );
+  assert.equal(merged.length, 1, "the /v1 suffix must not split one endpoint in two");
+  assert.equal(merged[0]!.baseUrl, "https://new.vfing.de/v1", "the variant naming the version wins");
+  assert.deepEqual(merged[0]!.sources.sort(), ["cc-switch", "omp"]);
+  assert.deepEqual(merged[0]!.models, ["gpt-5.6-sol", "glm-5.3-flash"]);
+  assert.equal(merged[0]!.openaiApi, "responses");
+
+  // an already-configured provider is recognized across the same difference
+  const again = mergeCandidates(
+    [{ id: "sub", name: "sub", protocol: "openai", baseUrl: "https://new.vfing.de", models: [], source: "cc-switch" }],
+    [{ id: "vfing", protocol: "openai", baseUrl: "https://new.vfing.de/v1" }],
+  );
+  assert.equal(again[0]!.configured, "vfing");
+
+  // a different protocol on the same host still stays its own provider
+  const split = mergeCandidates(
+    [
+      { id: "a", name: "a", protocol: "openai", baseUrl: "https://new.vfing.de/v1", models: [], source: "omp" },
+      { id: "b", name: "b", protocol: "anthropic", baseUrl: "https://new.vfing.de", models: [], source: "omp" },
+    ],
+    [],
+  );
+  assert.equal(split.length, 2);
+});

@@ -39,6 +39,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Import no longer skips omp/pi/prime providers whose `api` is `openai-responses`;
   previously only `openai-completions` and `anthropic-messages` entries were seen,
   so responses-only reseller endpoints were invisible to agentsw.
+- Import dedupe now spans the `/v1` segment: omp/pi/opencode keep it in the base URL
+  while Codex leaves it off (the client appends it), so the same reseller used to be
+  imported twice — `sub` and `sub-2`. One endpoint is now one provider, and the
+  variant naming the API version is the one stored.
 - Sync no longer drops provider-level keys agentsw does not model when
   rewriting an existing provider entry — omp/pi/prime (`authHeader`, `headers`,
   `compat`, `auth`, `discovery`, ...), opencode (`options.headers`, per-model

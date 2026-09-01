@@ -15,7 +15,18 @@ export function normalizeUrl(u: string): string {
   return u.replace(/\/+$/, "");
 }
 
-const matchKey = (protocol: Protocol, baseUrl: string) => `${protocol}|${normalizeUrl(baseUrl)}`;
+/** True when a base URL already names the API version, e.g. `.../v1`. */
+const hasApiVersion = (baseUrl: string) => /\/v\d+(?:beta\d*)?$/i.test(baseUrl);
+
+/**
+ * Endpoint identity for dedupe. Apps disagree about who owns the `/v1` segment:
+ * omp/pi/opencode store it in the base URL, while Codex (and cc-switch's Codex
+ * rows) leave it off because the client appends it. `https://host` and
+ * `https://host/v1` on one protocol are the same upstream, so they must merge
+ * into one provider instead of importing twice.
+ */
+const matchKey = (protocol: Protocol, baseUrl: string) =>
+  `${protocol}|${normalizeUrl(baseUrl).replace(/\/v\d+(?:beta\d*)?$/i, "")}`;
 
 /** pure merge: dedupe candidates by protocol+baseUrl, union models, keep first resolved key */
 export function mergeCandidates(
@@ -39,6 +50,9 @@ export function mergeCandidates(
     }
     for (const m of c.models) if (!cur.models.includes(m)) cur.models.push(m);
     if (!cur.defaultModel && c.defaultModel) cur.defaultModel = c.defaultModel;
+    // keep the variant that names the API version: model discovery and most adapters
+    // need the full endpoint, and only Codex fills the segment in itself
+    if (!hasApiVersion(cur.baseUrl) && hasApiVersion(normalizeUrl(c.baseUrl))) cur.baseUrl = normalizeUrl(c.baseUrl);
     // responses wins: an endpoint one app drives over /v1/responses serves it for all of them,
     // and codex speaks nothing else
     if (c.openaiApi === "responses" || !cur.openaiApi) cur.openaiApi = c.openaiApi ?? cur.openaiApi;
