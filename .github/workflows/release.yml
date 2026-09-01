@@ -35,7 +35,18 @@ jobs:
       # package Settings -> Trusted Publisher -> GitHub Actions, repo tchivs/agentsw,
       # workflow release.yml). Provenance is generated automatically.
       - run: npm publish --access public
+      # The changelog entry is the release note; the auto-generated commit list is
+      # appended below it. Without this the body is just a compare link.
+      - name: Slice the changelog entry for this tag
+        run: |
+          awk -v tag="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" tag "\\]" { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          test -s RELEASE_NOTES.md || echo "No changelog entry for $GITHUB_REF_NAME." > RELEASE_NOTES.md
       - name: GitHub release
         uses: softprops/action-gh-release@v3
         with:
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
