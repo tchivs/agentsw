@@ -4,10 +4,11 @@ import { loadStore, saveStore, getProvider, configFile } from "./store.js";
 import { scanCandidates, normalizeUrl, type MergedCandidate } from "./import.js";
 import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
-import { discoverProviderModels } from "./discover.js";
-import { appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
+import { discoverProviderModels, probeProtocols } from "./discover.js";
+import { appCommand, appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
+import { slugFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
 
@@ -59,6 +60,14 @@ function modelRows(models: ModelSpec[]): string[][] {
 }
 
 const MODEL_HEADER = ["MODEL", "CTX", "IN", "OUT", "REASONING", "$IN/$OUT per M"];
+
+/** Print a dim hint when some models have no models.dev metadata. */
+function printUncatalogedHint(models: ModelSpec[]): void {
+  const bare = models.filter((m) => m.contextWindow === undefined && !m.cost);
+  if (bare.length > 0) {
+    console.log(pc.dim(`${bare.length} model(s) have no models.dev metadata (shown as "-")`));
+  }
+}
 
 /** Guess the models.dev provider whose API host matches the configured baseUrl. */
 function guessProviderHint(catalog: Catalog | undefined, baseUrl: string): string | undefined {
@@ -197,7 +206,11 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
   const modelFilter = parseFilterOpts(opts);
-  if (opts.discover) {
+  const shouldDiscover = opts.discover || manualIds.length === 0;
+  if (shouldDiscover) {
+    if (!opts.discover) {
+      process.stderr.write(pc.dim(t("add.autoDiscover") + "\n"));
+    }
     process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })}\n`));
     const discovered = await discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol });
     console.log(t("add.providerLists", { count: discovered.length }));
@@ -242,7 +255,154 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
   console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
   console.log(table(modelRows(models), MODEL_HEADER));
+  printUncatalogedHint(models);
   console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
+}
+
+/** Shared logic to create and save a single provider from discovered models. */
+async function createProvider(opts: {
+  store: ReturnType<typeof loadStore>;
+  id: string;
+  name: string;
+  protocol: Protocol;
+  openaiApi?: OpenAIApi;
+  baseUrl: string;
+  apiKey: string;
+  modelIds: string[];
+  defaultModel?: string;
+  smallModel?: string;
+  reasoningEffort?: string;
+  modelFilter?: ModelFilter;
+}): Promise<Provider> {
+  const { store, id, name, protocol, openaiApi, baseUrl, apiKey, modelIds, modelFilter } = opts;
+  const catalog = await loadCatalog();
+  const hint = guessProviderHint(catalog, baseUrl);
+  const models = enrichModels(catalog, modelIds, hint);
+  const matched = models.filter((m) => m.contextWindow !== undefined).length;
+  const defaultModel = opts.defaultModel ?? modelIds[0]!;
+  if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
+
+  const provider: Provider = {
+    id,
+    name,
+    protocol,
+    ...(openaiApi ? { openaiApi } : {}),
+    baseUrl,
+    apiKey,
+    models,
+    defaultModel,
+    smallModel: opts.smallModel,
+    reasoningEffort: opts.reasoningEffort,
+    modelsDevId: hint,
+    modelFilter,
+  };
+
+  const existed = store.providers[provider.id] !== undefined;
+  store.providers[provider.id] = provider;
+  if (!store.active) store.active = provider.id;
+
+  const savedStatus = t(existed ? "add.updated" : "add.added");
+  console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
+  console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
+  console.log(table(modelRows(models), MODEL_HEADER));
+  printUncatalogedHint(models);
+  return provider;
+}
+
+/**
+ * Quick add: only base URL + API key needed. Auto-detects protocol(s) by probing
+ * /v1/models with both openai and anthropic auth headers. When both succeed,
+ * creates two providers with -openai / -anthropic suffixes.
+ */
+export async function cmdQuickAdd(opts: {
+  baseUrl?: string;
+  apiKey?: string;
+  id?: string;
+  defaultModel?: string;
+  smallModel?: string;
+  reasoningEffort?: string;
+  include?: string;
+  exclude?: string;
+  dedup?: boolean;
+  yes?: boolean;
+}): Promise<void> {
+  const store = loadStore();
+  const interactive = process.stdin.isTTY && !opts.yes;
+
+  let baseUrl: string;
+  let apiKey: string;
+  let baseId: string;
+
+  if (interactive) {
+    const answers = await prompts(
+      [
+        { type: "text", name: "baseUrl", message: t("add.baseUrl"), validate: (v: string) => (/^https?:\/\//.test(v) ? true : t("add.baseUrlInvalid")) },
+        { type: "password", name: "apiKey", message: t("add.apiKey") },
+      ],
+      { onCancel: () => fail(t("add.cancelled")) },
+    );
+    baseUrl = answers.baseUrl.replace(/\/+$/, "");
+    apiKey = answers.apiKey;
+    baseId = opts.id ?? slugFromBaseUrl(baseUrl);
+  } else {
+    if (!opts.baseUrl) fail(t("add.fieldRequired", { field: "base-url" }));
+    if (!opts.apiKey) fail(t("add.fieldRequired", { field: "api-key" }));
+    baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    apiKey = opts.apiKey;
+    baseId = opts.id ?? slugFromBaseUrl(baseUrl);
+  }
+
+  process.stderr.write(pc.dim(t("quick.probing", { url: baseUrl }) + "\n"));
+  const protocols = await probeProtocols({ baseUrl, apiKey });
+
+  if (protocols.length === 0) {
+    fail(t("quick.noProtocol"));
+  }
+
+  const modelFilter = parseFilterOpts(opts);
+  const multi = protocols.length > 1;
+  const createdIds: string[] = [];
+
+  for (const protocol of protocols) {
+    const suffix = multi ? `-${protocol}` : "";
+    const id = `${baseId}${suffix}`;
+    const name = multi ? `${baseId} (${protocol})` : baseId;
+
+    process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })} [${protocol}]\n`));
+    const discovered = await discoverProviderModels({ baseUrl, apiKey, protocol });
+    console.log(t("add.providerLists", { count: discovered.length }));
+
+    let modelIds = discovered;
+    const pinned = [...(opts.defaultModel ? [opts.defaultModel] : [])];
+    const outcome = applyModelFilter(modelIds, modelFilter, pinned);
+    reportDropped(outcome.dropped);
+    modelIds = outcome.kept;
+    if (modelIds.length === 0) {
+      console.log(pc.yellow(t("quick.noModelsAfterFilter", { id })));
+      continue;
+    }
+
+    const provider = await createProvider({
+      store,
+      id,
+      name,
+      protocol,
+      baseUrl,
+      apiKey,
+      modelIds,
+      defaultModel: opts.defaultModel,
+      smallModel: opts.smallModel,
+      reasoningEffort: opts.reasoningEffort,
+      modelFilter,
+    });
+    createdIds.push(provider.id);
+    console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
+  }
+
+  saveStore(store);
+  if (createdIds.length > 0) {
+    console.log(pc.green(t("quick.summary", { count: createdIds.length, ids: createdIds.join(", ") })));
+  }
 }
 
 export function cmdList(): void {
@@ -424,6 +584,7 @@ export async function cmdModels(
     const provider = getProvider(store, opts.provider);
     console.log(`${pc.bold(provider.id)} (${provider.protocol}) · ${provider.baseUrl}`);
     console.log(table(modelRows(provider.models), MODEL_HEADER));
+    printUncatalogedHint(provider.models);
     return;
   }
   const catalog = await loadCatalog({ refresh: opts.refresh });
@@ -492,6 +653,7 @@ export async function cmdDiscover(
       (gone.length ? `\n  removed upstream: ${gone.join(", ")}` : ""),
   );
   console.log(table(modelRows(provider.models), MODEL_HEADER));
+  printUncatalogedHint(provider.models);
   if (opts.sync) {
     console.log("");
     await cmdSync({ provider: id, apps: opts.apps });
@@ -516,13 +678,14 @@ async function collectAppRows(): Promise<AppRow[]> {
         Promise.resolve(installedVersion(app)),
         latestVersion(app),
       ]);
+      const knownInstalled = !!installed && installed !== "?";
       return {
         id: app.id,
         name: app.name,
         installed,
         latest,
-        upgradable: !!installed && installed !== "?" && !!latest && isNewer(installed, latest),
-        installable: !installed && !!app.installCmd,
+        upgradable: knownInstalled && !!latest && isNewer(installed!, latest),
+        installable: !installed && !!appCommand(app, "install"),
       };
     }),
   );
@@ -539,11 +702,13 @@ export async function cmdApps(): Promise<void> {
         r.latest ?? pc.dim("?"),
         r.upgradable
           ? pc.yellow("upgrade available")
-          : r.installed
-            ? pc.green("up to date")
-            : r.installable
+          : !r.installed
+            ? r.installable
               ? pc.dim("installable")
-              : pc.dim("-"),
+              : pc.dim("-")
+            : r.installed === "?" || !r.latest
+              ? pc.dim("unknown")
+              : pc.green("up to date"),
       ]),
       ["APP", "INSTALLED", "LATEST", "STATUS"],
     ),
@@ -555,14 +720,15 @@ export async function cmdApps(): Promise<void> {
 export async function cmdInstall(id: string): Promise<void> {
   const app = appPackages.find((a) => a.id === id);
   if (!app) fail(`unknown app "${id}" (supported: ${appPackages.map((a) => a.id).join(", ")})`);
-  if (!app.installCmd) fail(`${app.name} is not CLI-installable (desktop app manages itself)`);
+  const installCmd = appCommand(app, "install");
+  if (!installCmd) fail(`${app.name} is not installable on ${process.platform} (or is managed by its desktop app)`);
   const installed = installedVersion(app);
   if (installed) {
     console.log(`${app.name} already installed (${installed}); use \`agentsw upgrade ${id}\``);
     return;
   }
-  console.log(`installing ${app.name}: ${pc.dim(app.installCmd)}`);
-  runShell(app.installCmd);
+  console.log(`installing ${app.name}: ${pc.dim(installCmd)}`);
+  runShell(installCmd);
   console.log(pc.green(`${app.name} installed: ${installedVersion(app) ?? "version unknown"}`));
 }
 
@@ -582,7 +748,7 @@ export async function cmdUpgrade(ids: string[]): Promise<void> {
     selected = appPackages.filter((a) => upgradable.includes(a.id));
   }
   for (const app of selected) {
-    const cmd = app.upgradeCmd ?? app.installCmd;
+    const cmd = appCommand(app, "upgrade");
     if (!cmd) {
       console.log(`${pc.yellow("skip")} ${app.id}: not CLI-upgradable`);
       continue;

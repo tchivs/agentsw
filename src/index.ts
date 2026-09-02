@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import {
   cmdAdd,
+  cmdQuickAdd,
   cmdApps,
   cmdDiscover,
   cmdImport,
@@ -76,6 +77,21 @@ program
   .option("--models-dev <id>", t("opt.modelsDev"))
   .option("-y, --yes", t("opt.yes"))
   .action(cmdAdd);
+
+program
+  .command("quick")
+  .description(t("cmd.quick"))
+  .option("--id <slug>", t("opt.id"))
+  .option("--base-url <url>", t("opt.baseUrl"))
+  .option("--api-key <key>", t("opt.apiKey"))
+  .option("--default-model <id>", t("opt.defaultModel"))
+  .option("--small-model <id>", t("opt.smallModel"))
+  .option("--reasoning-effort <level>", t("opt.reasoning"))
+  .option("--include <globs>", t("opt.include"))
+  .option("--exclude <globs>", t("opt.exclude"))
+  .option("--no-dedup", t("opt.noDedup"))
+  .option("-y, --yes", t("opt.yes"))
+  .action(cmdQuickAdd);
 
 program.command("list").alias("ls").description(t("cmd.list")).action(cmdList);
 

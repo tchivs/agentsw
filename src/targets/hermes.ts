@@ -1,17 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
   const env = process.env.HERMES_HOME?.trim();
   if (env) return env;
-  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, "hermes");
+  if (process.platform === "win32") {
+    return localAppDataDir("hermes");
   }
-  return path.join(process.env.HOME ?? "", ".hermes");
+  return path.join(home, ".hermes");
 }
 
 /**

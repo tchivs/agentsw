@@ -65,6 +65,11 @@ npx agentsw               # zero install: opens the interactive menu
 npm install -g agentsw    # requires Node >= 22.12
 ```
 
+The provider sync and config management work on Linux, macOS, and Windows. On Windows,
+agentsw stores its own state under `%APPDATA%\agentsw`; native app-data locations are
+used for agents that require them. Set `AGENTSW_HOME` when running from Git Bash/WSL or
+when a portable home directory is desired.
+
 ## Quick start
 
 ```bash
@@ -195,7 +200,11 @@ asw remove myproxy --prune
   `apiKeyEnv: AGENTSW_<ID>_API_KEY`, the key goes into `$DSH_HOME/.credentials.yaml`
   (`refs:`, mode 0600). `$DSH_HOME` defaults to `~/.dsh`.
 - cc-switch's database is opened read-only and never written to.
-- The apps manager (install/upgrade) currently targets macOS/Linux.
+- The apps manager supports native Windows commands for Claude Code, Codex CLI, pi,
+  opencode, Hermes, and DeepSeek Harness. Oh My Pi and prime-agent still need their own
+  Windows installation method; WorkBuddy is installed and updated by its desktop app.
+- `OPENCODE_CONFIG_DIR`, `WORKBUDDY_CONFIG_DIR`, `CODEBUDDY_CONFIG_DIR`, `HERMES_HOME`,
+  and `DSH_HOME` can override native config locations.
 
 ## Language
 

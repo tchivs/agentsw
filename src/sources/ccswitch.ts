@@ -2,14 +2,16 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { home } from "../fsutil.js";
+import { appDataDir, home } from "../fsutil.js";
 import { slugFromBaseUrl } from "../slug.js";
 import type { OpenAIApi, Protocol } from "../types.js";
 import type { ProviderCandidate } from "../targets/types.js";
 import { classifyApi } from "../targets/wire.js";
 
 /** cc-switch (the Tauri desktop switcher) keeps every managed app's providers in one SQLite file. */
-const storeFile = path.join(home, ".cc-switch", "cc-switch.db");
+const storeFile = process.platform === "win32" && !process.env.AGENTSW_HOME
+  ? path.join(appDataDir("cc-switch"), "cc-switch.db")
+  : path.join(home, ".cc-switch", "cc-switch.db");
 
 /** Source id shown in the `import` preview. */
 export const CC_SWITCH_SOURCE = "cc-switch";

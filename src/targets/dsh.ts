@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { backupFile, expandHome, home, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, expandHome, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, mergeModels } from "./wire.js";
@@ -9,7 +9,7 @@ import { apiValue, classifyApi, mergeModels } from "./wire.js";
 /** `$DSH_HOME`, or `~/.dsh` (packages/util/home-paths `resolveDshHome`). */
 function dshHome(): string {
   const env = process.env.DSH_HOME?.trim();
-  return env ? expandHome(env) : path.join(home, ".dsh");
+  return env ? expandHome(env) : process.platform === "win32" ? localAppDataDir("dsh") : path.join(home, ".dsh");
 }
 
 /**

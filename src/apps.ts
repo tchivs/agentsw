@@ -1,7 +1,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { home, readJsonIfExists } from "./fsutil.js";
+import { appDataDir, home, readJsonIfExists } from "./fsutil.js";
 
 export interface AppPackage {
   id: string;
@@ -15,6 +15,10 @@ export interface AppPackage {
   installCmd?: string;
   /** shell command that upgrades it (defaults to installCmd) */
   upgradeCmd?: string;
+  /** native Windows installer; absent means this app is not installable on Windows */
+  windowsInstallCmd?: string;
+  /** native Windows upgrader; defaults to windowsInstallCmd */
+  windowsUpgradeCmd?: string;
   /** fallback local version probe for non-CLI apps */
   localVersion?: () => string | undefined;
 }
@@ -27,6 +31,7 @@ export const appPackages: AppPackage[] = [
     latest: { kind: "npm", name: "@anthropic-ai/claude-code" },
     installCmd: "curl -fsSL https://claude.ai/install.sh | bash",
     upgradeCmd: "claude update",
+    windowsInstallCmd: "npm install -g @anthropic-ai/claude-code@latest",
   },
   {
     id: "codex",
@@ -34,6 +39,7 @@ export const appPackages: AppPackage[] = [
     binary: "codex",
     latest: { kind: "npm", name: "@openai/codex" },
     installCmd: "npm install -g @openai/codex@latest",
+    windowsInstallCmd: "npm install -g @openai/codex@latest",
   },
   {
     id: "omp",
@@ -49,6 +55,7 @@ export const appPackages: AppPackage[] = [
     binary: "pi",
     latest: { kind: "npm", name: "@earendil-works/pi-coding-agent" },
     installCmd: "npm install -g @earendil-works/pi-coding-agent@latest",
+    windowsInstallCmd: "npm install -g @earendil-works/pi-coding-agent@latest",
   },
   {
     id: "prime",
@@ -64,6 +71,7 @@ export const appPackages: AppPackage[] = [
     latest: { kind: "npm", name: "opencode-ai" },
     installCmd: "curl -fsSL https://opencode.ai/install | bash",
     upgradeCmd: "opencode upgrade",
+    windowsInstallCmd: "npm install -g opencode-ai@latest",
   },
   {
     id: "hermes",
@@ -72,17 +80,20 @@ export const appPackages: AppPackage[] = [
     latest: { kind: "pypi", name: "hermes-agent" },
     installCmd: "uv tool install hermes-agent || pipx install hermes-agent",
     upgradeCmd: "uv tool upgrade hermes-agent || pipx upgrade hermes-agent",
+    windowsInstallCmd: "uv tool install hermes-agent || pipx install hermes-agent",
+    windowsUpgradeCmd: "uv tool upgrade hermes-agent || pipx upgrade hermes-agent",
   },
   {
     id: "workbuddy",
     name: "WorkBuddy",
     // Electron desktop app: version from its data dir; managed by its own updater.
     localVersion: () => {
-      const j = readJsonIfExists<Record<string, unknown>>(path.join(home, ".workbuddy", "last-launch.json"));
+      const dir = workbuddyDataDir();
+      const j = readJsonIfExists<Record<string, unknown>>(path.join(dir, "last-launch.json"));
       const v = (j?.version ?? j?.appVersion) as string | undefined;
       if (v) return v;
       const r = readJsonIfExists<Record<string, unknown>>(
-        path.join(home, ".workbuddy", "app", "renderer-version.json"),
+        path.join(dir, "app", "renderer-version.json"),
       );
       return (r?.version as string | undefined) ?? undefined;
     },
@@ -93,15 +104,22 @@ export const appPackages: AppPackage[] = [
     binary: "dsh",
     latest: { kind: "npm", name: "@deepseek-ai/dsh" },
     installCmd: "npm install -g @deepseek-ai/dsh@latest",
+    windowsInstallCmd: "npm install -g @deepseek-ai/dsh@latest",
   },
 ];
+
+function workbuddyDataDir(): string {
+  return process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim() ||
+    (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
+}
 
 const SEMVERISH = /\d+\.\d+(\.\d+)?([-.+][\w.-]+)?/;
 
 export function installedVersion(app: AppPackage): string | undefined {
   if (app.binary) {
     try {
-      const out = execFileSync(app.binary, app.versionArgs ?? ["--version"], {
+      const binary = executableName(app.binary);
+      const out = execFileSync(binary, app.versionArgs ?? ["--version"], {
         encoding: "utf8",
         timeout: 15000,
         stdio: ["ignore", "pipe", "pipe"],
@@ -144,7 +162,7 @@ export async function latestVersion(app: AppPackage): Promise<string | undefined
       case "brew": {
         // Local tap metadata first (works for taps; refreshed by `brew update`), then core API.
         try {
-          const out = execSync(`brew info --json=v2 ${src.name}`, { encoding: "utf8", timeout: 30000 });
+          const out = execSync(`brew info --json=v2 ${src.name}`, { encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
           const data = JSON.parse(out) as { formulae?: Array<{ versions?: { stable?: string } }> };
           const stable = data.formulae?.[0]?.versions?.stable;
           if (stable) return stable;
@@ -181,12 +199,36 @@ export function runShell(command: string): void {
   execSync(command, { stdio: "inherit", env: process.env });
 }
 
+/** Resolve the platform-specific command while keeping the package table readable. */
+export function appCommand(app: AppPackage, action: "install" | "upgrade", platform: NodeJS.Platform = process.platform): string | undefined {
+  if (platform === "win32") return action === "install" ? app.windowsInstallCmd : app.windowsUpgradeCmd ?? app.windowsInstallCmd;
+  return action === "install" ? app.installCmd : app.upgradeCmd ?? app.installCmd;
+}
+
+function executableName(binary: string): string {
+  if (process.platform !== "win32") return binary;
+  for (const suffix of ["", ".cmd", ".exe", ".bat"]) {
+    const candidate = `${binary}${suffix}`;
+    if (binaryOnPath(candidate)) return candidate;
+  }
+  return binary;
+}
+
 export function binaryOnPath(binary: string): boolean {
   const dirs = (process.env.PATH ?? "").split(path.delimiter);
   return dirs.some((d) => {
     try {
-      fs.accessSync(path.join(d, binary), fs.constants.X_OK);
-      return true;
+      const names = process.platform === "win32" && !path.extname(binary)
+        ? [binary, ...((process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((s) => `${binary}${s.toLowerCase()}`))]
+        : [binary];
+      return names.some((name) => {
+        try {
+          fs.accessSync(path.join(d, name), process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      });
     } catch {
       return false;
     }

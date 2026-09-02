@@ -6,6 +6,39 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-02
+
+### Fixed
+
+- `apps` / `upgrade` no longer leaks `/bin/sh: brew: not found` to the terminal on
+  Linux when Homebrew is absent — the `brew info` probe now captures stderr
+  instead of inheriting it.
+- `apps` status no longer shows "up to date" when the installed version is
+  unknown (`?`) or the latest version lookup failed (`?`). These now display
+  "unknown" instead of falsely claiming the app is current.
+- Model tables (`add`, `discover`, `models --provider`) now print a dim hint
+  when some models have no models.dev metadata, so the `-` columns are clearly
+  "uncataloged" rather than looking like a display bug.
+- `add` with manual model entry no longer fails when the user leaves the model
+  list blank — it now auto-discovers from the provider's `/v1/models` instead of
+  erroring with "at least one model id is required". The prompt text also notes
+  that leaving blank triggers auto-discovery.
+
+### Added
+
+- `agentsw quick` — one-command provider setup: pass only `--base-url` and
+  `--api-key` (or just answer two prompts interactively), and agentsw probes
+  the endpoint with both OpenAI (`Bearer`) and Anthropic (`x-api-key`) auth
+  headers to auto-detect which protocol(s) it speaks. When both succeed, two
+  providers are created with `-openai` / `-anthropic` suffixes; models are
+  auto-discovered from `/v1/models` for each. The provider id is derived from
+  the URL host when `--id` is omitted. Also available as "quick add" in the
+  interactive menu.
+
+- Windows support for provider synchronization and app state paths, native Windows
+  install commands for the npm/Python-managed agents, Windows executable shim probing,
+  and a Windows CI job.
+
 ## [0.4.0] - 2026-09-02
 
 ### Changed
@@ -119,7 +152,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tchivs/agentsw/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tchivs/agentsw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tchivs/agentsw/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tchivs/agentsw/compare/v0.1.1...v0.2.0

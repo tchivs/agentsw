@@ -1,8 +1,8 @@
 import path from "node:path";
-import { home, readJsonIfExists, writeFileAtomic } from "./fsutil.js";
+import { appDataDir, readJsonIfExists, writeFileAtomic } from "./fsutil.js";
 import type { Provider, Store } from "./types.js";
 
-export const configDir = path.join(home, ".config", "agentsw");
+export const configDir = appDataDir("agentsw");
 export const configFile = path.join(configDir, "config.json");
 
 export function loadStore(): Store {
