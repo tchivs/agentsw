@@ -2,6 +2,7 @@ import pc from "picocolors";
 import prompts from "prompts";
 import {
   cmdAdd,
+  cmdQuickAdd,
   cmdApps,
   cmdDiscover,
   cmdImport,
@@ -99,6 +100,7 @@ export async function cmdMenu(): Promise<void> {
         hint: t("menu.selectInstructions"),
         choices: [
           { title: t("menu.add"), value: "add" },
+          { title: t("menu.quickAdd"), value: "quickAdd" },
           { title: t("menu.import"), value: "import" },
           { title: t("menu.use"), value: "use" },
           { title: t("menu.status"), value: "status" },
@@ -115,7 +117,9 @@ export async function cmdMenu(): Promise<void> {
     );
     if (action === undefined || action === "quit") return;
 
-    if (action === "add") {
+    if (action === "quickAdd") {
+      await cmdQuickAdd({});
+    } else if (action === "add") {
       const { src } = await prompts(
         {
           type: "select",

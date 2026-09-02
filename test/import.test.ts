@@ -10,12 +10,14 @@ import type { ProviderCandidate } from "../src/targets/types.js";
 // Adapters resolve home at module init; isolate before dynamic imports.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ssw-import-"));
 process.env.HOME = sandbox;
+process.env.AGENTSW_HOME = sandbox;
 delete process.env.HERMES_HOME;
 delete process.env.WORKBUDDY_CONFIG_DIR;
 delete process.env.CODEBUDDY_CONFIG_DIR;
 delete process.env.DSH_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+delete process.env.OPENCODE_CONFIG_DIR;
 
 const { targets } = await import("../src/targets/index.js");
 const { mergeCandidates } = await import("../src/import.js");

@@ -9,12 +9,14 @@ import YAML from "yaml";
 // so the sandbox HOME must be set before importing them.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ssw-test-"));
 process.env.HOME = sandbox;
+process.env.AGENTSW_HOME = sandbox;
 process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
 delete process.env.CODEBUDDY_CONFIG_DIR;
 delete process.env.HERMES_HOME;
 delete process.env.DSH_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+delete process.env.OPENCODE_CONFIG_DIR;
 
 // Dynamic import is intentional: fsutil captures os.homedir() at module init,
 // so the sandbox HOME above must be exported before the adapters load.

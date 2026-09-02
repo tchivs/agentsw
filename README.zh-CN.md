@@ -64,6 +64,10 @@ npx agentsw               # 免安装，直接打开交互菜单
 npm install -g agentsw    # 需要 Node >= 22.12
 ```
 
+供应商同步与配置管理支持 Linux、macOS 和 Windows。Windows 下 agentsw 自身状态默认存放在
+`%APPDATA%\agentsw`，需要原生应用数据目录的智能体会使用对应目录。通过 Git Bash/WSL 运行，
+或需要可移植目录时，可以设置 `AGENTSW_HOME`。
+
 ## 快速开始
 
 ```bash
@@ -190,7 +194,11 @@ asw remove myproxy --prune
   `apiKeyEnv: AGENTSW_<ID>_API_KEY` 引用，密钥写入 `$DSH_HOME/.credentials.yaml`
   的 `refs:`（权限 0600）。`$DSH_HOME` 默认为 `~/.dsh`。
 - cc-switch 的数据库以只读方式打开，永不写入。
-- 安装管理器（install/upgrade）目前仅支持 macOS/Linux。
+- 安装管理器在 Windows 下为 Claude Code、Codex CLI、pi、opencode、Hermes 和 DeepSeek Harness
+  使用原生安装命令。Oh My Pi 与 prime-agent 仍需使用各自的 Windows 安装方式；WorkBuddy
+  由桌面应用自行安装和更新。
+- `OPENCODE_CONFIG_DIR`、`WORKBUDDY_CONFIG_DIR`、`CODEBUDDY_CONFIG_DIR`、`HERMES_HOME` 与
+  `DSH_HOME` 可覆盖原生配置目录。
 
 ## 语言
 

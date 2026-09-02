@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import { slugFromBaseUrl } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function configDir(): string {
-  return process.env.WORKBUDDY_CONFIG_DIR ?? process.env.CODEBUDDY_CONFIG_DIR ?? path.join(home, ".workbuddy");
+  return process.env.WORKBUDDY_CONFIG_DIR?.trim() ?? process.env.CODEBUDDY_CONFIG_DIR?.trim() ??
+    (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
 }
 
 interface WorkbuddyModel {

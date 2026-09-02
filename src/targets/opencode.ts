@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
-const configFile = path.join(home, ".config", "opencode", "opencode.json");
+const configDir = process.env.OPENCODE_CONFIG_DIR?.trim() || appDataDir("opencode");
+const configFile = path.join(configDir, "opencode.json");
 
 /**
  * opencode: custom providers in ~/.config/opencode/opencode.json "provider" map,
