@@ -101,12 +101,51 @@ export const appPackages: AppPackage[] = [
   {
     id: "dsh",
     name: "DeepSeek Harness",
-    binary: "dsh",
+    // dsh has no global binary — it runs via `npx @deepseek-ai/dsh web`.
+    // Detect via npx cache or ~/.dsh config dir.
     latest: { kind: "npm", name: "@deepseek-ai/dsh" },
     installCmd: "npm install -g @deepseek-ai/dsh@latest",
+    upgradeCmd: "npm install -g @deepseek-ai/dsh@latest",
     windowsInstallCmd: "npm install -g @deepseek-ai/dsh@latest",
+    localVersion: () => dshLocalVersion(),
   },
 ];
+
+// dsh config dir; respects $DSH_HOME.
+function dshHome(): string {
+  const env = process.env.DSH_HOME?.trim();
+  return env ? (env.startsWith("~") ? path.join(home, env.slice(1)) : env) :
+    process.platform === "win32" ? path.join(home, "AppData", "Local", "dsh") : path.join(home, ".dsh");
+}
+
+/** dsh version: search npx cache for @deepseek-ai/dsh, fall back to "?" if config dir exists. */
+function dshLocalVersion(): string | undefined {
+  // 1. Check npx cache (~/.npm/_npx/*/node_modules/@deepseek-ai/dsh/package.json)
+  const npxCache = path.join(home, ".npm", "_npx");
+  if (fs.existsSync(npxCache)) {
+    for (const dir of fs.readdirSync(npxCache)) {
+      const pkg = path.join(npxCache, dir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+      if (fs.existsSync(pkg)) {
+        try {
+          const v = JSON.parse(fs.readFileSync(pkg, "utf8")).version;
+          if (v) return v as string;
+        } catch { /* ignore */ }
+      }
+    }
+  }
+  // 2. Check global npm install
+  try {
+    const out = execSync("npm ls -g @deepseek-ai/dsh --json --depth=0", {
+      encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const parsed = JSON.parse(out);
+    const v = parsed?.dependencies?.["@deepseek-ai/dsh"]?.version;
+    if (v) return v as string;
+  } catch { /* not installed globally */ }
+  // 3. Config dir exists -> used via npx, version unknown
+  if (fs.existsSync(dshHome())) return "?";
+  return undefined;
+}
 
 function workbuddyDataDir(): string {
   return process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim() ||
