@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import { slugFromBaseUrl } from "../slug.js";
+import { stripApiVersion } from "./wire.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
@@ -25,7 +26,7 @@ export const claudecode: TargetApp = {
     const settings = readJsonIfExists<Record<string, unknown>>(settingsFile) ?? {};
     const env = { ...(settings.env as Record<string, string> | undefined) };
 
-    env.ANTHROPIC_BASE_URL = provider.baseUrl;
+    env.ANTHROPIC_BASE_URL = stripApiVersion(provider.baseUrl);
     env.ANTHROPIC_AUTH_TOKEN = provider.apiKey;
     delete env.ANTHROPIC_API_KEY; // AUTH_TOKEN and API_KEY conflict; keep one
     env.ANTHROPIC_MODEL = provider.defaultModel;
@@ -46,7 +47,7 @@ export const claudecode: TargetApp = {
   async prune(provider: Provider): Promise<ApplyResult> {
     const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
     const env = settings?.env as Record<string, string> | undefined;
-    if (!settings || !env || env.ANTHROPIC_BASE_URL !== provider.baseUrl) {
+    if (!settings || !env || env.ANTHROPIC_BASE_URL !== stripApiVersion(provider.baseUrl)) {
       return { app: this.id, changed: [], notes: [], skipped: "claude env does not point at this provider" };
     }
     for (const key of [

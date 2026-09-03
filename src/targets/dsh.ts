@@ -4,7 +4,7 @@ import YAML from "yaml";
 import { backupFile, expandHome, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { apiValue, classifyApi, mergeModels } from "./wire.js";
+import { apiValue, classifyApi, mergeModels, stripApiVersion } from "./wire.js";
 
 /** `$DSH_HOME`, or `~/.dsh` (packages/util/home-paths `resolveDshHome`). */
 function dshHome(): string {
@@ -104,7 +104,7 @@ export const dsh: TargetApp = {
       displayName: provider.name,
       apiKeyEnv: ref, // credential reference, never the secret
       api: apiValue(provider.protocol, provider.openaiApi, prev?.api),
-      baseURL: provider.baseUrl,
+      baseURL: stripApiVersion(provider.baseUrl),
       models: mergeModels(prev?.models, provider.models.map(modelEntry), OWNED_MODEL_KEYS),
     };
 
