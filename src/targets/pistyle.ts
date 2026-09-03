@@ -4,6 +4,7 @@ import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.j
 import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
+import { stripApiVersion } from "./wire.js";
 import { apiValue, classifyApi, entryApi, mergeModels, stripConflictingOverrides } from "./wire.js";
 
 /** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
@@ -97,7 +98,7 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       providers[provider.id] = {
         ...prev,
         name: provider.name,
-        baseUrl: provider.baseUrl,
+        baseUrl: stripApiVersion(provider.baseUrl),
         apiKey: provider.apiKey, // literal key; pi treats "$VAR"/"!cmd" as indirection, prime also accepts bare env names
         api,
         models,

@@ -3,6 +3,7 @@ import path from "node:path";
 import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
+import { stripApiVersion } from "./wire.js";
 
 const configDir = process.env.OPENCODE_CONFIG_DIR?.trim() || appDataDir("opencode");
 const configFile = path.join(configDir, "opencode.json");
@@ -70,7 +71,7 @@ export const opencode: TargetApp = {
       name: provider.name,
       options: {
         ...(prev.options as Record<string, unknown> | undefined),
-        baseURL: provider.baseUrl,
+        baseURL: stripApiVersion(provider.baseUrl),
         apiKey: provider.apiKey,
       },
       models,

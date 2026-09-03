@@ -6,6 +6,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-03
+
+### Fixed
+
+- **v1/v1 double-path bug**: target adapters now strip the trailing `/v1` (or
+  `/v2`, `/v1beta`) from `baseUrl` when writing to apps whose own SDK appends
+  `/v1/...` to the base URL (Claude Code, opencode, hermes, omp, pi, prime, dsh).
+  Codex is the exception — it appends `/responses` directly, so it keeps `/v1`.
+  This prevents `https://host/v1/v1/messages` style requests when a provider's
+  stored `baseUrl` includes the API version segment.
+
 ## [0.5.5] - 2026-09-03
 
 ### Added

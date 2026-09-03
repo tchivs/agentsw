@@ -107,7 +107,8 @@ test("every adapter exposes an applied custom provider for import", async () => 
     };
 
     await target.apply(provider);
-    const candidate = target.candidates?.().find((c) => c.baseUrl.replace(/\/+$/, "") === baseUrl);
+    const normUrl = (u: string) => u.replace(/\/v\d+(?:beta\d*)?\/?$/i, "").replace(/\/+$/, "");
+    const candidate = target.candidates?.().find((c) => normUrl(c.baseUrl) === normUrl(baseUrl));
     assert.ok(candidate, `${target.id} should expose its written provider`);
     assert.equal(candidate.protocol, protocol, `${target.id} protocol`);
     assert.equal(candidate.apiKey, provider.apiKey, `${target.id} API key`);

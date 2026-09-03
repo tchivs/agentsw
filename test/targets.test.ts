@@ -130,7 +130,7 @@ test("anthropic provider routes to anthropic wire and skips openai-only apps", a
 
   await claude.apply(anthro);
   const settings = JSON.parse(fs.readFileSync(path.join(sandbox, ".claude", "settings.json"), "utf8"));
-  assert.equal(settings.env.ANTHROPIC_BASE_URL, anthro.baseUrl);
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, anthro.baseUrl.replace(/\/v\d+(?:beta\d*)?\/?$/i, ""), "claude SDK appends /v1; strip it from ANTHROPIC_BASE_URL");
   assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, anthro.apiKey);
   assert.equal(settings.env.ANTHROPIC_MODEL, "model-a");
   await claude.prune(anthro);
@@ -263,7 +263,7 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
   const doc = YAML.parse(fs.readFileSync(settings, "utf8"));
   const route = doc["llm-pi-ai"].providers.gateway;
   assert.equal(route.api, "openai-responses", "an explicit store flavor rewrites the route");
-  assert.equal(route.baseURL, "https://gateway.example/v1");
+  assert.equal(route.baseURL, "https://gateway.example", "dsh SDK appends /v1 itself; strip it from baseURL");
   assert.equal(route.apiKeyEnv, "AGENTSW_GATEWAY_API_KEY");
   assert.equal(route.compat.maxTokensField, "max_tokens", "compat switches survive a sync");
   assert.equal(route.modelOverrides, undefined, "llm-pi-ai refuses modelOverrides beside a models list");

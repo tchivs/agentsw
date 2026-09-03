@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { backupFile, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
+import { stripApiVersion } from "./wire.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
@@ -51,7 +52,7 @@ export const hermes: TargetApp = {
     }
     const entry: Record<string, unknown> = {
       name: provider.name,
-      api: provider.baseUrl,
+      api: stripApiVersion(provider.baseUrl),
       key_env: keyVar,
       transport: provider.protocol === "anthropic" ? "anthropic_messages" : "chat_completions",
       default_model: provider.defaultModel,
