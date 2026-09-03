@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-03
+
+### Added
+
+- Interactive menu now includes an "安装智能体" (install agent) option that
+  lists all not-yet-installed agents and installs them via their official
+  install commands.
+
 ## [0.5.0] - 2026-09-02
 
 ### Fixed
@@ -152,7 +160,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/tchivs/agentsw/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tchivs/agentsw/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tchivs/agentsw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tchivs/agentsw/compare/v0.2.0...v0.3.0
