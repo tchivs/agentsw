@@ -292,7 +292,8 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
   assert.equal(creds.version, 1);
   assert.equal(creds.refs.AGENTSW_GATEWAY_API_KEY, provider.apiKey);
   assert.equal(creds.refs.KEEP_ME, "sk-keep", "other credentials survive");
-  assert.equal(fs.statSync(credentials).mode & 0o077, 0, "dsh refuses a document readable beyond its owner");
+  if (process.platform !== "win32")
+    assert.equal(fs.statSync(credentials).mode & 0o077, 0, "dsh refuses a document readable beyond its owner");
 
   // the written route imports back with its key resolved through the managed store
   const back = dsh.candidates!().find((c) => c.id === "gateway")!;
