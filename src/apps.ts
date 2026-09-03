@@ -101,8 +101,9 @@ export const appPackages: AppPackage[] = [
   {
     id: "dsh",
     name: "DeepSeek Harness",
-    // dsh has no global binary — it runs via `npx @deepseek-ai/dsh web`.
-    // Detect via npx cache or ~/.dsh config dir.
+    binary: "dsh",
+    // dsh may be globally installed (binary in PATH) or used via npx only.
+    // installedVersion() probes the binary first; localVersion() covers npx-only users.
     latest: { kind: "npm", name: "@deepseek-ai/dsh" },
     installCmd: "npm install -g @deepseek-ai/dsh@latest",
     upgradeCmd: "npm install -g @deepseek-ai/dsh@latest",
@@ -120,7 +121,17 @@ function dshHome(): string {
 
 /** dsh version: search npx cache for @deepseek-ai/dsh, fall back to "?" if config dir exists. */
 function dshLocalVersion(): string | undefined {
-  // 1. Check npx cache (~/.npm/_npx/*/node_modules/@deepseek-ai/dsh/package.json)
+  // 1. Fast path: check global node_modules directly (no subprocess)
+  try {
+    const globalRoot = execSync("npm root -g", {
+      encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const pkg = path.join(globalRoot, "@deepseek-ai", "dsh", "package.json");
+    if (fs.existsSync(pkg)) {
+      return JSON.parse(fs.readFileSync(pkg, "utf8")).version as string;
+    }
+  } catch { /* npm not available */ }
+  // 2. Check npx cache (~/.npm/_npx/*/node_modules/@deepseek-ai/dsh/package.json)
   const npxCache = path.join(home, ".npm", "_npx");
   if (fs.existsSync(npxCache)) {
     for (const dir of fs.readdirSync(npxCache)) {
@@ -133,15 +144,6 @@ function dshLocalVersion(): string | undefined {
       }
     }
   }
-  // 2. Check global npm install
-  try {
-    const out = execSync("npm ls -g @deepseek-ai/dsh --json --depth=0", {
-      encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
-    });
-    const parsed = JSON.parse(out);
-    const v = parsed?.dependencies?.["@deepseek-ai/dsh"]?.version;
-    if (v) return v as string;
-  } catch { /* not installed globally */ }
   // 3. Config dir exists -> used via npx, version unknown
   if (fs.existsSync(dshHome())) return "?";
   return undefined;

@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-03
+
+### Fixed
+
+- dsh detection: restore binary probe for global installs (`dsh --version`),
+  with localVersion fallback for npx-only users. Also added a fast
+  global-node_modules path check before the slow `npm ls -g` subprocess.
+
 ## [0.5.3] - 2026-09-03
 
 ### Fixed
@@ -175,7 +183,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/tchivs/agentsw/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/tchivs/agentsw/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/tchivs/agentsw/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/tchivs/agentsw/compare/v0.5.0...v0.5.1
