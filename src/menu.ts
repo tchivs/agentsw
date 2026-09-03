@@ -4,6 +4,7 @@ import {
   cmdAdd,
   cmdQuickAdd,
   cmdApps,
+  cmdInstall,
   cmdDiscover,
   cmdImport,
   cmdList,
@@ -15,6 +16,7 @@ import {
 } from "./commands.js";
 import { getLocale, setLocale, t } from "./i18n.js";
 import { loadStore, saveStore } from "./store.js";
+import { appPackages, appCommand, installedVersion } from "./apps.js";
 import type { Locale } from "./types.js";
 
 function bye(): never {
@@ -109,6 +111,7 @@ export async function cmdMenu(): Promise<void> {
           { title: t("menu.discover"), value: "discover" },
           { title: t("menu.remove"), value: "remove" },
           { title: t("menu.apps"), value: "apps" },
+          { title: t("menu.installApp"), value: "install" },
           { title: t("menu.language"), value: "language" },
           { title: t("menu.quit"), value: "quit" },
         ],
@@ -173,6 +176,26 @@ export async function cmdMenu(): Promise<void> {
     } else if (action === "apps") {
       await cmdApps();
       if (await askToggle(t("menu.upgrade"))) await cmdUpgrade([]);
+    } else if (action === "install") {
+      const installable = appPackages
+        .filter((a) => !installedVersion(a) && appCommand(a, "install"))
+        .map((a) => ({ title: `${a.id} · ${a.name}`, value: a.id }));
+      if (installable.length === 0) {
+        console.log(pc.dim(t("menu.allInstalled")));
+        continue;
+      }
+      const { appId } = await prompts(
+        {
+          type: "select",
+          name: "appId",
+          message: t("menu.pickApp"),
+          hint: t("menu.selectInstructions"),
+          choices: installable,
+        },
+        cancel,
+      );
+      if (!appId) continue;
+      await cmdInstall(appId);
     } else if (action === "language") {
       await chooseLanguage();
     }

@@ -95,6 +95,10 @@ const messages = {
   "menu.reallyRemove": { en: "really remove {id}?", "zh-CN": "确认删除 {id}?" },
   "menu.pruneConfigs": { en: "also remove its entries from app configs?", "zh-CN": "同时从应用配置中移除其条目?" },
   "menu.upgrade": { en: "upgrade everything outdated?", "zh-CN": "升级全部过期项?" },
+  "menu.installApp": { en: "install an agent", "zh-CN": "安装智能体" },
+  "menu.pickApp": { en: "which agent to install?", "zh-CN": "安装哪个智能体?" },
+  "menu.installConfirm": { en: "install {name} via: {cmd}?", "zh-CN": "通过以下命令安装 {name}: {cmd}?" },
+  "menu.allInstalled": { en: "all agents already installed", "zh-CN": "所有智能体均已安装" },
   "menu.bye": { en: "bye", "zh-CN": "再见" },
 
   "add.id": { en: "provider id (slug)", "zh-CN": "供应商 id(slug)" },
