@@ -1,6 +1,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import semver from "semver";
 import { appDataDir, home, readJsonIfExists } from "./fsutil.js";
 
 export interface AppPackage {
@@ -160,12 +161,20 @@ export function installedVersion(app: AppPackage): string | undefined {
   if (app.binary) {
     try {
       const binary = executableName(app.binary);
-      const out = execFileSync(binary, app.versionArgs ?? ["--version"], {
-        encoding: "utf8",
-        timeout: 15000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      return SEMVERISH.exec(out)?.[0];
+      const args = app.versionArgs ?? ["--version"];
+      const isBatch = process.platform === "win32" && /\.(cmd|bat)$/i.test(binary);
+      const quote = (value: string): string => {
+        if (/["%\r\n]/.test(value)) throw new Error("unsupported Windows version-probe argument");
+        return `"${value}"`;
+      };
+      const out = execFileSync(isBatch ? process.env.ComSpec || "cmd.exe" : binary,
+        isBatch ? ["/d", "/s", "/c", `"${[binary, ...args].map(quote).join(" ")}"`] : args, {
+          encoding: "utf8",
+          timeout: 15000,
+          stdio: ["ignore", "pipe", "pipe"],
+          ...(isBatch ? { windowsVerbatimArguments: true } : {}),
+        });
+      return normalizeAppVersion(SEMVERISH.exec(out)?.[0]) ?? "?";
     } catch {
       // binary present but probe failed (e.g. runtime version gate) -> installed, version unknown
       if (binaryOnPath(app.binary)) return "?";
@@ -221,23 +230,27 @@ export async function latestVersion(app: AppPackage): Promise<string | undefined
   }
 }
 
-/** numeric-aware semver-ish comparison; true when b is newer than a */
+/** Accept SemVer (including prereleases), with the legacy two-component display form. */
+export function normalizeAppVersion(value?: string): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const version = value.trim();
+  return semver.valid(version) ?? (/^v?\d+\.\d+$/.test(version) ? semver.valid(`${version}.0`) ?? undefined : undefined);
+}
+
+/** Build metadata has no precedence; prereleases sort before the corresponding release. */
 export function isNewer(installed: string, latest: string): boolean {
-  const pa = installed.split(/[.+-]/).map(Number);
-  const pb = latest.split(/[.+-]/).map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const a = pa[i] ?? 0;
-    const b = pb[i] ?? 0;
-    if (Number.isNaN(a) || Number.isNaN(b)) break;
-    if (b > a) return true;
-    if (b < a) return false;
-  }
-  return false;
+  const before = normalizeAppVersion(installed);
+  const after = normalizeAppVersion(latest);
+  return before !== undefined && after !== undefined && semver.gt(after, before);
 }
 
 /** Run an install/upgrade command with live output. Throws on nonzero exit. */
 export function runShell(command: string): void {
-  execSync(command, { stdio: "inherit", env: process.env });
+  if (process.platform === "win32") {
+    execSync(command, { stdio: "inherit", env: process.env });
+  } else {
+    execFileSync("bash", ["-o", "pipefail", "-c", command], { stdio: "inherit", env: process.env });
+  }
 }
 
 /** Resolve the platform-specific command while keeping the package table readable. */
@@ -247,31 +260,27 @@ export function appCommand(app: AppPackage, action: "install" | "upgrade", platf
 }
 
 function executableName(binary: string): string {
-  if (process.platform !== "win32") return binary;
-  for (const suffix of ["", ".cmd", ".exe", ".bat"]) {
-    const candidate = `${binary}${suffix}`;
-    if (binaryOnPath(candidate)) return candidate;
+  return findBinary(binary) ?? binary;
+}
+
+function findBinary(binary: string): string | undefined {
+  const names = process.platform === "win32" && !path.extname(binary)
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((suffix) => `${binary}${suffix.toLowerCase()}`)
+    : [binary];
+  const dirs = path.isAbsolute(binary) ? [""] : (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const name of names) {
+      const file = path.resolve(dir.replace(/^"|"$/g, ""), name);
+      try {
+        if (!fs.statSync(file).isFile()) continue;
+        fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+        return file;
+      } catch { /* Try the next executable; directories and inaccessible files are not commands. */ }
+    }
   }
-  return binary;
+  return undefined;
 }
 
 export function binaryOnPath(binary: string): boolean {
-  const dirs = (process.env.PATH ?? "").split(path.delimiter);
-  return dirs.some((d) => {
-    try {
-      const names = process.platform === "win32" && !path.extname(binary)
-        ? [binary, ...((process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((s) => `${binary}${s.toLowerCase()}`))]
-        : [binary];
-      return names.some((name) => {
-        try {
-          fs.accessSync(path.join(d, name), process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return false;
-    }
-  });
+  return findBinary(binary) !== undefined;
 }

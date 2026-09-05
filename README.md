@@ -23,7 +23,7 @@ switching to vfing (openai) · default model glm-5.3-flash
 
 skip claude    Claude Code does not support openai-protocol providers
 ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
-               backup: ~/.config/agentsw/backups/config.toml.2026-08-31T15-58-24-678Z
+               backup: ~/.config/agentsw/backups/transaction-<unique>
 ok   omp       ~/.omp/agent/models.yml
                select in omp with: omp --model vfing/glm-5.3-flash
 skip pi        pi not detected (pass --apps pi to force)
@@ -39,8 +39,8 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
 - **It runs where a desktop app cannot.** Headless servers, containers, devcontainers, CI.
   `npx agentsw use myproxy -a codex,omp` is one line in a provisioning script; nine GUI
   clicks are not.
-- **`--dry-run` prints diffs.** Review what a switch will write before it writes it, or pipe
-  it into a code review. Every file is backed up first regardless.
+- **`--dry-run` prints redacted diffs.** Preview changes without writing files or creating
+  backups. Existing configuration files are backed up when actual changes are committed.
 - **Non-destructive by design.** Only the fields agentsw owns are rewritten. Provider-level
   keys it does not model — `authHeader`, `headers`, `compat`, `discovery` — per-model extras
   like `thinkingLevelMap`, and YAML comments all survive a re-sync.
@@ -50,7 +50,7 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
   `contextWindow`/`maxTokens` for omp, `reasoningEfforts`/`input` for dsh.
 - **Adopts what you already have** — including [cc-switch](https://github.com/farion1231/cc-switch).
   `import` scans every installed agent *and* cc-switch's own store, merges duplicates
-  (same protocol + base URL), and never writes back to either.
+  (same protocol + normalized endpoint + credentials), and never writes back to either.
 - **Wire-aware.** `/v1/chat/completions` and `/v1/responses` are different endpoints;
   agentsw tracks which one a provider speaks and never downgrades a working one.
 
@@ -62,7 +62,7 @@ imports from it rather than competing with it.
 
 ```bash
 npx agentsw               # zero install: opens the interactive menu
-npm install -g agentsw    # requires Node >= 22.12
+npm install -g agentsw    # requires Node >= 22.13 (built-in SQLite without an extra flag)
 ```
 
 The provider sync and config management work on Linux, macOS, and Windows. On Windows,
@@ -139,7 +139,9 @@ imported sub · openai · https://new.vfing.de/v1 · 18 models [from omp]
 imported zhipu-glm · anthropic · https://open.bigmodel.cn/api/anthropic · 1 models [from cc-switch]
 ```
 
-Without `--all` the list is a multi-select preview; nothing is written until you pick.
+In an interactive terminal, omitting `--all` opens a multi-select preview before provider
+records are saved. `--all`, or non-interactive stdin, imports all eligible new entries;
+use `--all` explicitly in scripts. Model discovery may update the local metadata cache.
 
 ## Model discovery filters
 
@@ -204,8 +206,18 @@ sync of a managed provider can add it back to that app.
 
 ## How your configs are treated
 
-- Every modified file is backed up first to `~/.config/agentsw/backups/`.
-- The provider store lives at `~/.config/agentsw/config.json` (mode 0600).
+- Existing provider-store and agent configuration files are backed up before committed
+  changes to `~/.config/agentsw/backups/transaction-*`. New files have no prior copy;
+  cache refreshes are not configuration backups. Dry runs create neither files nor backups.
+- Each adapter stages all its files before committing; failed writes trigger best-effort
+  rollback. A multi-agent sync is not one filesystem-wide transaction: successful agents
+  remain updated if another fails, and failures are reported with a nonzero exit status.
+- The provider store lives at `~/.config/agentsw/config.json` (mode 0600). Concurrent stale
+  saves are rejected instead of overwriting newer records; retry after the other writer finishes.
+- Existing file permissions are preserved and new configuration files default to 0600.
+- A busy write lock reports its owner PID/time. If a writer crashed, stop all agentsw
+  writers and confirm the lock is abandoned before manually removing the reported
+  `.write.lock` file; active or unknown locks are never automatically stolen.
 - A sync overwrites only the fields agentsw owns. Unmodeled provider-level keys and per-model
   extras survive; an owned field that stops applying is cleared rather than left stale, and a
   per-model `api`/`baseUrl` override that contradicts the route is dropped (it would silently
@@ -219,8 +231,10 @@ sync of a managed provider can add it back to that app.
 - Codex only speaks the Responses API; a chat-completions-only endpoint cannot be used with
   it, and the sync output says so.
 - DeepSeek Harness keeps secrets out of `settings.yaml`: the route carries
-  `apiKeyEnv: AGENTSW_<ID>_API_KEY`, the key goes into `$DSH_HOME/.credentials.yaml`
+  `apiKeyEnv: AGENTSW_<ID>_<DIGEST>_API_KEY`, the key goes into `$DSH_HOME/.credentials.yaml`
   (`refs:`, mode 0600). `$DSH_HOME` defaults to `~/.dsh`.
+  The digest distinguishes IDs such as `foo-bar` and `foo_bar`; legacy generated references
+  remain recognizable. External/custom references are not renamed or removed indiscriminately.
 - cc-switch's database is opened read-only and never written to.
 - The apps manager supports native Windows commands for Claude Code, Codex CLI, pi,
   opencode, Hermes, and DeepSeek Harness. Oh My Pi and prime-agent still need their own
@@ -250,8 +264,13 @@ npm run dev -- ...  # run from source via tsx
 
 Each agent is one adapter in [`src/targets/`](./src/targets) implementing
 `apply` / `prune` / `current` / `candidates`; read-only import sources live in
-[`src/sources/`](./src/sources). Adding an app is one file plus a line in
-[`src/targets/index.ts`](./src/targets/index.ts).
+[`src/sources/`](./src/sources). To add an app, register it in
+[`src/targets/index.ts`](./src/targets/index.ts), wrap its implementation with
+`transactionalTarget()`, and add its schemas/references to `rename.ts` and `remove.ts`.
+Use shared credential, YAML/JSONC, URL and model helpers; add apply/prune/import,
+rename/removal, malformed-input, dry-run and account-isolation tests. If installable,
+also add its platform commands to `apps.ts`. WorkBuddy local deletion uses the stable
+account selector shown by `list --apps workbuddy`, not an ambiguous hostname alone.
 
 ## License
 

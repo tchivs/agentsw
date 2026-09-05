@@ -3,6 +3,8 @@ import path from "node:path";
 import YAML from "yaml";
 import { backupFile, home, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import { looksLikeEnvName } from "../slug.js";
+import { transactionalTarget } from "../target-transaction.js";
+import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
@@ -14,53 +16,19 @@ const agentDir = path.join(home, ".omp", "agent");
 const modelsYml = path.join(agentDir, "models.yml");
 const modelsYaml = path.join(agentDir, "models.yaml");
 
-/** Resolve references before edits can remove their anchors or mutate shared providers. */
 function parseModelsDocument(file: string, text: string | undefined): YAML.Document {
-  try {
-    const doc = text ? YAML.parseDocument(text) : new YAML.Document({});
-    if (doc.errors.length) throw doc.errors[0];
-    if (doc.contents == null) doc.contents = doc.createNode({});
-    // Validate references with the full document context and the default alias limit.
-    // Cycles are valid YAML, but not a usable model configuration; reject before expansion.
-    JSON.stringify(doc.toJS());
-    const expanded = new Map<YAML.Alias, YAML.Node>();
-    YAML.visit(doc, {
-      Alias(_key, alias) {
-        const node = doc.createNode(alias.toJS(doc), { aliasDuplicateObjects: false });
-        node.comment = alias.comment;
-        node.commentBefore = alias.commentBefore;
-        node.spaceBefore = alias.spaceBefore;
-        expanded.set(alias, node);
-      },
-    });
-    // Resolve all references before replacing any nodes (anchors may be reused).
-    YAML.visit(doc, { Alias: (_key, alias) => expanded.get(alias) });
-    if (!YAML.isMap(doc.contents)) throw new Error("expected a configuration mapping");
-    if (doc.hasIn(["providers"]) && !YAML.isMap(doc.getIn(["providers"]))) {
-      throw new Error("expected providers to be a mapping");
-    }
-    return doc;
-  } catch (error) {
-    throw new Error(`${file} has invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  const doc = parseYamlMapping(file, text);
+  if (doc.hasIn(["providers"]) && !YAML.isMap(doc.getIn(["providers"]))) {
+    throw new Error(`${file}: expected providers to be a mapping`);
   }
-}
-
-/** Validate the emitted document before any backup or write. */
-function serializeModelsDocument(file: string, doc: YAML.Document): string {
-  try {
-    const text = doc.toString();
-    YAML.parse(text);
-    return text;
-  } catch (error) {
-    throw new Error(`${file} has invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  return doc;
 }
 
 /**
  * Oh My Pi: providers live in ~/.omp/agent/models.yml (models.yaml fallback).
  * YAML Document round-trip preserves existing comments and unrelated providers.
  */
-export const omp: TargetApp = {
+export const omp: TargetApp = transactionalTarget({
   id: "omp",
   name: "Oh My Pi",
   protocols: ["openai", "anthropic"],
@@ -79,7 +47,7 @@ export const omp: TargetApp = {
       | Record<string, unknown>
       | undefined;
     const anthropic = provider.protocol === "anthropic";
-    const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev ?? {}));
+    const api = apiValue(provider.protocol, provider.openaiApi, prev?.api ?? entryApi(prev ?? {}));
     const baseUrl = sdkBaseUrl(provider.protocol, provider.baseUrl);
     const models = mergeModels(
       prev?.models,
@@ -127,7 +95,7 @@ export const omp: TargetApp = {
       doc.setIn(at, doc.createNode(entry));
     }
 
-    const output = serializeModelsDocument(file, doc);
+    const output = serializeYamlMapping(file, doc);
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
     writeFileAtomic(file, output);
@@ -144,7 +112,7 @@ export const omp: TargetApp = {
     }
     doc.deleteIn(["providers", provider.id]);
     const notes: string[] = [];
-    const output = serializeModelsDocument(file, doc);
+    const output = serializeYamlMapping(file, doc);
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
     writeFileAtomic(file, output);
@@ -208,4 +176,4 @@ export const omp: TargetApp = {
       ];
     });
   },
-};
+});

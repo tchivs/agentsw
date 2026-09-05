@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { appDataDir, backupFile, expandHome, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { isJsonObject } from "../jsonc.js";
+import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
@@ -13,7 +15,7 @@ const configFile = customDir
  * opencode: custom providers in ~/.config/opencode/opencode.json "provider" map,
  * backed by @ai-sdk/openai-compatible or @ai-sdk/anthropic npm loaders.
  */
-export const opencode: TargetApp = {
+export const opencode: TargetApp = transactionalTarget({
   id: "opencode",
   name: "opencode",
   protocols: ["openai", "anthropic"],
@@ -23,21 +25,33 @@ export const opencode: TargetApp = {
 
   async apply(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
-    const config = readJsonIfExists<Record<string, unknown>>(configFile) ?? {
-      $schema: "https://opencode.ai/config.json",
-    };
+    const configValue = readJsonIfExists<Record<string, unknown>>(configFile);
+    const config = configValue === undefined ? { $schema: "https://opencode.ai/config.json" } : configValue;
+    if (!isJsonObject(config) || (config.provider !== undefined && !isJsonObject(config.provider))) {
+      throw new Error(`${configFile}: expected config and provider to be JSON objects`);
+    }
 
     const anthropic = provider.protocol === "anthropic";
     const providerMap = { ...(config.provider as Record<string, unknown> | undefined) };
     // Keys agentsw does not model (custom options, per-model extras) are the user's,
     // but a key it owns and no longer emits is cleared rather than inherited from last sync.
     const existing = providerMap[provider.id];
+    if (existing !== undefined && !isJsonObject(existing)) {
+      throw new Error(`${configFile}: expected the selected provider to be a JSON object`);
+    }
     const prev = (existing && typeof existing === "object" && !Array.isArray(existing)
       ? existing
       : {}) as Record<string, unknown>;
+    if ((prev.models !== undefined && !isJsonObject(prev.models)) ||
+        (prev.options !== undefined && !isJsonObject(prev.options))) {
+      throw new Error(`${configFile}: expected provider models and options to be JSON objects`);
+    }
     const prevModels = (prev.models ?? {}) as Record<string, Record<string, unknown>>;
     const models: Record<string, unknown> = {};
     for (const m of provider.models) {
+      if (prevModels[m.id] !== undefined && !isJsonObject(prevModels[m.id])) {
+        throw new Error(`${configFile}: expected each model to be a JSON object`);
+      }
       const old = { ...prevModels[m.id] };
       for (const key of ["name", "reasoning", "attachment", "cost", "limit"]) delete old[key];
       models[m.id] = {
@@ -68,7 +82,9 @@ export const opencode: TargetApp = {
 
     providerMap[provider.id] = {
       ...prev,
-      npm: anthropic ? "@ai-sdk/anthropic" : provider.openaiApi === "responses" ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible",
+      npm: anthropic ? "@ai-sdk/anthropic" :
+        (provider.openaiApi ?? (prev.npm === "@ai-sdk/openai" ? "responses" : "completions")) === "responses"
+          ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible",
       name: provider.name,
       options: {
         ...(prev.options as Record<string, unknown> | undefined),
@@ -89,6 +105,9 @@ export const opencode: TargetApp = {
 
   async prune(provider: Provider): Promise<ApplyResult> {
     const config = readJsonIfExists<Record<string, unknown>>(configFile);
+    if (config !== undefined && (!isJsonObject(config) || (config.provider !== undefined && !isJsonObject(config.provider)))) {
+      throw new Error(`${configFile}: expected config and provider to be JSON objects`);
+    }
     const providerMap = config?.provider as Record<string, unknown> | undefined;
     if (!config || !providerMap?.[provider.id]) {
       return { app: this.id, changed: [], notes: [], skipped: `no provider.${provider.id} entry` };
@@ -137,10 +156,11 @@ export const opencode: TargetApp = {
         keyEnv = ref[1];
         apiKey = process.env[ref[1]];
       }
+      if (apiKey?.startsWith("{file:")) apiKey = undefined;
       const models = Object.keys(entry.models ?? {});
       const defaultModel = activeProvider === id ? activeModel : undefined;
       if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
       return [{ id, name: entry.name ?? id, protocol, openaiApi, baseUrl, apiKey, keyEnv, models, defaultModel, source: self }];
     });
   },
-};
+});

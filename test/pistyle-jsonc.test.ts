@@ -130,9 +130,11 @@ for (const target of [pi, prime]) {
     const result = await target.apply(provider);
     assert.deepEqual(result.changed, [files.modelsFile, files.settingsFile]);
     const backups = result.notes.filter((note) => note.startsWith("backup: ")).map((note) => note.slice(8));
-    assert.equal(backups.length, 2);
-    assert.equal(read(backups[0]!), modelsSource);
-    assert.equal(read(backups[1]!), settingsSource);
+    assert.equal(backups.length, 1, "one transaction directory covers both originals");
+    const manifest = JSON.parse(read(path.join(backups[0]!, "manifest.json"))) as Array<{ file: string; backup: string }>;
+    const originals = new Map(manifest.map((entry) => [entry.file, read(path.join(backups[0]!, entry.backup))]));
+    assert.equal(originals.get(files.modelsFile), modelsSource);
+    assert.equal(originals.get(files.settingsFile), settingsSource);
     const modelsText = read(files.modelsFile);
     const settingsText = read(files.settingsFile);
     assert.ok(modelsText.startsWith("\uFEFF// Synchronised"));

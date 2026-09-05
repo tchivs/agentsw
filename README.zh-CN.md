@@ -23,7 +23,7 @@ switching to vfing (openai) · default model glm-5.3-flash
 
 skip claude    Claude Code does not support openai-protocol providers
 ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
-               backup: ~/.config/agentsw/backups/config.toml.2026-08-31T15-58-24-678Z
+               backup: ~/.config/agentsw/backups/transaction-<unique>
 ok   omp       ~/.omp/agent/models.yml
                select in omp with: omp --model vfing/glm-5.3-flash
 skip pi        pi not detected (pass --apps pi to force)
@@ -38,8 +38,8 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
 
 - **它能去桌面应用去不了的地方。** 无头服务器、容器、devcontainer、CI。
   `npx agentsw use myproxy -a codex,omp` 在开机脚本里是一行；GUI 点九次不是。
-- **`--dry-run` 直接打 diff。** 写盘前先看清楚要改什么，或者把 diff 丢进 code review。
-  无论如何每个文件都会先备份。
+- **`--dry-run` 输出脱敏 diff。** 写盘前先预览；预览不写文件、不创建备份。
+  正式提交变更时，已有配置文件才会先备份。
 - **默认不破坏现有配置。** 只覆盖 agentsw 自己管理的字段：它不建模的供应商级键
   （`authHeader`、`headers`、`compat`、`discovery`）、`thinkingLevelMap` 之类的模型级字段、
   以及 YAML 注释，都会在重新同步后原样保留。
@@ -49,7 +49,7 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
   dsh 的 `reasoningEfforts`/`input`。
 - **接管你已有的配置——包括 [cc-switch](https://github.com/farion1231/cc-switch)。**
   `import` 会扫描所有已安装的智能体**以及 cc-switch 自己的存储**，合并重复项
-  （相同协议 + base URL），并且对两者都只读不写。
+  （相同协议 + 归一化端点 + 凭据），并且对两者都只读不写。
 - **区分接口形态。** `/v1/chat/completions` 与 `/v1/responses` 是两个不同端点；
   agentsw 记录供应商说的是哪一种，并且绝不把可用的 responses 降级。
 
@@ -61,7 +61,7 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
 
 ```bash
 npx agentsw               # 免安装，直接打开交互菜单
-npm install -g agentsw    # 需要 Node >= 22.12
+npm install -g agentsw    # 需要 Node >= 22.13，内置 SQLite 无需额外启动参数
 ```
 
 供应商同步与配置管理支持 Linux、macOS 和 Windows。Windows 下 agentsw 自身状态默认存放在
@@ -137,7 +137,9 @@ imported sub · openai · https://new.vfing.de/v1 · 18 models [from omp]
 imported zhipu-glm · anthropic · https://open.bigmodel.cn/api/anthropic · 1 models [from cc-switch]
 ```
 
-不加 `--all` 时先展示多选预览，选定之前不写任何文件。
+在交互终端中，不加 `--all` 会先展示多选预览，选定后才保存供应商记录。
+使用 `--all` 或非交互输入时会导入全部符合条件的新条目；脚本中建议明确写 `--all`。
+模型发现过程中可能更新本地元数据缓存。
 
 ## 模型发现过滤
 
@@ -200,8 +202,16 @@ asw remove unused-provider --apps omp
 
 ## 它如何对待你的配置
 
-- 每个被修改的文件先备份到 `~/.config/agentsw/backups/`。
-- 供应商存储位于 `~/.config/agentsw/config.json`（权限 0600）。
+- 正式提交变更前，已有中央存储和智能体配置先备份到
+  `~/.config/agentsw/backups/transaction-*`。新文件没有旧副本；缓存刷新不属于配置备份。
+  预览不写文件，也不创建备份。
+- 每个适配器先准备全部文件再提交，写入失败时尝试回滚。多智能体同步不是全局文件系统事务：
+  某个智能体失败时，其他成功项仍保留，并通过非零退出码报告失败。
+- 供应商存储位于 `~/.config/agentsw/config.json`（权限 0600）。并发写入导致快照过期时，
+  拒绝覆盖新记录；等待其他写入完成后重试。
+- 保留已有文件权限，新建配置文件默认使用 0600。
+- 写锁占用时会显示持有者 PID 和时间。若进程曾异常退出，先停止所有 agentsw 写入并确认
+  锁已遗留，再手动删除报错中指定的 `.write.lock` 后重试；不会自动抢占活动或状态不明的锁。
 - 同步只覆盖 agentsw 自己管理的字段：未建模的供应商级键与模型级扩展字段保留；
   自己管理但本次不再写出的字段会被清除而非留成陈旧值；与新路由矛盾的模型级
   `api`/`baseUrl` 覆盖会被删除（否则它会静默盖过供应商条目）并在输出中点名。
@@ -212,8 +222,9 @@ asw remove unused-provider --apps omp
   手动指定；同步绝不把已有的 responses 端点降级。
 - Codex 只支持 Responses API；仅提供 chat-completions 的端点无法用于 Codex，同步输出会提示。
 - DeepSeek Harness 不把密钥写进 `settings.yaml`：路由里只保存
-  `apiKeyEnv: AGENTSW_<ID>_API_KEY` 引用，密钥写入 `$DSH_HOME/.credentials.yaml`
+  `apiKeyEnv: AGENTSW_<ID>_<DIGEST>_API_KEY` 引用，密钥写入 `$DSH_HOME/.credentials.yaml`
   的 `refs:`（权限 0600）。`$DSH_HOME` 默认为 `~/.dsh`。
+  摘要用于区分 `foo-bar` 和 `foo_bar` 等 ID；旧版生成引用仍可识别，不随意修改外部或自定义引用。
 - cc-switch 的数据库以只读方式打开，永不写入。
 - 安装管理器在 Windows 下为 Claude Code、Codex CLI、pi、opencode、Hermes 和 DeepSeek Harness
   使用原生安装命令。Oh My Pi 与 prime-agent 仍需使用各自的 Windows 安装方式；WorkBuddy
@@ -242,8 +253,12 @@ npm run dev -- ...  # 通过 tsx 从源码运行
 
 每个智能体是 [`src/targets/`](./src/targets) 下的一个适配器，实现
 `apply` / `prune` / `current` / `candidates`；只读的导入来源放在
-[`src/sources/`](./src/sources)。新增一个应用 = 一个文件 +
-[`src/targets/index.ts`](./src/targets/index.ts) 里的一行。
+[`src/sources/`](./src/sources)。新增应用时，在
+[`src/targets/index.ts`](./src/targets/index.ts) 注册，用 `transactionalTarget()` 包装适配器，
+并为 `rename.ts`、`remove.ts` 补充对应配置结构与引用处理。
+复用共享凭据、YAML/JSONC、URL 和模型工具，补齐同步、清理、导入、重命名、删除、
+异常输入、预览及账户隔离测试；支持安装的应用还需在 `apps.ts` 中注册平台命令。
+删除 WorkBuddy 本地账户时，使用 `list --apps workbuddy` 显示的稳定账户标识，避免同域名歧义。
 
 ## 许可证
 

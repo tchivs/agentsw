@@ -23,8 +23,13 @@ import { loadStore } from "./store.js";
 import type { Locale } from "./types.js";
 import { cmdListLocalProviders, cmdRemoveProvider, cmdRename } from "./provider-actions.js";
 
+// Locale lookup is best effort: help/version and app-local commands do not need the store.
+function savedLocale(): Locale | undefined {
+  try { return loadStore().language; } catch { return undefined; }
+}
+
 // Locale precedence: CLI flag > environment > saved preference > system locale.
-setLocale(extractCliLocale() ?? process.env.AGENTSW_LANG ?? loadStore().language ?? detectSystemLocale());
+setLocale(extractCliLocale() ?? process.env.AGENTSW_LANG ?? savedLocale() ?? detectSystemLocale());
 
 function parseLocale(value: string): Locale {
   const locale = normalizeLocale(value);
@@ -73,6 +78,7 @@ program
   .option("-d, --discover", t("opt.discover"))
   .option("--include <globs>", t("opt.include"))
   .option("--exclude <globs>", t("opt.exclude"))
+  .option("--dedup", t("opt.dedup"))
   .option("--no-dedup", t("opt.noDedup"))
   .option("--models-dev <id>", t("opt.modelsDev"))
   .option("-y, --yes", t("opt.yes"))
@@ -82,6 +88,9 @@ program
   .command("quick")
   .description(t("cmd.quick"))
   .option("--id <slug>", t("opt.id"))
+  .option("--name <name>", t("opt.name"))
+  .option("--openai-api <flavor>", t("opt.openaiApi"))
+  .option("--models-dev <id>", t("opt.modelsDev"))
   .option("--base-url <url>", t("opt.baseUrl"))
   .option("--api-key <key>", t("opt.apiKey"))
   .option("--default-model <id>", t("opt.defaultModel"))
@@ -89,6 +98,7 @@ program
   .option("--reasoning-effort <level>", t("opt.reasoning"))
   .option("--include <globs>", t("opt.include"))
   .option("--exclude <globs>", t("opt.exclude"))
+  .option("--dedup", t("opt.dedup"))
   .option("--no-dedup", t("opt.noDedup"))
   .option("-y, --yes", t("opt.yes"))
   .action(cmdQuickAdd);
@@ -154,6 +164,7 @@ program
   .option("-a, --apps <apps>", t("opt.appsSync"))
   .option("--include <globs>", t("opt.setInclude"))
   .option("--exclude <globs>", t("opt.setExclude"))
+  .option("--dedup", t("opt.dedup"))
   .option("--no-dedup", t("opt.noDedup"))
   .option("--no-filter", t("opt.noFilter"))
   .action(cmdDiscover);

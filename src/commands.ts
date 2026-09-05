@@ -1,3 +1,8 @@
+import path from "node:path";
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
+import { parse as parseToml } from "smol-toml";
+import { parseDocument } from "yaml";
+import { envAssignments } from "./envfile.js";
 import pc from "picocolors";
 import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
@@ -5,7 +10,7 @@ import { scanCandidates, normalizeUrl, findMatchingProvider, type MergedCandidat
 import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
-import { appCommand, appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
+import { appCommand, appPackages, installedVersion, isNewer, latestVersion, normalizeAppVersion, runShell } from "./apps.js";
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
@@ -108,13 +113,14 @@ export interface AddOptions {
   yes?: boolean;
 }
 
-function parseFilterOpts(opts: { include?: string; exclude?: string; dedup?: boolean }): ModelFilter | undefined {
-  const split = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
-  const include = split(opts.include);
-  const exclude = split(opts.exclude);
-  // dedup (dropping snapshot duplicates) is on by default; persist only the opt-out
-  if (!include?.length && !exclude?.length && opts.dedup !== false) return undefined;
-  return { include, exclude, ...(opts.dedup === false ? { dedup: false as const } : {}) };
+function parseFilterOpts(opts: { include?: string; exclude?: string; dedup?: boolean }, previous?: ModelFilter): ModelFilter | undefined {
+  if (opts.include === undefined && opts.exclude === undefined && opts.dedup === undefined) return previous;
+  return {
+    ...previous,
+    ...(opts.include !== undefined ? { include: opts.include.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
+    ...(opts.exclude !== undefined ? { exclude: opts.exclude.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
+    ...(opts.dedup !== undefined ? { dedup: opts.dedup } : {}),
+  };
 }
 
 function reportDropped(dropped: Array<{ id: string; reason: string }>): void {
@@ -200,12 +206,15 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const protocol = answers.protocol as Protocol;
   if (protocol !== "openai" && protocol !== "anthropic") fail(t("add.protocolInvalid"));
   const wire = answers.openaiApi ?? opts.openaiApi;
-  if (wire && wire !== "completions" && wire !== "responses") fail(t("add.openaiApiInvalid"));
-  const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) : undefined;
+  if (wire !== undefined && wire !== "completions" && wire !== "responses") fail(t("add.openaiApiInvalid"));
   const baseUrl = normalizeUrl(answers.baseUrl!);
+  const explicitId = answers.id || undefined;
+  const existing = explicitId ? store.providers[explicitId] : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
+  const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
+  const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) ?? existing?.openaiApi : undefined;
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
-  const modelFilter = parseFilterOpts(opts);
+  const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
   const shouldDiscover = opts.discover || manualIds.length === 0;
   if (shouldDiscover) {
     if (!opts.discover) {
@@ -216,36 +225,35 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     console.log(t("add.providerLists", { count: discovered.length }));
     modelIds = [...new Set([...manualIds, ...discovered])];
   }
-  const pinned = [...manualIds, ...(opts.defaultModel ? [opts.defaultModel] : [])];
+  const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
+  modelIds = [...new Set([...modelIds, ...retained])];
+  const pinned = [...manualIds, ...retained, ...(opts.defaultModel ? [opts.defaultModel] : []), ...(opts.smallModel ? [opts.smallModel] : [])];
   const outcome = applyModelFilter(modelIds, modelFilter, pinned);
   reportDropped(outcome.dropped);
   modelIds = outcome.kept;
   if (modelIds.length === 0) fail(t("add.atLeastOne"));
 
   const catalog = await loadCatalog();
-  const hint = opts.modelsDev ?? guessProviderHint(catalog, answers.baseUrl!);
+  const hint = opts.modelsDev ?? existing?.modelsDevId ?? guessProviderHint(catalog, answers.baseUrl!);
   const models = enrichModels(catalog, modelIds, hint);
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
 
-  const defaultModel = opts.defaultModel ?? modelIds[0]!;
+  const defaultModel = opts.defaultModel ?? existing?.defaultModel ?? modelIds[0]!;
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
   if (opts.smallModel && !modelIds.includes(opts.smallModel)) fail(t("add.smallMissing", { model: opts.smallModel }));
 
-  const explicitId = answers.id || undefined;
-  const existing = explicitId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
-  const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
-
   const provider: Provider = {
+    ...existing,
     id,
     name: answers.name || existing?.name || (explicitId ? explicitId : providerNameFromBaseUrl(baseUrl, protocol)),
     protocol,
-    ...(openaiApi ? { openaiApi } : {}),
+    openaiApi,
     baseUrl,
     apiKey: answers.apiKey!,
     models,
     defaultModel,
-    smallModel: opts.smallModel,
-    reasoningEffort: opts.reasoningEffort,
+    smallModel: opts.smallModel ?? existing?.smallModel,
+    reasoningEffort: opts.reasoningEffort ?? existing?.reasoningEffort,
     modelsDevId: hint,
     modelFilter,
   };
@@ -277,26 +285,31 @@ async function createProvider(opts: {
   smallModel?: string;
   reasoningEffort?: string;
   modelFilter?: ModelFilter;
+  existing?: Provider;
+  modelsDev?: string;
 }): Promise<Provider> {
   const { store, id, name, protocol, openaiApi, baseUrl, apiKey, modelIds, modelFilter } = opts;
   const catalog = await loadCatalog();
-  const hint = guessProviderHint(catalog, baseUrl);
+  const hint = opts.modelsDev ?? opts.existing?.modelsDevId ?? guessProviderHint(catalog, baseUrl);
   const models = enrichModels(catalog, modelIds, hint);
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
-  const defaultModel = opts.defaultModel ?? modelIds[0]!;
+  const defaultModel = opts.defaultModel ?? opts.existing?.defaultModel ?? modelIds[0]!;
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
+  const smallModel = opts.smallModel ?? opts.existing?.smallModel;
+  if (smallModel && !modelIds.includes(smallModel)) fail(t("add.smallMissing", { model: smallModel }));
 
   const provider: Provider = {
+    ...opts.existing,
     id,
     name,
     protocol,
-    ...(openaiApi ? { openaiApi } : {}),
+    openaiApi: protocol === "openai" ? openaiApi ?? opts.existing?.openaiApi : undefined,
     baseUrl,
     apiKey,
     models,
     defaultModel,
-    smallModel: opts.smallModel,
-    reasoningEffort: opts.reasoningEffort,
+    smallModel,
+    reasoningEffort: opts.reasoningEffort ?? opts.existing?.reasoningEffort,
     modelsDevId: hint,
     modelFilter,
   };
@@ -322,6 +335,9 @@ export async function cmdQuickAdd(opts: {
   baseUrl?: string;
   apiKey?: string;
   id?: string;
+  name?: string;
+  openaiApi?: string;
+  modelsDev?: string;
   defaultModel?: string;
   smallModel?: string;
   reasoningEffort?: string;
@@ -360,22 +376,24 @@ export async function cmdQuickAdd(opts: {
     fail(t("quick.noProtocol"));
   }
 
-  const modelFilter = parseFilterOpts(opts);
+  if (opts.openaiApi !== undefined && opts.openaiApi !== "completions" && opts.openaiApi !== "responses") fail(t("add.openaiApiInvalid"));
   const multi = protocols.length > 1;
   const createdIds: string[] = [];
 
   for (const protocol of protocols) {
     const explicitId = opts.id === undefined ? undefined : `${opts.id}${multi ? `-${protocol}` : ""}`;
-    const existing = explicitId === undefined ? findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey }) : undefined;
+    const existing = explicitId === undefined ? findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey }) : store.providers[explicitId];
     const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
-    const name = existing?.name ?? (opts.id === undefined ? providerNameFromBaseUrl(baseUrl, protocol) : multi ? `${opts.id} (${protocol})` : opts.id);
+    const name = opts.name ?? existing?.name ?? (opts.id === undefined ? providerNameFromBaseUrl(baseUrl, protocol) : multi ? `${opts.id} (${protocol})` : opts.id);
+    const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
 
     process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })} [${protocol}]\n`));
     const discovered = await discoverProviderModels({ baseUrl, apiKey, protocol });
     console.log(t("add.providerLists", { count: discovered.length }));
 
-    let modelIds = discovered;
-    const pinned = [...(opts.defaultModel ? [opts.defaultModel] : [])];
+    const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
+    let modelIds = [...new Set([...discovered, ...retained])];
+    const pinned = [...retained, ...(opts.defaultModel ? [opts.defaultModel] : []), ...(opts.smallModel ? [opts.smallModel] : [])];
     const outcome = applyModelFilter(modelIds, modelFilter, pinned);
     reportDropped(outcome.dropped);
     modelIds = outcome.kept;
@@ -396,6 +414,9 @@ export async function cmdQuickAdd(opts: {
       smallModel: opts.smallModel,
       reasoningEffort: opts.reasoningEffort,
       modelFilter,
+      existing,
+      openaiApi: opts.openaiApi as OpenAIApi | undefined,
+      modelsDev: opts.modelsDev,
     });
     createdIds.push(provider.id);
     console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
@@ -446,7 +467,7 @@ function reportResults(results: ApplyResult[]): void {
   }
 }
 
-async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string): Promise<ApplyResult[]> {
+async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string, redactErrors = false): Promise<ApplyResult[]> {
   const selected = resolveTargets(appsFilter);
   const explicit = appsFilter !== undefined && appsFilter !== "all";
   const results: ApplyResult[] = [];
@@ -460,42 +481,110 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       });
       continue;
     }
-    if (!target.detect() && !explicit) {
-      results.push({ app: target.id, changed: [], notes: [], skipped: `${target.name} not detected (pass --apps ${target.id} to force)` });
-      continue;
-    }
     try {
+      if (!explicit && !target.detect()) {
+        results.push({ app: target.id, changed: [], notes: [], skipped: `${target.name} not detected (pass --apps ${target.id} to force)` });
+        continue;
+      }
       results.push(await target[op](provider));
     } catch (err) {
-      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${(err as Error).message}`) });
+      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(redactErrors ? "failed: configuration could not be previewed safely" : `failed: ${(err as Error).message}`) });
       process.exitCode = 1;
     }
   }
   return results;
 }
 
-/** naive line diff for config previews: order-preserving added/removed lines */
-function printFileDiff(file: string, next: string): void {
+/** Parse first: an unknown format or malformed document must never fall back to raw secrets. */
+function previewDocument(file: string, text: string): unknown {
+  if (!text.trim()) return undefined;
+  if (path.basename(file) === ".env" || file.endsWith(".env")) {
+    return Object.fromEntries(envAssignments(file, text).map(({ name }) => [name, "[REDACTED]"]));
+  }
+  switch (path.extname(file).toLowerCase()) {
+    case ".json":
+    case ".jsonc": {
+      const errors: ParseError[] = [];
+      const value: unknown = parseJsonc(text, errors, { allowTrailingComma: true });
+      if (errors.length) throw new Error("invalid JSON configuration");
+      return value;
+    }
+    case ".toml": return parseToml(text);
+    case ".yaml":
+    case ".yml": {
+      const document = parseDocument(text);
+      if (document.errors.length) throw new Error("invalid YAML configuration");
+      return document.toJS();
+    }
+    default: throw new Error("unsupported configuration format");
+  }
+}
+
+/** Normalized semantic diff: comments and unparseable raw input never enter output. */
+function printFileDiff(file: string, next: string, apiKey: string): void {
   const before = readTextIfExists(file) ?? "";
   if (before === next) {
     console.log(`${pc.dim("unchanged")} ${file}`);
     return;
   }
-  console.log(pc.bold(`--- ${file}`));
-  const oldLines = before.split("\n");
-  const newLines = next.split("\n");
-  const oldSeen: Record<string, number> = {};
-  for (const l of oldLines) oldSeen[l] = (oldSeen[l] ?? 0) + 1;
-  const newSeen: Record<string, number> = {};
-  for (const l of newLines) newSeen[l] = (newSeen[l] ?? 0) + 1;
-  for (const l of oldLines) {
-    if ((newSeen[l] ?? 0) > 0) newSeen[l]!--;
-    else console.log(pc.red(`- ${l}`));
+  console.log(pc.bold(`--- ${file} (redacted configuration)`));
+  let oldText: string;
+  let newText: string;
+  try {
+    const oldDocument = previewDocument(file, before);
+    const newDocument = previewDocument(file, next);
+    const sensitive = /key|token|secret|password|auth|credential|cookie|headers/i;
+    const credentialFile = path.basename(file) === ".credentials.yaml";
+    const secrets = new Set<string>(apiKey ? [apiKey] : []);
+    const visited = new WeakSet<object>();
+    const collect = (value: unknown, hidden = false): void => {
+      if (typeof value === "string" && hidden && value) secrets.add(value);
+      if (!value || typeof value !== "object" || visited.has(value)) return;
+      visited.add(value);
+      for (const [key, child] of Object.entries(value)) collect(child, hidden || sensitive.test(key));
+    };
+    collect(oldDocument, credentialFile);
+    collect(newDocument, credentialFile);
+    const orderedSecrets = [...secrets].sort((a, b) => b.length - a.length);
+    const redact = (key: string, value: unknown): unknown => {
+      if (sensitive.test(key)) return "[REDACTED]";
+      if ((key === "" || credentialFile) && typeof value === "string") return "[REDACTED]";
+      if (typeof value !== "string") return value;
+      let safe = value;
+      if (/^https?:\/\//i.test(safe)) {
+        const url = new URL(safe);
+        if (url.username) url.username = "[REDACTED]";
+        if (url.password) url.password = "[REDACTED]";
+        for (const name of new Set(url.searchParams.keys())) if (sensitive.test(name)) url.searchParams.set(name, "[REDACTED]");
+        url.hash = "";
+        safe = url.toString();
+      }
+      for (const secret of orderedSecrets) safe = safe.split(secret).join("[REDACTED]");
+      return safe.replace(/\b(?:Bearer|Basic)\s+[^\s"',;]+/gi, "[REDACTED]");
+    };
+    oldText = JSON.stringify(oldDocument, redact, 2) ?? "";
+    newText = JSON.stringify(newDocument, redact, 2) ?? "";
+  } catch {
+    console.log(pc.dim("[content withheld: unsupported or malformed configuration]"));
+    return;
   }
-  for (const l of newLines) {
-    if ((oldSeen[l] ?? 0) > 0) oldSeen[l]!--;
-    else console.log(pc.green(`+ ${l}`));
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const oldSeen = new Map<string, number>();
+  for (const line of oldLines) oldSeen.set(line, (oldSeen.get(line) ?? 0) + 1);
+  const newSeen = new Map<string, number>();
+  for (const line of newLines) newSeen.set(line, (newSeen.get(line) ?? 0) + 1);
+  for (const line of oldLines) {
+    const count = newSeen.get(line) ?? 0;
+    if (count > 0) newSeen.set(line, count - 1);
+    else console.log(pc.red(`- ${line}`));
   }
+  for (const line of newLines) {
+    const count = oldSeen.get(line) ?? 0;
+    if (count > 0) oldSeen.set(line, count - 1);
+    else console.log(pc.green(`+ ${line}`));
+  }
+  if (oldText === newText) console.log(pc.dim("[only redacted values or formatting changed]"));
 }
 
 async function runWithOptionalDryRun(
@@ -510,19 +599,20 @@ async function runWithOptionalDryRun(
   }
   setDryRun(true);
   try {
-    const results = await runTargets(op, provider, apps);
+    const results = await runTargets(op, provider, apps, true);
     const writes = drainPendingWrites();
     for (const r of results) {
       if (r.skipped) console.log(`${pc.yellow("skip")} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
     }
     console.log(pc.bold(`\ndry run — ${writes.length} file(s) would be written:\n`));
-    for (const w of writes) printFileDiff(w.file, w.content);
+    for (const w of writes) printFileDiff(w.file, w.content, provider.apiKey);
   } finally {
     setDryRun(false);
   }
 }
 
 export async function cmdUse(id: string, opts: { apps?: string; model?: string; dryRun?: boolean }): Promise<void> {
+  resolveTargets(opts.apps);
   const store = loadStore();
   const provider = getProvider(store, id);
   if (opts.model) {
@@ -540,6 +630,7 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
 }
 
 export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean }): Promise<void> {
+  resolveTargets(opts.apps);
   const store = loadStore();
   const id = opts.provider ?? store.active;
   if (!id) fail(t("sync.noActive"));
@@ -613,10 +704,11 @@ export async function cmdDiscover(
   id: string,
   opts: { sync?: boolean; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
 ): Promise<void> {
+  resolveTargets(opts.apps);
   const store = loadStore();
   const provider = getProvider(store, id);
   // flags override and re-persist the filter; --no-filter clears it
-  const flagFilter = parseFilterOpts(opts);
+  const flagFilter = parseFilterOpts(opts, provider.modelFilter);
   if (opts.filter === false) provider.modelFilter = undefined;
   else if (flagFilter) provider.modelFilter = flagFilter;
   process.stderr.write(pc.dim(`discovering models from ${provider.baseUrl} ...\n`));
@@ -656,23 +748,35 @@ interface AppRow {
   latest?: string;
   upgradable: boolean;
   installable: boolean;
+  checkFailed?: string;
 }
 
 async function collectAppRows(): Promise<AppRow[]> {
   return Promise.all(
     appPackages.map(async (app) => {
-      const [installed, latest] = await Promise.all([
-        Promise.resolve(installedVersion(app)),
+      const [installedResult, latestResult] = await Promise.allSettled([
+        Promise.resolve().then(() => installedVersion(app)),
         latestVersion(app),
       ]);
-      const knownInstalled = !!installed && installed !== "?";
+      const installed = installedResult.status === "fulfilled" ? installedResult.value : "?";
+      const latest = latestResult.status === "fulfilled" ? latestResult.value : undefined;
+      const knownInstalled = normalizeAppVersion(installed);
+      const knownLatest = normalizeAppVersion(latest);
+      const checkFailed = installedResult.status === "rejected"
+        ? "installed version check failed"
+        : installed && !knownInstalled
+          ? "installed version unknown"
+          : installed && !knownLatest
+            ? "latest version unavailable"
+            : undefined;
       return {
         id: app.id,
         name: app.name,
         installed,
         latest,
-        upgradable: knownInstalled && !!latest && isNewer(installed!, latest),
+        upgradable: !!knownInstalled && !!knownLatest && isNewer(knownInstalled, knownLatest),
         installable: !installed && !!appCommand(app, "install"),
+        checkFailed,
       };
     }),
   );
@@ -693,7 +797,7 @@ export async function cmdApps(): Promise<void> {
             ? r.installable
               ? pc.dim("installable")
               : pc.dim("-")
-            : r.installed === "?" || !r.latest
+            : r.checkFailed || !normalizeAppVersion(r.latest)
               ? pc.dim("unknown")
               : pc.green("up to date"),
       ]),
@@ -716,38 +820,60 @@ export async function cmdInstall(id: string): Promise<void> {
   }
   console.log(`installing ${app.name}: ${pc.dim(installCmd)}`);
   runShell(installCmd);
-  console.log(pc.green(`${app.name} installed: ${installedVersion(app) ?? "version unknown"}`));
+  const detected = installedVersion(app);
+  if (!detected) throw new Error(`${app.name}: installer completed but the app is still not detected; check the installation and PATH`);
+  const version = normalizeAppVersion(detected);
+  if (!version) {
+    console.log(pc.yellow(`${app.name}: installer completed; app detected but version unknown`));
+    process.exitCode = 1;
+    return;
+  }
+  console.log(pc.green(`${app.name} installed: ${version}`));
 }
 
 export async function cmdUpgrade(ids: string[]): Promise<void> {
   let selected = appPackages.filter((a) => ids.length === 0 || ids.includes(a.id));
   const unknown = ids.filter((id) => !appPackages.some((a) => a.id === id));
   if (unknown.length) fail(`unknown app(s): ${unknown.join(", ")}`);
+  const expectedVersions = new Map<string, string>();
   if (ids.length === 0) {
     // no args: upgrade everything that is installed and outdated
     process.stderr.write(pc.dim("checking versions ...\n"));
     const rows = await collectAppRows();
-    const upgradable = rows.filter((r) => r.upgradable).map((r) => r.id);
+    const managed = rows.filter((row) => !!appCommand(appPackages.find((app) => app.id === row.id)!, "upgrade"));
+    const failed = managed.filter((row) => row.checkFailed);
+    for (const row of failed) console.log(pc.yellow(`${row.id}: ${row.checkFailed}; update status unknown`));
+    if (failed.length) process.exitCode = 1;
+    const upgradable = managed.filter((row) => row.upgradable);
     if (upgradable.length === 0) {
-      console.log("everything is up to date");
+      if (failed.length) console.log("could not determine update status for every installed app");
+      else if (managed.some((row) => row.installed)) console.log("all checked apps are up to date");
+      else console.log("no installed CLI-managed apps to upgrade");
       return;
     }
-    selected = appPackages.filter((a) => upgradable.includes(a.id));
+    for (const row of upgradable) expectedVersions.set(row.id, row.latest!);
+    selected = appPackages.filter((app) => expectedVersions.has(app.id));
   }
   for (const app of selected) {
     const cmd = appCommand(app, "upgrade");
     if (!cmd) {
       console.log(`${pc.yellow("skip")} ${app.id}: not CLI-upgradable`);
+      process.exitCode = 1;
       continue;
     }
-    if (!installedVersion(app)) {
-      console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`agentsw install ${app.id}\`)`);
-      continue;
-    }
-    console.log(`upgrading ${app.name}: ${pc.dim(cmd)}`);
     try {
+      if (!installedVersion(app)) {
+        console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`agentsw install ${app.id}\`)`);
+        process.exitCode = 1;
+        continue;
+      }
+      console.log(`upgrading ${app.name}: ${pc.dim(cmd)}`);
       runShell(cmd);
-      console.log(pc.green(`${app.id} -> ${installedVersion(app) ?? "?"}`));
+      const version = normalizeAppVersion(installedVersion(app));
+      if (!version) throw new Error("upgrade command completed but installed version is unknown or app is not detected");
+      const expected = expectedVersions.get(app.id);
+      if (expected && isNewer(version, expected)) throw new Error(`upgrade command completed but ${version} is older than available ${expected}`);
+      console.log(pc.green(`${app.id} -> ${version}`));
     } catch (err) {
       console.log(pc.red(`${app.id} upgrade failed: ${(err as Error).message}`));
       process.exitCode = 1;

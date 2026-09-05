@@ -22,6 +22,7 @@ delete process.env.OPENCODE_CONFIG;
 // Dynamic import is intentional: fsutil captures os.homedir() at module init,
 // so the sandbox HOME above must be exported before the adapters load.
 const { targets, supportsProtocol } = await import("../src/targets/index.js");
+const { managedCredentialRef } = await import("../src/provider-identity.js");
 
 import type { Provider } from "../src/types.js";
 
@@ -285,7 +286,7 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
   const route = doc["llm-pi-ai"].providers.gateway;
   assert.equal(route.api, "openai-responses", "an explicit store flavor rewrites the route");
   assert.equal(route.baseURL, "https://gateway.example/v1", "OpenAI client appends only /responses, so keep /v1");
-  assert.equal(route.apiKeyEnv, "AGENTSW_GATEWAY_API_KEY");
+  assert.equal(route.apiKeyEnv, managedCredentialRef("gateway"));
   assert.equal(route.compat.maxTokensField, "max_tokens", "compat switches survive a sync");
   assert.equal(route.modelOverrides, undefined, "llm-pi-ai refuses modelOverrides beside a models list");
   const modelA = route.models.find((m: { id: string }) => m.id === "model-a");
@@ -311,7 +312,7 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
 
   const creds = YAML.parse(fs.readFileSync(credentials, "utf8"));
   assert.equal(creds.version, 1);
-  assert.equal(creds.refs.AGENTSW_GATEWAY_API_KEY, provider.apiKey);
+  assert.equal(creds.refs[managedCredentialRef("gateway")], provider.apiKey);
   assert.equal(creds.refs.KEEP_ME, "sk-keep", "other credentials survive");
   if (process.platform !== "win32")
     assert.equal(fs.statSync(credentials).mode & 0o077, 0, "dsh refuses a document readable beyond its owner");
@@ -327,7 +328,7 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
   assert.equal(after["llm-pi-ai"], undefined, "an empty route dict is removed");
   assert.equal(after["agent-default-model"], undefined, "the default selection followed the pruned provider");
   const credsAfter = YAML.parse(fs.readFileSync(credentials, "utf8"));
-  assert.equal(credsAfter.refs.AGENTSW_GATEWAY_API_KEY, undefined);
+  assert.equal(credsAfter.refs[managedCredentialRef("gateway")], undefined);
   assert.equal(credsAfter.refs.KEEP_ME, "sk-keep");
 });
 
@@ -339,7 +340,7 @@ test("dsh migrates a pre-release flat credentials document", async () => {
   const creds = YAML.parse(fs.readFileSync(credentials, "utf8"));
   assert.equal(creds.version, 1, "an unversioned document is refused by dsh; migrate it");
   assert.equal(creds.refs.DEEPSEEK_API_KEY, "sk-legacy");
-  assert.equal(creds.refs.AGENTSW_FLAT_API_KEY, provider.apiKey);
+  assert.equal(creds.refs[managedCredentialRef("flat")], provider.apiKey);
   await dsh.prune({ ...provider, id: "flat" });
 });
 
@@ -492,7 +493,7 @@ test("dsh prune removes the stored key even when the route is already gone", asy
   const pruned = await dsh.prune({ ...provider, id: "orphan" });
   assert.ok(!pruned.skipped, "a leftover secret is still work to do");
   const creds = YAML.parse(fs.readFileSync(credentials, "utf8"));
-  assert.equal(creds.refs.AGENTSW_ORPHAN_API_KEY, undefined);
+  assert.equal(creds.refs[managedCredentialRef("orphan")], undefined);
   assert.equal(creds.refs.KEEP_ME, "sk-keep");
   assert.ok((await dsh.prune({ ...provider, id: "orphan" })).skipped, "second prune has nothing left");
 });

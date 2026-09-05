@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { isJsonObject } from "../jsonc.js";
+import { transactionalTarget } from "../target-transaction.js";
 import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { stripApiVersion } from "./wire.js";
 import type { ApplyResult, Provider } from "../types.js";
@@ -13,7 +15,7 @@ const settingsFile = path.join(dir, "settings.json");
  * Claude Code reads Anthropic-protocol endpoints via env vars in ~/.claude/settings.json.
  * We merge the "env" block and leave every other setting untouched.
  */
-export const claudecode: TargetApp = {
+export const claudecode: TargetApp = transactionalTarget({
   id: "claude",
   name: "Claude Code",
   protocols: ["anthropic"],
@@ -23,7 +25,11 @@ export const claudecode: TargetApp = {
 
   async apply(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
-    const settings = readJsonIfExists<Record<string, unknown>>(settingsFile) ?? {};
+    const settingsValue = readJsonIfExists<Record<string, unknown>>(settingsFile);
+    const settings = settingsValue === undefined ? {} : settingsValue;
+    if (!isJsonObject(settings) || (settings.env !== undefined && !isJsonObject(settings.env))) {
+      throw new Error(`${settingsFile}: expected settings and env to be JSON objects`);
+    }
     const env = { ...(settings.env as Record<string, string> | undefined) };
 
     env.ANTHROPIC_BASE_URL = stripApiVersion(provider.baseUrl);
@@ -46,6 +52,9 @@ export const claudecode: TargetApp = {
 
   async prune(provider: Provider): Promise<ApplyResult> {
     const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
+    if (settings !== undefined && (!isJsonObject(settings) || (settings.env !== undefined && !isJsonObject(settings.env)))) {
+      throw new Error(`${settingsFile}: expected settings and env to be JSON objects`);
+    }
     const env = settings?.env as Record<string, string> | undefined;
     if (!settings || !env || env.ANTHROPIC_BASE_URL !== stripApiVersion(provider.baseUrl)) {
       return { app: this.id, changed: [], notes: [], skipped: "claude env does not point at this provider" };
@@ -102,4 +111,4 @@ export const claudecode: TargetApp = {
       },
     ];
   },
-};
+});

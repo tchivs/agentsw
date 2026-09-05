@@ -10,15 +10,20 @@ const RESPONSES_APIS: Record<string, true> = {
   "openai-codex-responses": true,
 };
 
+export interface ApiWire {
+  protocol: Protocol;
+  openaiApi?: OpenAIApi;
+}
+
 /**
  * Classify a pi-family `api` value. Returns undefined for wires agentsw
  * cannot drive (bedrock, google, ...) so importers skip those providers.
  */
-export function classifyApi(api: unknown): { protocol: Protocol; openaiApi?: OpenAIApi } | undefined {
+export function classifyApi(api: unknown): ApiWire | undefined {
   if (typeof api !== "string") return undefined;
   if (api === "anthropic-messages") return { protocol: "anthropic" };
   if (api === "openai-completions") return { protocol: "openai", openaiApi: "completions" };
-  if (RESPONSES_APIS[api]) return { protocol: "openai", openaiApi: "responses" };
+  if (RESPONSES_APIS[api] === true) return { protocol: "openai", openaiApi: "responses" };
   return undefined;
 }
 
@@ -43,14 +48,21 @@ export function apiValue(protocol: Protocol, openaiApi: OpenAIApi | undefined, e
  * provider cannot represent it — so importers skip it rather than guess.
  */
 export function entryApi(entry: { api?: unknown; models?: unknown }): unknown {
-  if (typeof entry.api === "string") return entry.api;
-  if (!Array.isArray(entry.models)) return undefined;
+  if (!Array.isArray(entry.models) || entry.models.length === 0) return entry.api;
   let single: string | undefined;
+  let singleWire: ApiWire | undefined;
   for (const model of entry.models as Array<Record<string, unknown> | null>) {
-    const api = model?.api;
-    if (typeof api !== "string") continue;
-    if (single === undefined) single = api;
-    else if (single !== api) return undefined;
+    // A provider default applies only to models without their own override.
+    if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
+    const api = model.api === undefined ? entry.api : model.api;
+    const wire = classifyApi(api);
+    if (!wire) return undefined;
+    if (single === undefined) {
+      single = api as string;
+      singleWire = wire;
+    } else if (singleWire?.protocol !== wire.protocol || singleWire?.openaiApi !== wire.openaiApi) {
+      return undefined;
+    }
   }
   return single;
 }

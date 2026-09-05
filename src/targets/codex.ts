@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { backupFile, home, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { isJsonObject } from "../jsonc.js";
+import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
@@ -14,7 +16,7 @@ const authFile = path.join(dir, "auth.json");
  * OpenAI-protocol endpoint; the key ships via ~/.codex/auth.json OPENAI_API_KEY.
  * TOML round-trip via smol-toml preserves data but not comments (backed up first).
  */
-export const codex: TargetApp = {
+export const codex: TargetApp = transactionalTarget({
   id: "codex",
   name: "Codex CLI",
   protocols: ["openai"],
@@ -26,6 +28,12 @@ export const codex: TargetApp = {
     const notes: string[] = [];
     const text = readTextIfExists(configFile);
     const config = (text ? parseToml(text) : {}) as Record<string, unknown>;
+    const authValue = readJsonIfExists<Record<string, unknown>>(authFile);
+    const auth = authValue === undefined ? {} : authValue;
+    if (!isJsonObject(auth)) throw new Error(`${authFile}: expected a JSON object`);
+    if (config.model_providers !== undefined && !isJsonObject(config.model_providers)) {
+      throw new Error(`${configFile}: expected model_providers to be a table`);
+    }
 
     config.model_provider = provider.id;
     config.model = provider.defaultModel;
@@ -37,7 +45,23 @@ export const codex: TargetApp = {
     // Codex only speaks the OpenAI Responses API (wire_api = "chat" was removed Feb 2026).
     // requires_openai_auth = true makes Codex take the key from auth.json instead of an env var.
     const providers = (config.model_providers ?? {}) as Record<string, unknown>;
+    const previous = providers[provider.id];
+    if (previous !== undefined && !isJsonObject(previous)) {
+      throw new Error(`${configFile}: expected the selected model provider to be a table`);
+    }
+    const kept = { ...(previous as Record<string, unknown> | undefined) };
+    for (const key of ["env_key", "env_key_instructions", "experimental_bearer_token"]) delete kept[key];
+    for (const key of ["http_headers", "env_http_headers"]) {
+      if (kept[key] === undefined) continue;
+      if (!isJsonObject(kept[key])) throw new Error(`${configFile}: expected ${key} to be a table`);
+      const headers = { ...kept[key] };
+      for (const name of Object.keys(headers)) {
+        if (["authorization", "x-api-key", "api-key"].includes(name.toLowerCase())) delete headers[name];
+      }
+      kept[key] = headers;
+    }
     providers[provider.id] = {
+      ...kept,
       name: provider.name,
       base_url: provider.baseUrl.replace(/\/$/, ""),
       wire_api: "responses",
@@ -51,7 +75,6 @@ export const codex: TargetApp = {
     if (text?.includes("#")) notes.push("config.toml comments are not preserved by TOML round-trip");
     writeFileAtomic(configFile, stringifyToml(config) + "\n");
 
-    const auth = readJsonIfExists<Record<string, unknown>>(authFile) ?? {};
     auth.auth_mode = "apikey";
     auth.OPENAI_API_KEY = provider.apiKey;
     const authBackup = backupFile(authFile);
@@ -65,6 +88,9 @@ export const codex: TargetApp = {
     const text = readTextIfExists(configFile);
     if (!text) return { app: this.id, changed: [], notes: [], skipped: "no config.toml" };
     const config = parseToml(text) as Record<string, unknown>;
+    if (config.model_providers !== undefined && !isJsonObject(config.model_providers)) {
+      throw new Error(`${configFile}: expected model_providers to be a table`);
+    }
     const providers = config.model_providers as Record<string, unknown> | undefined;
     if (!providers?.[provider.id]) {
       return { app: this.id, changed: [], notes: [], skipped: `no model_providers.${provider.id} entry` };
@@ -135,4 +161,4 @@ export const codex: TargetApp = {
       ];
     });
   },
-};
+});

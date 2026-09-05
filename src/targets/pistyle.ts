@@ -5,6 +5,7 @@ import { editJsoncObject, isJsonObject, readJsoncObject } from "../jsonc.js";
 import type { JsoncDocument } from "../jsonc.js";
 import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
+import { transactionalTarget } from "../target-transaction.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
 
@@ -71,7 +72,7 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
     return path.join(home, opts.configDirName);
   };
 
-  return {
+  return transactionalTarget({
     id: opts.id,
     name: opts.name,
     protocols: ["openai", "anthropic"],
@@ -93,7 +94,7 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       // Keys agentsw does not model (headers, authHeader, oauth, ...) and per-model extras
       // are the user's; a re-sync overwrites only the fields it owns.
       const prev = providers[provider.id] ?? {};
-      const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev));
+      const api = apiValue(provider.protocol, provider.openaiApi, prev.api ?? entryApi(prev));
       const baseUrl = sdkBaseUrl(provider.protocol, provider.baseUrl);
       const models = mergeModels(
         prev.models,
@@ -207,14 +208,17 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
         let keyEnv: string | undefined;
         const raw = typeof entry.apiKey === "string" && entry.apiKey ? entry.apiKey : undefined;
         if (raw) {
-          if (raw.startsWith("$") && raw.length > 1) {
-            keyEnv = raw.slice(1);
-            apiKey = process.env[keyEnv];
+          const envRef = raw.match(/^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/)
+            ?? raw.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/)
+            ?? raw.match(/^env:([A-Za-z_][A-Za-z0-9_]*)$/);
+          if (envRef) {
+            keyEnv = envRef[1] ?? envRef[2];
+            apiKey = keyEnv ? process.env[keyEnv] : undefined;
           } else if (opts.id === "prime" && looksLikeEnvName(raw)) {
-            // prime resolves bare env names; falls back to the literal string
             keyEnv = raw;
             apiKey = process.env[raw] ?? raw;
-          } else {
+          } else if (!/^(?:!|\$|\{(?:file|env):|file:|env:|~\/|\/)/.test(raw)) {
+            // Commands and file references are never executed or exported as literal credentials.
             apiKey = raw;
           }
         }
@@ -238,7 +242,7 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
         ];
       });
     },
-  };
+  });
 }
 
 export const pi = piStyleTarget({
