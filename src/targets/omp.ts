@@ -14,6 +14,48 @@ const agentDir = path.join(home, ".omp", "agent");
 const modelsYml = path.join(agentDir, "models.yml");
 const modelsYaml = path.join(agentDir, "models.yaml");
 
+/** Resolve references before edits can remove their anchors or mutate shared providers. */
+function parseModelsDocument(file: string, text: string | undefined): YAML.Document {
+  try {
+    const doc = text ? YAML.parseDocument(text) : new YAML.Document({});
+    if (doc.errors.length) throw doc.errors[0];
+    if (doc.contents == null) doc.contents = doc.createNode({});
+    // Validate references with the full document context and the default alias limit.
+    // Cycles are valid YAML, but not a usable model configuration; reject before expansion.
+    JSON.stringify(doc.toJS());
+    const expanded = new Map<YAML.Alias, YAML.Node>();
+    YAML.visit(doc, {
+      Alias(_key, alias) {
+        const node = doc.createNode(alias.toJS(doc), { aliasDuplicateObjects: false });
+        node.comment = alias.comment;
+        node.commentBefore = alias.commentBefore;
+        node.spaceBefore = alias.spaceBefore;
+        expanded.set(alias, node);
+      },
+    });
+    // Resolve all references before replacing any nodes (anchors may be reused).
+    YAML.visit(doc, { Alias: (_key, alias) => expanded.get(alias) });
+    if (!YAML.isMap(doc.contents)) throw new Error("expected a configuration mapping");
+    if (doc.hasIn(["providers"]) && !YAML.isMap(doc.getIn(["providers"]))) {
+      throw new Error("expected providers to be a mapping");
+    }
+    return doc;
+  } catch (error) {
+    throw new Error(`${file} has invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Validate the emitted document before any backup or write. */
+function serializeModelsDocument(file: string, doc: YAML.Document): string {
+  try {
+    const text = doc.toString();
+    YAML.parse(text);
+    return text;
+  } catch (error) {
+    throw new Error(`${file} has invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /**
  * Oh My Pi: providers live in ~/.omp/agent/models.yml (models.yaml fallback).
  * YAML Document round-trip preserves existing comments and unrelated providers.
@@ -31,13 +73,9 @@ export const omp: TargetApp = {
     // Respect an existing models.yaml if models.yml is absent (omp precedence: yml then yaml).
     const file = !fs.existsSync(modelsYml) && fs.existsSync(modelsYaml) ? modelsYaml : modelsYml;
     const text = readTextIfExists(file);
-    const doc = text ? YAML.parseDocument(text) : new YAML.Document({});
-    if (doc.errors.length) {
-      throw new Error(`${file} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
-    }
-    if (doc.contents == null) doc.contents = doc.createNode({});
+    const doc = parseModelsDocument(file, text);
 
-    const prev = (doc.getIn(["providers", provider.id]) as YAML.YAMLMap | undefined)?.toJSON?.() as
+    const prev = (doc.getIn(["providers", provider.id]) as YAML.YAMLMap | undefined)?.toJS(doc) as
       | Record<string, unknown>
       | undefined;
     const anthropic = provider.protocol === "anthropic";
@@ -89,9 +127,10 @@ export const omp: TargetApp = {
       doc.setIn(at, doc.createNode(entry));
     }
 
+    const output = serializeModelsDocument(file, doc);
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
-    writeFileAtomic(file, doc.toString());
+    writeFileAtomic(file, output);
     notes.push(`select in omp with: omp --model ${provider.id}/${provider.defaultModel}`);
     return { app: this.id, changed: [file], notes };
   },
@@ -99,18 +138,16 @@ export const omp: TargetApp = {
   async prune(provider: Provider): Promise<ApplyResult> {
     const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
     if (!file) return { app: this.id, changed: [], notes: [], skipped: "no models.yml" };
-    const doc = YAML.parseDocument(readTextIfExists(file) ?? "");
-    if (doc.errors.length) {
-      throw new Error(`${file} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
-    }
+    const doc = parseModelsDocument(file, readTextIfExists(file));
     if (!doc.hasIn(["providers", provider.id])) {
       return { app: this.id, changed: [], notes: [], skipped: `no providers.${provider.id} entry` };
     }
     doc.deleteIn(["providers", provider.id]);
     const notes: string[] = [];
+    const output = serializeModelsDocument(file, doc);
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
-    writeFileAtomic(file, doc.toString());
+    writeFileAtomic(file, output);
     return { app: this.id, changed: [file], notes };
   },
 

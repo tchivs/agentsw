@@ -6,6 +6,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-05
+
+### Fixed
+
+- OMP now resolves YAML aliases with document context before syncing or pruning.
+  Replacing an anchored model list no longer leaves dangling aliases in other
+  providers; shared provider/model values and unrelated comments are retained.
+- pi and prime-agent now read and edit JSONC configuration, including comments,
+  trailing commas, and a UTF-8 BOM, without discarding unrelated fields or comments.
+- pi/prime validate both model and settings files before writing either file;
+  malformed configuration reports its path instead of leaving a partial sync.
+- Added first-sync, repeated-sync, prune, dry-run, and malformed-config regression
+  fixtures for initialized servers with YAML anchors and commented JSON files.
+
 ## [0.6.1] - 2026-09-05
 
 ### Fixed
@@ -215,7 +229,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/tchivs/agentsw/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tchivs/agentsw/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tchivs/agentsw/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/tchivs/agentsw/compare/v0.5.4...v0.5.5

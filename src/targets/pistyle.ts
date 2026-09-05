@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, home, writeFileAtomic } from "../fsutil.js";
+import { editJsoncObject, isJsonObject, readJsoncObject } from "../jsonc.js";
+import type { JsoncDocument } from "../jsonc.js";
 import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
@@ -17,6 +19,31 @@ const OWNED_MODEL_KEYS = [
   "maxTokens",
   "cost",
 ] as const;
+
+type ModelsConfig = Record<string, unknown> & { providers?: Record<string, Record<string, unknown>> };
+type SettingsConfig = Record<string, unknown> & { defaultProvider?: string; defaultModel?: string };
+
+function readModels(file: string): JsoncDocument & { value: ModelsConfig } {
+  const document = readJsoncObject(file);
+  const providers = document.value.providers;
+  if (providers !== undefined) {
+    if (!isJsonObject(providers)) throw new Error(`${file}: expected providers to be a JSON object`);
+    for (const entry of Object.values(providers)) {
+      if (!isJsonObject(entry)) throw new Error(`${file}: expected every provider entry to be a JSON object`);
+    }
+  }
+  return { ...document, value: document.value as ModelsConfig };
+}
+
+function readSettings(file: string): JsoncDocument & { value: SettingsConfig } {
+  const document = readJsoncObject(file);
+  for (const key of ["defaultProvider", "defaultModel"]) {
+    if (document.value[key] !== undefined && typeof document.value[key] !== "string") {
+      throw new Error(`${file}: expected ${key} to be a string`);
+    }
+  }
+  return { ...document, value: document.value as SettingsConfig };
+}
 
 /**
  * pi-family agents (pi, prime-agent) share the same config layout:
@@ -58,14 +85,14 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       const settingsFile = path.join(dir, "settings.json");
       const notes: string[] = [];
 
-      const modelsConfig = readJsonIfExists<Record<string, unknown>>(modelsFile) ?? {};
-      const providers = { ...(modelsConfig.providers as Record<string, unknown> | undefined) };
+      // Validate both files before preparing any writes, including a malformed settings file.
+      const modelsDocument = readModels(modelsFile);
+      const settingsDocument = readSettings(settingsFile);
+      const modelsConfig = { ...modelsDocument.value };
+      const providers = { ...modelsConfig.providers };
       // Keys agentsw does not model (headers, authHeader, oauth, ...) and per-model extras
       // are the user's; a re-sync overwrites only the fields it owns.
-      const existing = providers[provider.id];
-      const prev = (existing && typeof existing === "object" && !Array.isArray(existing)
-        ? existing
-        : {}) as Record<string, unknown>;
+      const prev = providers[provider.id] ?? {};
       const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev));
       const baseUrl = sdkBaseUrl(provider.protocol, provider.baseUrl);
       const models = mergeModels(
@@ -105,16 +132,20 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       };
       modelsConfig.providers = providers;
 
+      const settings: SettingsConfig = {
+        ...settingsDocument.value,
+        defaultProvider: provider.id,
+        defaultModel: provider.defaultModel,
+      };
+      const modelsText = editJsoncObject(modelsDocument, modelsConfig);
+      const settingsText = editJsoncObject(settingsDocument, settings);
       const modelsBackup = backupFile(modelsFile);
       if (modelsBackup) notes.push(`backup: ${modelsBackup}`);
-      writeFileAtomic(modelsFile, JSON.stringify(modelsConfig, null, 2) + "\n");
+      writeFileAtomic(modelsFile, modelsText);
 
-      const settings = readJsonIfExists<Record<string, unknown>>(settingsFile) ?? {};
-      settings.defaultProvider = provider.id;
-      settings.defaultModel = provider.defaultModel;
       const settingsBackup = backupFile(settingsFile);
       if (settingsBackup) notes.push(`backup: ${settingsBackup}`);
-      writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+      writeFileAtomic(settingsFile, settingsText);
 
       return { app: opts.id, changed: [modelsFile, settingsFile], notes };
     },
@@ -123,25 +154,31 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
       const dir = resolveDir();
       const modelsFile = path.join(dir, "models.json");
       const settingsFile = path.join(dir, "settings.json");
-      const modelsConfig = readJsonIfExists<Record<string, unknown>>(modelsFile);
-      const providers = modelsConfig?.providers as Record<string, unknown> | undefined;
-      if (!modelsConfig || !providers?.[provider.id]) {
+      const modelsDocument = readModels(modelsFile);
+      const settingsDocument = readSettings(settingsFile);
+      const providers = { ...modelsDocument.value.providers };
+      if (!Object.hasOwn(providers, provider.id)) {
         return { app: opts.id, changed: [], notes: [], skipped: `no providers.${provider.id} entry` };
       }
       delete providers[provider.id];
+      const settings = { ...settingsDocument.value };
+      const resetDefault = settings.defaultProvider === provider.id;
+      if (resetDefault) {
+        delete settings.defaultProvider;
+        delete settings.defaultModel;
+      }
+      const modelsText = editJsoncObject(modelsDocument, { ...modelsDocument.value, providers });
+      const settingsText = resetDefault ? editJsoncObject(settingsDocument, settings) : undefined;
       const notes: string[] = [];
       const changed: string[] = [modelsFile];
       const modelsBackup = backupFile(modelsFile);
       if (modelsBackup) notes.push(`backup: ${modelsBackup}`);
-      writeFileAtomic(modelsFile, JSON.stringify(modelsConfig, null, 2) + "\n");
+      writeFileAtomic(modelsFile, modelsText);
 
-      const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
-      if (settings?.defaultProvider === provider.id) {
-        delete settings.defaultProvider;
-        delete settings.defaultModel;
+      if (settingsText !== undefined) {
         const settingsBackup = backupFile(settingsFile);
         if (settingsBackup) notes.push(`backup: ${settingsBackup}`);
-        writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+        writeFileAtomic(settingsFile, settingsText);
         changed.push(settingsFile);
         notes.push("default model reset (was pointing at this provider)");
       }
@@ -149,18 +186,16 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
     },
 
     current(): string | undefined {
-      const settings = readJsonIfExists<{ defaultProvider?: string; defaultModel?: string }>(
-        path.join(resolveDir(), "settings.json"),
-      );
+      const settings = readSettings(path.join(resolveDir(), "settings.json")).value;
       if (!settings?.defaultProvider) return undefined;
       return `${settings.defaultProvider} · ${settings.defaultModel ?? "?"}`;
     },
 
     candidates(): ProviderCandidate[] {
       const dir = resolveDir();
-      const mc = readJsonIfExists<{ providers?: Record<string, Record<string, unknown>> }>(path.join(dir, "models.json"));
-      if (!mc?.providers) return [];
-      const settings = readJsonIfExists<{ defaultProvider?: string; defaultModel?: string }>(path.join(dir, "settings.json"));
+      const mc = readModels(path.join(dir, "models.json")).value;
+      const settings = readSettings(path.join(dir, "settings.json")).value;
+      if (!mc.providers) return [];
       const self = opts.id;
       return Object.entries(mc.providers).flatMap(([id, entry]) => {
         if (!entry || typeof entry.baseUrl !== "string") return [];
