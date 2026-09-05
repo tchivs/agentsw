@@ -6,6 +6,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-05
+
+### Added
+
+- Automatic AI Gateway model metadata supplementation with a separate 24-hour cache,
+  exact model mappings, field-level provenance/conflicts and reference-only pricing.
+- Per-provider `--metadata-mode <auto|on|off>` settings in add/quick/discover/import/refresh,
+  a three-way menu selection, and `models --provider <id> --metadata` for credential-free
+  audit JSON including the effective mode. Legacy enable/disable flags remain supported.
+
+### Changed
+
+- Default to automatic, models.dev-first enrichment without extra onboarding prompts.
+  Query Gateway only for missing core parameters, refreshing existing supplemental fields,
+  or verifying tracked identity conflicts; preserve explicit off and all omitted saved settings.
+- Resolve unique, exact bare-name model IDs conservatively without changing wire IDs;
+  ambiguous/custom names still require explicit aliases. Sync remains catalog-free.
+- Preserve manual/legacy model values and extension fields during enrichment;
+  refresh tracked automatic metadata without overwriting subsequent manual edits.
+- Preserve selected default/small-model metadata when discovery omits those IDs.
+
 ## [0.7.2] - 2026-09-05
 
 ### Fixed
@@ -294,7 +315,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/tchivs/agentsw/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/tchivs/agentsw/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tchivs/agentsw/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tchivs/agentsw/compare/v0.6.2...v0.7.0

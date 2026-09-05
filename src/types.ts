@@ -5,6 +5,29 @@ export type Protocol = "openai" | "anthropic";
 export type OpenAIApi = "completions" | "responses";
 export type Locale = "en" | "zh-CN";
 
+export type ModelMetadataField = "name" | "contextWindow" | "maxInput" | "maxOutput" | "reasoning" | "reasoningEfforts" | "imageInput"
+  | "cost.input" | "cost.output" | "cost.cacheRead" | "cost.cacheWrite";
+export type ModelMetadataValue = string | number | boolean | string[];
+
+export interface ModelMetadataOrigin {
+  source: "models.dev" | "ai-gateway";
+  modelId: string;
+  /** Snapshot used to detect and preserve subsequent manual overrides. */
+  value: ModelMetadataValue;
+  updatedAt: string;
+  fetchedAt?: string;
+}
+
+export interface ModelMetadataConflict {
+  field: ModelMetadataField;
+  /** Another retained field may block this candidate (e.g. contextWindow limits maxOutput). */
+  blockedBy?: ModelMetadataField;
+  source: ModelMetadataOrigin["source"];
+  modelId: string;
+  value: ModelMetadataValue;
+  keptValue: ModelMetadataValue;
+}
+
 /** Per-model metadata, enriched from models.dev when available. */
 export interface ModelSpec {
   id: string;
@@ -26,6 +49,20 @@ export interface ModelSpec {
     output?: number;
     cacheRead?: number;
     cacheWrite?: number;
+  };
+  /** Local audit information; target adapters do not emit it as runtime provider options. */
+  metadata?: {
+    fields?: Partial<Record<ModelMetadataField, ModelMetadataOrigin>>;
+    conflicts?: ModelMetadataConflict[];
+    gateway?: {
+      modelId: string;
+      /** Explicit mapping used; distinguishes alias deletion from a temporary catalog miss. */
+      alias?: string;
+      fetchedAt: string;
+      /** Gateway USD per million tokens, NOT the configured provider's effective cost. */
+      referenceCost?: ModelSpec["cost"];
+      pricingIsVariable?: boolean;
+    };
   };
 }
 
@@ -51,6 +88,10 @@ export interface Provider {
   openaiApi?: OpenAIApi;
   /** models.dev provider id used to enrich model metadata */
   modelsDevId?: string;
+  /** Public AI Gateway supplement mode; omitted and "auto" fill meaningful metadata gaps. */
+  gatewayMetadata?: boolean | "auto";
+  /** Exact local model ID -> canonical creator/model ID mappings; no fuzzy aliases. */
+  gatewayModelAliases?: Record<string, string>;
   /** persisted discovery filter (re-applied on every `discover`) */
   modelFilter?: ModelFilter;
 }

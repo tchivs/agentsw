@@ -35,6 +35,9 @@ beforeEach((t) => {
     other: { id: "other", models: { "keep-base": { id: "keep-base", limit: { context: 999 } } } },
     hint: { id: "hint", models: { "keep-base": { id: "keep-base", limit: { context: 111 } } } },
   }));
+  fs.writeFileSync(path.join(configDir, "ai-gateway.json"), JSON.stringify({
+    version: 1, fetchedAt: new Date().toISOString(), body: { data: [] },
+  }));
   messages = [];
   process.exitCode = undefined;
   t.mock.method(console, "log", (...args: unknown[]) => { messages.push(args.map(String).join(" ")); });

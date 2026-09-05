@@ -45,7 +45,7 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
   keys it does not model — `authHeader`, `headers`, `compat`, `discovery` — per-model extras
   like `thinkingLevelMap`, and YAML comments all survive a re-sync.
 - **Model metadata, not just an id list.** Reseller `/v1/models` endpoints return bare ids.
-  agentsw enriches them from [models.dev](https://models.dev) and writes what each app
+  agentsw enriches them from [models.dev](https://models.dev), automatically fills meaningful gaps from AI Gateway when needed, and writes what each app
   actually reads: `thinkingLevelMap` for pi/prime, `limit`/`attachment` for opencode,
   `contextWindow`/`maxTokens` for omp, `reasoningEfforts`/`input` for dsh.
 - **Adopts what you already have** — including [cc-switch](https://github.com/farion1231/cc-switch).
@@ -146,8 +146,8 @@ use `--all` explicitly in scripts. Model discovery may update the local metadata
 ## Model discovery filters
 
 `--discover` lists model ids from the provider's `/v1/models`, then enriches each id from
-models.dev. Reseller lists are noisy, so filters are persisted per provider and re-applied on
-every `discover`:
+models.dev first, with automatic AI Gateway supplementation when needed. Reseller lists are noisy,
+so filters are persisted per provider and re-applied on every `discover`:
 
 ```bash
 # snapshot duplicates (gpt-5.2-latest, glm-4.7-250414, ...) are DROPPED by default
@@ -159,6 +159,77 @@ asw discover myproxy --no-filter                # clear it
 ```
 
 Explicit `--models` entries and the default model are never filtered out.
+
+## Automatic model metadata
+
+**No extra flags are needed.** New providers and providers without a saved mode use `auto`:
+models.dev is checked first, then the public
+[AI Gateway model catalog](https://vercel.com/docs/ai-gateway/models-and-providers#dynamic-model-discovery)
+is consulted only for missing core parameters (context window, maximum output, reasoning or image input),
+to refresh unchanged Gateway-supplied fields that models.dev has not replaced, or to verify an identity
+conflict in previously tracked automatic values. Missing names, prices, optional input limits or
+reasoning-effort lists alone do not trigger a Gateway lookup.
+agentsw directly fetches `https://ai-gateway.vercel.sh/v1/models` without provider credentials or an AI SDK dependency.
+
+```bash
+# Refresh only saved models using the saved mode (auto if unset)
+# No model discovery or agent config writes
+asw refresh --provider myproxy
+
+# Inspect effective mode, sources, conflicts and reference pricing (no API key)
+asw models --provider myproxy --metadata
+
+# Custom or ambiguous names need explicit aliases; wire model IDs stay unchanged
+asw refresh --provider myproxy --metadata-mode auto \
+  --gateway-models '{"my-model":"openai/gpt-5.4"}'
+
+# Always consult Gateway, even when core parameters are complete
+asw refresh --provider myproxy --metadata-mode on
+
+# Stop future Gateway fetches; retain saved model parameters
+asw refresh --provider myproxy --metadata-mode off
+
+# Return an explicitly disabled provider to automatic mode
+asw refresh --provider myproxy --metadata-mode auto
+
+# Preview and apply separately; sync does not query catalogs
+asw sync --provider myproxy --dry-run
+asw sync --provider myproxy
+```
+
+The menu's **Configure and refresh model metadata** action offers **Automatic (recommended)**,
+**Always supplement**, and **Disabled**, with the provider's current mode selected. Onboarding has no extra prompts.
+`add`, `quick`, `discover`, `import`, and `refresh` accept `--metadata-mode <auto|on|off>`.
+The existing `--gateway-metadata` and `--no-gateway-metadata` flags remain explicit `on` and `off` choices.
+Omitted options preserve saved settings: an existing `false` remains off until you select `auto` or `on`.
+Invalid modes and conflicting mode/boolean flags are rejected before fetching or saving.
+Without `--provider`, `refresh` applies to all providers, including any supplied mode.
+`--gateway-models` replaces the whole alias map (`{}` clears it); aliases do not change the saved mode or override `off`.
+Import still skips already configured accounts.
+
+- **Field-level priority:** manual values > models.dev > Gateway gap filling. Tracked automatic values may
+  refresh; subsequent manual edits are retained. Legacy values without provenance are conservatively treated
+  as manual overrides. Unmodeled extension fields survive enrichment too.
+- **Exact identities:** automatic lookup can map a bare, case-sensitive ID (no `/`) to a unique Gateway
+  `creator/model` identity when models.dev evidence is absent or agrees. Ambiguous creator evidence in either
+  catalog is rejected; custom or ambiguous names need explicit aliases. Qualified IDs never have their prefixes
+  stripped, and matching never guesses from substrings, case folding or versions. Auto/on mode also uses conservative
+  exact models.dev matching; off retains the legacy models.dev lookup. Unmatched models remain usable.
+  Alias changes clear unchanged automatic values tied to confirmed superseded identities, never manual edits.
+- **No routing changes:** metadata never adds available models or changes IDs, protocols, URLs, defaults or
+  accounts. Gateway capabilities are reference specs, not proof of reseller support. `supported_specifications`
+  is not a URL version.
+- **Reference-only prices:** Gateway prices are converted to USD per million tokens and stored separately in
+  `metadata.gateway.referenceCost`, not effective provider `cost` or runtime agent pricing. Variable/tiered
+  pricing is flagged separately.
+  Auto does not fetch solely to refresh this reference snapshot: check `metadata.gateway.fetchedAt`, or use
+  `refresh --provider <id> --metadata-mode on` to request fresh reference prices.
+- **Auditable and optional:** `metadata.fields` records origins, value snapshots and timestamps;
+  `metadata.conflicts` records disagreements with retained values. This audit stays in agentsw, never runtime agent configs.
+  Gateway has a separate 24-hour cache; failures use stale cached data or skip supplementation.
+- **Automatic lookup is not automatic sync:** enrichment updates saved metadata during add/quick/discover/import/refresh.
+  It does not add an automatic push to agents. Sync behavior is unchanged: ordinary `sync` only writes saved settings
+  and fetches neither model lists nor metadata catalogs.
 
 ## Commands
 
@@ -175,7 +246,8 @@ Explicit `--models` entries and the default model are never filtered out.
 | `sync` | re-apply the active provider (after an agent update, say) |
 | `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models` |
 | `models [query]` | search the models.dev catalog |
-| `refresh` | re-fetch metadata for every configured provider |
+| `refresh [--provider <id>]` | refresh saved metadata and optionally configure Gateway; keep the model list |
+| `models --provider <id> --metadata` | inspect field sources, conflicts and reference pricing as JSON |
 | `prune <id>` / `remove <id> [--prune]` | remove from app configs / from the store |
 | `remove <id> --apps omp` | delete only the selected app's entry; supports `--dry-run` |
 | `apps` / `install <app>` / `upgrade` | agent version manager |

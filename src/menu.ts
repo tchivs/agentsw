@@ -7,6 +7,7 @@ import {
   cmdInstall,
   cmdDiscover,
   cmdImport,
+  cmdRefreshMeta,
   cmdList,
   cmdStatus,
   cmdSync,
@@ -14,6 +15,7 @@ import {
   cmdUse,
 } from "./commands.js";
 import { getLocale, setLocale, t } from "./i18n.js";
+import { getMetadataMode } from "./metadata.js";
 import { loadStore, saveStore } from "./store.js";
 import { appPackages, appCommand, installedVersion } from "./apps.js";
 import type { Locale } from "./types.js";
@@ -189,6 +191,7 @@ export async function cmdMenu(): Promise<void> {
           { title: t("menu.list"), description: t("menu.listHelp"), value: "list" },
           { title: t("menu.sync"), description: t("menu.syncHelp"), value: "sync" },
           { title: t("menu.discover"), description: t("menu.discoverHelp"), value: "discover" },
+          { title: t("menu.metadata"), description: t("menu.metadataHelp"), value: "metadata" },
           { title: t("menu.rename"), description: t("menu.renameHelp"), value: "rename" },
           { title: t("menu.remove"), description: t("menu.removeHelp"), value: "remove" },
           { title: t("menu.apps"), description: t("menu.appsHelp"), value: "apps" },
@@ -248,6 +251,23 @@ export async function cmdMenu(): Promise<void> {
       if (!picked) continue;
       const sync = await askToggle(t("menu.pushRefresh"));
       await cmdDiscover(picked.id, { sync });
+    } else if (action === "metadata") {
+      const picked = await pickProvider(t("menu.metadataProvider"));
+      if (!picked) continue;
+      const current = loadStore().providers[picked.id]!;
+      const { metadataMode } = await prompts({
+        type: "select",
+        name: "metadataMode",
+        message: t("menu.metadataMode"),
+        hint: t("menu.selectInstructions"),
+        initial: ["auto", "on", "off"].indexOf(getMetadataMode(current)),
+        choices: [
+          { title: t("menu.metadataAuto"), description: t("menu.metadataAutoHelp"), value: "auto" },
+          { title: t("menu.metadataOn"), description: t("menu.metadataOnHelp"), value: "on" },
+          { title: t("menu.metadataOff"), description: t("menu.metadataOffHelp"), value: "off" },
+        ],
+      }, cancel);
+      await cmdRefreshMeta({ provider: picked.id, metadataMode });
     } else if (action === "rename" || action === "remove") {
       try {
         if (action === "rename") await renameFromMenu();

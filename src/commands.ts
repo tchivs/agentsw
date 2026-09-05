@@ -7,7 +7,9 @@ import pc from "picocolors";
 import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
 import { scanCandidates, normalizeUrl, findMatchingProvider, type MergedCandidate } from "./import.js";
-import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
+import { loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
+import { enrichProviderModels, getMetadataMode, resolveMetadataOptions, type MetadataOptions } from "./metadata.js";
+import { loadGatewayCatalog, type GatewayCatalog } from "./gateway.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
 import { appCommand, appPackages, installedVersion, isNewer, latestVersion, normalizeAppVersion, runShell } from "./apps.js";
@@ -16,6 +18,12 @@ import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
+
+/** Share successes and failures without fetching until a model actually needs the supplement. */
+function sharedGatewayLoader(refresh = false): () => Promise<GatewayCatalog | null> {
+  let pending: Promise<GatewayCatalog | null> | undefined;
+  return () => pending ??= loadGatewayCatalog({ refresh }).then((catalog) => catalog ?? null);
+}
 
 function fail(message: string): never {
   process.stderr.write(pc.red(`error: ${message}\n`));
@@ -59,18 +67,18 @@ function modelRows(models: ModelSpec[]): string[][] {
     fmtTokens(m.contextWindow),
     fmtTokens(m.maxInput),
     fmtTokens(m.maxOutput),
-    m.reasoning ? (m.reasoningEfforts?.join("/") ?? "yes") : "no",
+    m.reasoning === undefined ? "-" : m.reasoning ? (m.reasoningEfforts?.length ? m.reasoningEfforts.join("/") : "yes") : "no",
     m.cost ? `$${m.cost.input ?? "?"}/$${m.cost.output ?? "?"}` : "-",
   ]);
 }
 
 const MODEL_HEADER = ["MODEL", "CTX", "IN", "OUT", "REASONING", "$IN/$OUT per M"];
 
-/** Print a dim hint when some models have no models.dev metadata. */
+/** Print a dim hint when some models have no catalog metadata. */
 function printUncatalogedHint(models: ModelSpec[]): void {
   const bare = models.filter((m) => m.contextWindow === undefined && !m.cost);
   if (bare.length > 0) {
-    console.log(pc.dim(`${bare.length} model(s) have no models.dev metadata (shown as "-")`));
+    console.log(pc.dim(`${bare.length} model(s) have no catalog metadata (shown as "-")`));
   }
 }
 
@@ -94,7 +102,7 @@ function guessProviderHint(catalog: Catalog | undefined, baseUrl: string): strin
   return undefined;
 }
 
-export interface AddOptions {
+export interface AddOptions extends MetadataOptions {
   id?: string;
   name?: string;
   protocol?: string;
@@ -131,6 +139,7 @@ function reportDropped(dropped: Array<{ id: string; reason: string }>): void {
 
 export async function cmdAdd(opts: AddOptions): Promise<void> {
   const store = loadStore();
+  resolveMetadataOptions(opts);
   const interactive = process.stdin.isTTY && !opts.yes;
 
   let answers: Record<string, string> = {};
@@ -212,6 +221,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const existing = explicitId ? store.providers[explicitId] : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
   const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
   const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) ?? existing?.openaiApi : undefined;
+  const metadataOptions = resolveMetadataOptions(opts, existing);
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
   const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
@@ -235,7 +245,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
 
   const catalog = await loadCatalog();
   const hint = opts.modelsDev ?? existing?.modelsDevId ?? guessProviderHint(catalog, answers.baseUrl!);
-  const models = enrichModels(catalog, modelIds, hint);
+  const models = await enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: existing?.models });
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
 
   const defaultModel = opts.defaultModel ?? existing?.defaultModel ?? modelIds[0]!;
@@ -255,6 +265,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     smallModel: opts.smallModel ?? existing?.smallModel,
     reasoningEffort: opts.reasoningEffort ?? existing?.reasoningEffort,
     modelsDevId: hint,
+    ...metadataOptions,
     modelFilter,
   };
 
@@ -287,11 +298,16 @@ async function createProvider(opts: {
   modelFilter?: ModelFilter;
   existing?: Provider;
   modelsDev?: string;
+  gatewayMetadata?: boolean;
+  gatewayModels?: string;
+  metadataMode?: string;
+  gatewayLoader?: () => Promise<GatewayCatalog | null>;
 }): Promise<Provider> {
   const { store, id, name, protocol, openaiApi, baseUrl, apiKey, modelIds, modelFilter } = opts;
+  const metadataOptions = resolveMetadataOptions(opts, opts.existing);
   const catalog = await loadCatalog();
   const hint = opts.modelsDev ?? opts.existing?.modelsDevId ?? guessProviderHint(catalog, baseUrl);
-  const models = enrichModels(catalog, modelIds, hint);
+  const models = await enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: opts.existing?.models }, { gatewayLoader: opts.gatewayLoader });
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
   const defaultModel = opts.defaultModel ?? opts.existing?.defaultModel ?? modelIds[0]!;
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
@@ -311,6 +327,7 @@ async function createProvider(opts: {
     smallModel,
     reasoningEffort: opts.reasoningEffort ?? opts.existing?.reasoningEffort,
     modelsDevId: hint,
+    ...metadataOptions,
     modelFilter,
   };
 
@@ -338,6 +355,9 @@ export async function cmdQuickAdd(opts: {
   name?: string;
   openaiApi?: string;
   modelsDev?: string;
+  gatewayMetadata?: boolean;
+  gatewayModels?: string;
+  metadataMode?: string;
   defaultModel?: string;
   smallModel?: string;
   reasoningEffort?: string;
@@ -347,6 +367,7 @@ export async function cmdQuickAdd(opts: {
   yes?: boolean;
 }): Promise<void> {
   const store = loadStore();
+  resolveMetadataOptions(opts);
   const interactive = process.stdin.isTTY && !opts.yes;
 
   let baseUrl: string;
@@ -379,6 +400,7 @@ export async function cmdQuickAdd(opts: {
   if (opts.openaiApi !== undefined && opts.openaiApi !== "completions" && opts.openaiApi !== "responses") fail(t("add.openaiApiInvalid"));
   const multi = protocols.length > 1;
   const createdIds: string[] = [];
+  const gatewayLoader = sharedGatewayLoader();
 
   for (const protocol of protocols) {
     const explicitId = opts.id === undefined ? undefined : `${opts.id}${multi ? `-${protocol}` : ""}`;
@@ -417,6 +439,10 @@ export async function cmdQuickAdd(opts: {
       existing,
       openaiApi: opts.openaiApi as OpenAIApi | undefined,
       modelsDev: opts.modelsDev,
+      gatewayMetadata: opts.gatewayMetadata,
+      gatewayModels: opts.gatewayModels,
+      metadataMode: opts.metadataMode,
+      gatewayLoader,
     });
     createdIds.push(provider.id);
     console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
@@ -655,11 +681,22 @@ export function cmdStatus(): void {
 
 export async function cmdModels(
   query: string | undefined,
-  opts: { provider?: string; refresh?: boolean; limit?: string },
+  opts: { provider?: string; refresh?: boolean; limit?: string; metadata?: boolean },
 ): Promise<void> {
+  if (opts.metadata && !opts.provider) fail("--metadata requires --provider");
   if (opts.provider) {
     const store = loadStore();
     const provider = getProvider(store, opts.provider);
+    if (opts.metadata) {
+      console.log(JSON.stringify({
+        provider: provider.id,
+        gatewayMetadata: provider.gatewayMetadata ?? "auto",
+        metadataMode: getMetadataMode(provider),
+        gatewayModelAliases: provider.gatewayModelAliases ?? {},
+        models: provider.models.map(({ id, metadata }) => ({ id, metadata })),
+      }, null, 2));
+      return;
+    }
     console.log(`${pc.bold(provider.id)} (${provider.protocol}) · ${provider.baseUrl}`);
     console.log(table(modelRows(provider.models), MODEL_HEADER));
     printUncatalogedHint(provider.models);
@@ -681,49 +718,53 @@ export async function cmdModels(
   console.log(table(rows, ["PROVIDER", ...MODEL_HEADER]));
 }
 
-export async function cmdRefreshMeta(): Promise<void> {
+export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string } = {}): Promise<void> {
   const store = loadStore();
+  const providers = opts.provider ? [getProvider(store, opts.provider)] : Object.values(store.providers);
+  resolveMetadataOptions(opts);
+  for (const provider of providers) Object.assign(provider, resolveMetadataOptions(opts, provider));
   const catalog = await loadCatalog({ refresh: true });
-  if (!catalog) fail("models.dev catalog unavailable");
+  const gatewayLoader = sharedGatewayLoader(true);
   let updated = 0;
-  for (const provider of Object.values(store.providers)) {
+  for (const provider of providers) {
     const before = JSON.stringify(provider.models);
-    provider.models = enrichModels(
-      catalog,
-      provider.models.map((m) => m.id),
-      provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl),
-    );
+    provider.models = await enrichProviderModels(catalog, provider.models.map((m) => m.id), {
+      ...provider,
+      modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl),
+    }, { gatewayLoader });
     if (JSON.stringify(provider.models) !== before) updated++;
   }
   saveStore(store);
-  console.log(pc.green(`refreshed models.dev metadata (${updated} provider(s) changed)`));
+  console.log(pc.green(`checked model metadata (${updated} provider(s) changed)`));
   if (updated > 0) console.log(pc.dim("run `agentsw sync` to push updated metadata into app configs"));
 }
 
 export async function cmdDiscover(
   id: string,
-  opts: { sync?: boolean; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
+  opts: MetadataOptions & { sync?: boolean; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
 ): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
   const provider = getProvider(store, id);
+  Object.assign(provider, resolveMetadataOptions(opts, provider));
   // flags override and re-persist the filter; --no-filter clears it
   const flagFilter = parseFilterOpts(opts, provider.modelFilter);
   if (opts.filter === false) provider.modelFilter = undefined;
   else if (flagFilter) provider.modelFilter = flagFilter;
   process.stderr.write(pc.dim(`discovering models from ${provider.baseUrl} ...\n`));
   const listed = await discoverProviderModels(provider);
-  const outcome = applyModelFilter(listed, provider.modelFilter, [provider.defaultModel]);
+  const pinned = [provider.defaultModel, provider.smallModel].filter((model): model is string => !!model);
+  const outcome = applyModelFilter(listed, provider.modelFilter, pinned);
   reportDropped(outcome.dropped);
   const ids = outcome.kept;
   const known = provider.models.map((m) => m.id);
   const added = ids.filter((m) => !known.includes(m));
   const gone = known.filter((m) => !ids.includes(m));
   const catalog = await loadCatalog();
-  provider.models = enrichModels(catalog, ids, provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl));
+  const retainedIds = [...new Set([...ids, ...pinned])];
+  provider.models = await enrichProviderModels(catalog, retainedIds, { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) });
   if (!ids.includes(provider.defaultModel)) {
     console.log(pc.yellow(`default model ${provider.defaultModel} no longer listed; keeping it anyway`));
-    provider.models.push({ id: provider.defaultModel });
   }
   saveStore(store);
   console.log(
@@ -881,12 +922,13 @@ export async function cmdUpgrade(ids: string[]): Promise<void> {
   }
 }
 
-export interface ImportOptions {
+export interface ImportOptions extends MetadataOptions {
   all?: boolean;
 }
 
 /** Collect custom providers, dedupe by endpoint and credentials, and import what is new. */
 export async function cmdImport(opts: ImportOptions): Promise<void> {
+  const metadataOptions = resolveMetadataOptions(opts);
   const rows = scanCandidates();
   const fresh = rows.filter((r) => !r.configured);
   for (const r of rows) {
@@ -941,6 +983,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
 
   const store = loadStore();
   const catalog = await loadCatalog();
+  const gatewayLoader = sharedGatewayLoader();
   const imported: string[] = [];
   for (const c of chosen) {
     let apiKey = c.apiKey;
@@ -982,7 +1025,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
 
     const id = availableProviderId(c.id, store.providers);
     const hint = guessProviderHint(catalog, c.baseUrl);
-    const models = enrichModels(catalog, ids, hint);
+    const models = await enrichProviderModels(catalog, ids, { ...metadataOptions, modelsDevId: hint }, { gatewayLoader });
     const defaultModel = c.defaultModel && ids.includes(c.defaultModel) ? c.defaultModel : ids[0]!;
     const existed = store.providers[id] !== undefined;
     store.providers[id] = {
@@ -995,6 +1038,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
       models,
       defaultModel,
       modelsDevId: hint,
+      ...metadataOptions,
     };
     if (!store.active) store.active = id;
     imported.push(id);
