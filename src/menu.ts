@@ -29,9 +29,9 @@ function bye(): never {
 
 const cancel = { onCancel: () => bye() };
 
-async function askToggle(message: string, initial = false): Promise<boolean> {
+async function askToggle(message: string, initial = false, labels?: { active: string; inactive: string }): Promise<boolean> {
   const { v } = await prompts(
-    { type: "toggle", name: "v", message, active: t("menu.yes"), inactive: t("menu.no"), initial },
+    { type: "toggle", name: "v", message, active: labels?.active ?? t("menu.yes"), inactive: labels?.inactive ?? t("menu.no"), initial },
     cancel,
   );
   return v === true;
@@ -102,7 +102,9 @@ async function renameFromMenu(): Promise<void> {
   if (!newId) return;
   const next = String(newId).trim();
   await cmdRename(picked.id, next, { dryRun: true });
-  if (await askToggle(t("menu.renameConfirm", { oldId: picked.id, newId: next }))) {
+  if (await askToggle(t("menu.renameConfirm", { oldId: picked.id, newId: next }), false, {
+    active: t("menu.confirmRename"), inactive: t("menu.cancelAction"),
+  })) {
     await cmdRename(picked.id, next);
   }
 }
@@ -114,9 +116,9 @@ async function removeFromMenu(): Promise<void> {
     message: t("menu.removeScope"),
     hint: t("menu.selectInstructions"),
     choices: [
-      { title: t("menu.removeStore"), value: "store" },
-      { title: t("menu.removeEverywhere"), value: "everywhere" },
-      { title: t("menu.removeLocal"), value: "local" },
+      { title: t("menu.removeStore"), description: t("menu.removeStoreHelp"), value: "store" },
+      { title: t("menu.removeLocal"), description: t("menu.removeLocalHelp"), value: "local" },
+      { title: t("menu.removeEverywhere"), description: t("menu.removeEverywhereHelp"), value: "everywhere" },
     ],
   }, cancel);
   if (!scope) return;
@@ -153,8 +155,12 @@ async function removeFromMenu(): Promise<void> {
   if (!picked) return;
   const opts = scope === "local" ? { apps: picked.app! } : { prune: scope === "everywhere" };
   await cmdRemoveProvider(picked.id, { ...opts, dryRun: true });
-  const scopeLabel = picked.app ?? t(scope === "everywhere" ? "menu.removeEverywhere" : "menu.removeStore");
-  if (await askToggle(t("menu.removeConfirmScope", { id: picked.id, scope: scopeLabel }))) {
+  const confirmation = picked.app
+    ? t("menu.removeConfirmLocal", { id: picked.id, app: picked.app })
+    : t(scope === "everywhere" ? "menu.removeConfirmEverywhere" : "menu.removeConfirmStore", { id: picked.id });
+  if (await askToggle(confirmation, false, {
+    active: t("menu.confirmRemove"), inactive: t("menu.cancelAction"),
+  })) {
     await cmdRemoveProvider(picked.id, opts);
   }
 }
@@ -175,20 +181,20 @@ export async function cmdMenu(): Promise<void> {
         message: t("menu.what"),
         hint: t("menu.selectInstructions"),
         choices: [
-          { title: t("menu.add"), value: "add" },
-          { title: t("menu.quickAdd"), value: "quickAdd" },
-          { title: t("menu.import"), value: "import" },
-          { title: t("menu.use"), value: "use" },
-          { title: t("menu.status"), value: "status" },
-          { title: t("menu.list"), value: "list" },
-          { title: t("menu.sync"), value: "sync" },
-          { title: t("menu.discover"), value: "discover" },
-          { title: t("menu.rename"), value: "rename" },
-          { title: t("menu.remove"), value: "remove" },
-          { title: t("menu.apps"), value: "apps" },
-          { title: t("menu.installApp"), value: "install" },
-          { title: t("menu.language"), value: "language" },
-          { title: t("menu.quit"), value: "quit" },
+          { title: t("menu.quickAdd"), description: t("menu.quickAddHelp"), value: "quickAdd" },
+          { title: t("menu.add"), description: t("menu.addHelp"), value: "add" },
+          { title: t("menu.import"), description: t("menu.importHelp"), value: "import" },
+          { title: t("menu.use"), description: t("menu.useHelp"), value: "use" },
+          { title: t("menu.status"), description: t("menu.statusHelp"), value: "status" },
+          { title: t("menu.list"), description: t("menu.listHelp"), value: "list" },
+          { title: t("menu.sync"), description: t("menu.syncHelp"), value: "sync" },
+          { title: t("menu.discover"), description: t("menu.discoverHelp"), value: "discover" },
+          { title: t("menu.rename"), description: t("menu.renameHelp"), value: "rename" },
+          { title: t("menu.remove"), description: t("menu.removeHelp"), value: "remove" },
+          { title: t("menu.apps"), description: t("menu.appsHelp"), value: "apps" },
+          { title: t("menu.installApp"), description: t("menu.installAppHelp"), value: "install" },
+          { title: t("menu.language"), description: t("menu.languageHelp"), value: "language" },
+          { title: t("menu.quit"), description: t("menu.quitHelp"), value: "quit" },
         ],
       },
       cancel,

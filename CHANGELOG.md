@@ -6,6 +6,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-05
+
+### Changed
+
+- Interactive menu labels describe concrete actions, with contextual help for
+  each choice in English and Simplified Chinese. Automatic provider setup is
+  listed first; saved providers, agent configuration, syncing, and model-list
+  updates are clearly distinguished.
+- Removal choices and confirmations explain what is deleted and what stays,
+  including the effect of later syncing after agent-only removal. Rename is
+  labeled as changing the provider ID, not a custom display name.
+- Rename and removal confirmations use explicit action labels and default to
+  cancellation. Added bilingual menu and scope-confirmation regression tests.
+
 ## [0.7.0] - 2026-09-05
 
 ### Added
@@ -249,7 +263,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/tchivs/agentsw/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tchivs/agentsw/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/tchivs/agentsw/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tchivs/agentsw/compare/v0.6.0...v0.6.1

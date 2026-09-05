@@ -15,7 +15,7 @@ for (const key of ["PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENC
 // The store and adapters capture home on import; load only after sandboxing.
 const { cmdMenu } = await import("../src/menu.js");
 const { listRemovableProviders } = await import("../src/remove.js");
-const { setLocale } = await import("../src/i18n.js");
+const { setLocale, t } = await import("../src/i18n.js");
 const storeFile = path.join(sandbox, ".config/agentsw/config.json");
 const primeFile = path.join(sandbox, ".prime/agent/models.json");
 const cli = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -37,6 +37,19 @@ function run(...args: string[]): string {
 function setupLocal(): void {
   put(primeFile, { providers: { orphan: { api: "openai-responses", baseUrl: "https://local.example/v1", apiKey: "private-fixture", models: [{ id: "local-model" }] } } });
   put(path.join(sandbox, ".prime/agent/settings.json"), { defaultProvider: "orphan", defaultModel: "local-model", theme: "dark" });
+}
+
+function capturePrompts(answers: unknown[]): prompts.PromptObject[] {
+  const questions: prompts.PromptObject[] = [];
+  // Clear inject mode so the real prompt dispatcher reaches these test renderers.
+  Reflect.deleteProperty(prompts, "_injected");
+  for (const type of ["select", "text", "toggle"] as const) {
+    mock.method(prompts.prompts, type, async (question: prompts.PromptObject) => {
+      questions.push(question);
+      return answers.shift();
+    });
+  }
+  return questions;
 }
 
 beforeEach(() => {
@@ -134,3 +147,85 @@ test("scoped CLI listing and interactive deletion ignore another agent's malform
   assert.equal(JSON.parse(fs.readFileSync(primeFile, "utf8")).providers.orphan, undefined);
   assert.equal(fs.readFileSync(path.join(sandbox, ".omp/agent/models.yml"), "utf8"), "broken: [");
 });
+
+for (const locale of ["en", "zh-CN"] as const) {
+  test(`menu labels explain actions and sync direction (${locale})`, { timeout: 5000 }, async () => {
+    setLocale(locale);
+    const questions = capturePrompts(["quit"]);
+    await cmdMenu();
+    const choices = questions.find((question) => question.name === "action")!.choices as prompts.Choice[];
+    assert.deepEqual(choices.map((choice) => choice.value), [
+      "quickAdd", "add", "import", "use", "status", "list", "sync", "discover", "rename", "remove", "apps", "install", "language", "quit",
+    ]);
+    assert.equal(new Set(choices.map((choice) => choice.title)).size, choices.length);
+    for (const choice of choices) {
+      assert.ok(choice.description, `missing help for ${choice.value}`);
+      assert.doesNotMatch(choice.title, /\s{2,}|\{[^}]+\}/);
+      assert.doesNotMatch(choice.description!, /\{[^}]+\}/);
+    }
+    const choice = (value: string) => choices.find((entry) => entry.value === value)!;
+    assert.match(choice("quickAdd").title, /auto-detect|自动识别/);
+    assert.match(choice("add").title, /manual setup|手动设置/);
+    assert.match(choice("list").title, /agentsw/);
+    assert.match(choice("status").title, /each agent|各智能体/);
+    assert.match(choice("sync").description!, /without fetching|不重新获取/);
+    assert.match(choice("discover").description!, /Fetch models|重新获取模型/);
+    assert.match(choice("rename").title, /ID/);
+    assert.match(choice("rename").description!, /keep custom display names|保留自定义显示名称/);
+    assert.match(choice("language").title, /language/i);
+    assert.match(choice("language").title, /语言/);
+    assert.deepEqual(errors, []);
+  });
+
+  for (const scope of ["store", "local", "everywhere"] as const) {
+    test(`deletion explains ${scope} scope and defaults to cancel (${locale})`, { timeout: 5000 }, async () => {
+      setLocale(locale);
+      if (scope === "local") setupLocal();
+      else put(primeFile, { providers: { legacy: { api: "openai-responses", baseUrl: legacy.baseUrl, apiKey: legacy.apiKey, models: legacy.models } } });
+      const beforeStore = fs.readFileSync(storeFile, "utf8");
+      const beforePrime = fs.readFileSync(primeFile, "utf8");
+      const answers: unknown[] = scope === "local"
+        ? ["remove", "local", "prime", 0, false, "quit"]
+        : ["remove", scope, 0, false, "quit"];
+      const questions = capturePrompts(answers);
+      await cmdMenu();
+      assert.equal(answers.length, 0);
+      const scopeChoices = questions.find((question) => question.name === "scope")!.choices as prompts.Choice[];
+      assert.deepEqual(scopeChoices.map((choice) => choice.value), ["store", "local", "everywhere"]);
+      assert.ok(scopeChoices.every((choice) => choice.description));
+      const confirmation = questions.find((question) => question.type === "toggle")!;
+      assert.ok(confirmation);
+      assert.equal(confirmation.initial, false);
+      assert.equal(confirmation.active, t("menu.confirmRemove"));
+      assert.equal(confirmation.inactive, t("menu.cancelAction"));
+      const expected = scope === "local"
+        ? t("menu.removeConfirmLocal", { id: "orphan", app: "prime" })
+        : t(scope === "store" ? "menu.removeConfirmStore" : "menu.removeConfirmEverywhere", { id: "legacy" });
+      assert.equal(confirmation.message, expected);
+      assert.doesNotMatch(String(confirmation.message), /\{[^}]+\}/);
+      if (scope === "local") assert.match(String(confirmation.message), /syncing later may add it back|再次同步可能恢复/);
+      if (scope === "store") assert.match(String(confirmation.message), /All agent configs stay unchanged|各智能体配置保持不变/);
+      if (scope === "everywhere") assert.match(String(confirmation.message), /default selections will also be cleared|默认选择会一并清理/);
+      assert.equal(fs.readFileSync(storeFile, "utf8"), beforeStore);
+      assert.equal(fs.readFileSync(primeFile, "utf8"), beforePrime);
+      assert.equal(fs.existsSync(path.join(sandbox, ".config/agentsw/backups")), false);
+      assert.deepEqual(errors, []);
+    });
+  }
+
+  test(`rename confirmation describes the ID change and defaults to cancel (${locale})`, { timeout: 5000 }, async () => {
+    setLocale(locale);
+    const before = fs.readFileSync(storeFile, "utf8");
+    const questions = capturePrompts(["rename", "legacy", "new-provider-id", false, "quit"]);
+    await cmdMenu();
+    const confirmation = questions.find((question) => question.type === "toggle")!;
+    assert.ok(confirmation);
+    assert.equal(confirmation.message, t("menu.renameConfirm", { oldId: "legacy", newId: "new-provider-id" }));
+    assert.equal(confirmation.active, t("menu.confirmRename"));
+    assert.equal(confirmation.inactive, t("menu.cancelAction"));
+    assert.equal(confirmation.initial, false);
+    assert.equal(fs.readFileSync(storeFile, "utf8"), before);
+    assert.equal(fs.existsSync(path.join(sandbox, ".config/agentsw/backups")), false);
+    assert.deepEqual(errors, []);
+  });
+}
