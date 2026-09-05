@@ -12,7 +12,6 @@ import {
   cmdModels,
   cmdRefreshMeta,
   cmdPrune,
-  cmdRemove,
   cmdStatus,
   cmdSync,
   cmdUpgrade,
@@ -22,6 +21,7 @@ import { detectSystemLocale, extractCliLocale, normalizeLocale, setLocale, t } f
 import { cmdMenu } from "./menu.js";
 import { loadStore } from "./store.js";
 import type { Locale } from "./types.js";
+import { cmdListLocalProviders, cmdRemoveProvider, cmdRename } from "./provider-actions.js";
 
 // Locale precedence: CLI flag > environment > saved preference > system locale.
 setLocale(extractCliLocale() ?? process.env.AGENTSW_LANG ?? loadStore().language ?? detectSystemLocale());
@@ -93,14 +93,27 @@ program
   .option("-y, --yes", t("opt.yes"))
   .action(cmdQuickAdd);
 
-program.command("list").alias("ls").description(t("cmd.list")).action(cmdList);
+program
+  .command("list")
+  .alias("ls")
+  .description(t("cmd.list"))
+  .option("-a, --apps <apps>", t("opt.apps"))
+  .action((opts: { apps?: string }) => opts.apps ? cmdListLocalProviders(opts.apps) : cmdList());
+
+program
+  .command("rename <id> <new-id>")
+  .description(t("cmd.rename"))
+  .option("-n, --dry-run", t("opt.manageDryRun"))
+  .action(cmdRename);
 
 program
   .command("remove <id>")
   .alias("rm")
   .description(t("cmd.remove"))
   .option("--prune", t("opt.prune"))
-  .action(cmdRemove);
+  .option("-a, --apps <apps>", t("opt.removeApps"))
+  .option("-n, --dry-run", t("opt.manageDryRun"))
+  .action(cmdRemoveProvider);
 
 program
   .command("prune <id>")

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
-import { slugFromBaseUrl } from "../slug.js";
+import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
@@ -133,11 +133,12 @@ export const workbuddy: TargetApp = {
   },
 
   candidates(): ProviderCandidate[] {
-    // every entry carries its own full chat/completions url + key; group by the underlying base URL
+    // Each model has its own endpoint and credential; different accounts must stay separate.
     const { models } = readWorkbuddyModels(path.join(configDir(), "models.json"));
     if (models.length === 0) return [];
     const settings = readJsonIfExists<{ model?: string }>(path.join(configDir(), "settings.json"));
     interface Group {
+      baseUrl: string;
       ids: string[];
       apiKey?: string;
       vendor?: string;
@@ -148,20 +149,22 @@ export const workbuddy: TargetApp = {
       if (typeof row.url !== "string" || !row.url) continue;
       const baseUrl = row.url.replace(/\/+$/, "").replace(/\/chat\/completions$/, "");
       if (!/^https?:\/\//.test(baseUrl)) continue;
-      let g = groups.get(baseUrl);
+      const apiKey = typeof row.apiKey === "string" && row.apiKey ? row.apiKey : undefined;
+      const key = JSON.stringify([baseUrl, apiKey ?? null]);
+      let g = groups.get(key);
       if (!g) {
-        g = { ids: [] };
-        groups.set(baseUrl, g);
+        g = { baseUrl, apiKey, ids: [] };
+        groups.set(key, g);
       }
       if (!g.ids.includes(m.id)) g.ids.push(m.id);
-      if (!g.apiKey && typeof row.apiKey === "string") g.apiKey = row.apiKey;
       if (!g.vendor && typeof row.vendor === "string") g.vendor = row.vendor;
     }
     const self = this.id;
-    return [...groups.entries()].map(([baseUrl, g]) => {
-      const id = slugFromBaseUrl(baseUrl);
+    return [...groups.values()].map((g) => {
+      const { baseUrl } = g;
+      const id = providerIdFromBaseUrl(baseUrl, "openai");
       const defaultModel = settings?.model && g.ids.includes(settings.model) ? settings.model : undefined;
-      return { id, name: g.vendor ?? id, protocol: "openai" as const, baseUrl, apiKey: g.apiKey, models: g.ids, defaultModel, source: self };
+      return { id, generatedId: true, name: g.vendor ?? providerNameFromBaseUrl(baseUrl, "openai"), protocol: "openai" as const, baseUrl, apiKey: g.apiKey, models: g.ids, defaultModel, source: self };
     });
   },
 };
