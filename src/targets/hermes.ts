@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { backupFile, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
-import { stripApiVersion } from "./wire.js";
+import { sdkBaseUrl } from "./wire.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
@@ -52,9 +52,14 @@ export const hermes: TargetApp = {
     }
     const entry: Record<string, unknown> = {
       name: provider.name,
-      api: stripApiVersion(provider.baseUrl),
+      api: sdkBaseUrl(provider.protocol, provider.baseUrl),
       key_env: keyVar,
-      transport: provider.protocol === "anthropic" ? "anthropic_messages" : "chat_completions",
+      transport:
+        provider.protocol === "anthropic"
+          ? "anthropic_messages"
+          : provider.openaiApi === "responses"
+            ? "codex_responses"
+            : "chat_completions",
       default_model: provider.defaultModel,
       models,
     };
@@ -164,15 +169,20 @@ export const hermes: TargetApp = {
     return Object.entries(parsed.providers).flatMap(([id, entry]) => {
       if (!entry || typeof entry.api !== "string" || !entry.api) return [];
       const protocol =
-        entry.transport === "anthropic_messages" ? "anthropic" : entry.transport === "chat_completions" ? "openai" : undefined;
+        entry.transport === "anthropic_messages"
+          ? "anthropic"
+          : ["chat_completions", "codex_responses"].includes(entry.transport ?? "")
+            ? "openai"
+            : undefined;
       if (!protocol) return [];
+      const openaiApi = protocol === "openai" ? (entry.transport === "codex_responses" ? "responses" : "completions") : undefined;
       const keyEnv = typeof entry.key_env === "string" && entry.key_env ? entry.key_env : undefined;
       const apiKey = keyEnv ? readEnv(keyEnv) : undefined;
       const models = Object.keys(entry.models ?? {});
       const active = parsed?.model?.provider === id ? parsed?.model?.default ?? parsed?.model?.model : undefined;
       const defaultModel = entry.default_model ?? active;
       if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
-      return [{ id, name: entry.name ?? id, protocol, baseUrl: entry.api, apiKey, keyEnv, models, defaultModel, source: self }];
+      return [{ id, name: entry.name ?? id, protocol, openaiApi, baseUrl: entry.api, apiKey, keyEnv, models, defaultModel, source: self }];
     });
   },
 };

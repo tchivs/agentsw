@@ -17,6 +17,7 @@ delete process.env.DSH_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
 delete process.env.OPENCODE_CONFIG_DIR;
+delete process.env.OPENCODE_CONFIG;
 
 // Dynamic import is intentional: fsutil captures os.homedir() at module init,
 // so the sandbox HOME above must be exported before the adapters load.
@@ -100,6 +101,7 @@ test("omp write carries metadata and stays parseable", async () => {
   const doc = YAML.parse(fs.readFileSync(path.join(sandbox, ".omp", "agent", "models.yml"), "utf8"));
   const entry = doc.providers.testprov;
   assert.equal(entry.api, "openai-completions");
+  assert.equal(entry.baseUrl, provider.baseUrl, "OpenAI clients append only the operation path, so keep /v1");
   const modelA = entry.models.find((m: { id: string }) => m.id === "model-a");
   assert.equal(modelA.contextWindow, 100000);
   assert.equal(modelA.maxTokens, 8192);
@@ -116,6 +118,7 @@ test("pi write maps reasoning efforts to thinkingLevelMap", async () => {
   assert.equal(modelA.thinkingLevelMap.high, "high");
   assert.equal(modelA.thinkingLevelMap.medium, null);
   assert.equal(config.providers.testprov.api, "openai-completions");
+  assert.equal(config.providers.testprov.baseUrl, provider.baseUrl, "OpenAI SDK appends /responses, so keep /v1");
   await pi.prune(provider);
 });
 
@@ -123,6 +126,9 @@ test("anthropic provider routes to anthropic wire and skips openai-only apps", a
   const anthro: Provider = { ...provider, id: "anthro", protocol: "anthropic" };
   const codex = targets.find((t) => t.id === "codex")!;
   const workbuddy = targets.find((t) => t.id === "workbuddy")!;
+  const pi = targets.find((t) => t.id === "pi")!;
+  const opencode = targets.find((t) => t.id === "opencode")!;
+  const hermes = targets.find((t) => t.id === "hermes")!;
   const claude = targets.find((t) => t.id === "claude")!;
   assert.equal(supportsProtocol(codex, "anthropic"), false);
   assert.equal(supportsProtocol(workbuddy, "anthropic"), false);
@@ -132,6 +138,20 @@ test("anthropic provider routes to anthropic wire and skips openai-only apps", a
   const settings = JSON.parse(fs.readFileSync(path.join(sandbox, ".claude", "settings.json"), "utf8"));
   assert.equal(settings.env.ANTHROPIC_BASE_URL, anthro.baseUrl.replace(/\/v\d+(?:beta\d*)?\/?$/i, ""), "claude SDK appends /v1; strip it from ANTHROPIC_BASE_URL");
   assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, anthro.apiKey);
+  await pi.apply(anthro);
+  const piModels = JSON.parse(fs.readFileSync(path.join(sandbox, ".pi", "agent", "models.json"), "utf8"));
+  assert.equal(piModels.providers.anthro.baseUrl, "https://api.test.example", "Anthropic SDK appends /v1/messages");
+  await pi.prune(anthro);
+  await opencode.apply(anthro);
+  const opencodeConfig = JSON.parse(
+    fs.readFileSync(path.join(sandbox, ".config", "opencode", "opencode.json"), "utf8"),
+  );
+  assert.equal(opencodeConfig.provider.anthro.options.baseURL, anthro.baseUrl, "AI SDK Anthropic appends only /messages");
+  await opencode.prune(anthro);
+  await hermes.apply(anthro);
+  const hermesConfig = YAML.parse(fs.readFileSync(path.join(sandbox, ".hermes", "config.yaml"), "utf8"));
+  assert.equal(hermesConfig.providers.anthro.api, "https://api.test.example", "Python Anthropic SDK appends /v1/messages");
+  await hermes.prune(anthro);
   assert.equal(settings.env.ANTHROPIC_MODEL, "model-a");
   await claude.prune(anthro);
 });
@@ -222,6 +242,7 @@ test("pi keeps provider-level keys and the responses wire across a sync", async 
   assert.equal(entry.api, "openai-responses");
   assert.equal(entry.authHeader, true);
   assert.equal(entry.headers["X-Team"], "platform");
+  assert.equal(entry.baseUrl, "https://reseller.example/v1");
   const modelA = entry.models.find((m: { id: string }) => m.id === "model-a");
   assert.equal(modelA.api, "openai-responses");
   assert.equal(modelA.maxTokens, 8192);
@@ -263,7 +284,7 @@ test("dsh writes an llm-pi-ai route, the picked default and a credential referen
   const doc = YAML.parse(fs.readFileSync(settings, "utf8"));
   const route = doc["llm-pi-ai"].providers.gateway;
   assert.equal(route.api, "openai-responses", "an explicit store flavor rewrites the route");
-  assert.equal(route.baseURL, "https://gateway.example", "dsh SDK appends /v1 itself; strip it from baseURL");
+  assert.equal(route.baseURL, "https://gateway.example/v1", "OpenAI client appends only /responses, so keep /v1");
   assert.equal(route.apiKeyEnv, "AGENTSW_GATEWAY_API_KEY");
   assert.equal(route.compat.maxTokensField, "max_tokens", "compat switches survive a sync");
   assert.equal(route.modelOverrides, undefined, "llm-pi-ai refuses modelOverrides beside a models list");
@@ -334,12 +355,24 @@ test("opencode and hermes keep keys agentsw does not model", async () => {
       },
     }),
   );
-  await opencode.apply({ ...provider, id: "keepme" });
+  await opencode.apply({
+    ...provider,
+    id: "keepme",
+    models: [...provider.models, { id: "context-only", contextWindow: 64000 }],
+  });
   const entry = JSON.parse(fs.readFileSync(opencodeFile, "utf8")).provider.keepme;
   assert.equal(entry.options.headers["X-Team"], "platform");
   assert.equal(entry.options.apiKey, provider.apiKey);
+  assert.equal(entry.options.baseURL, provider.baseUrl);
+  assert.equal(entry.npm, "@ai-sdk/openai-compatible");
+  await opencode.apply({ ...provider, id: "responses", openaiApi: "responses" });
+  const responsesEntry = JSON.parse(fs.readFileSync(opencodeFile, "utf8")).provider.responses;
+  assert.equal(responsesEntry.npm, "@ai-sdk/openai");
+  await opencode.prune({ ...provider, id: "responses" });
   assert.equal(entry.models["model-a"].tool_call, false, "per-model extras survive");
   assert.equal(entry.models["model-a"].limit.context, 100000);
+  assert.equal(entry.models["model-a"].limit.output, 8192);
+  assert.equal(entry.models["context-only"].limit, undefined, "OpenCode requires both limit.context and limit.output");
   await opencode.prune({ ...provider, id: "keepme" });
 
   const hermesFile = path.join(sandbox, ".hermes", "config.yaml");
@@ -350,8 +383,13 @@ test("opencode and hermes keep keys agentsw does not model", async () => {
   await hermes.apply({ ...provider, id: "keepme" });
   const cfg = YAML.parse(fs.readFileSync(hermesFile, "utf8"));
   assert.equal(cfg.providers.keepme.max_retries, 7);
+  await hermes.apply({ ...provider, id: "responses", openaiApi: "responses" });
+  const responsesCfg = YAML.parse(fs.readFileSync(hermesFile, "utf8"));
+  assert.equal(responsesCfg.providers.responses.transport, "codex_responses");
+  await hermes.prune({ ...provider, id: "responses" });
   assert.equal(cfg.providers.keepme.models["model-a"].note, "keep");
   assert.equal(cfg.providers.keepme.models["model-a"].context_length, 100000);
+  assert.equal(cfg.providers.keepme.api, provider.baseUrl, "Hermes OpenAI client requires the versioned base URL");
   assert.equal(cfg.model.provider, "keepme");
   await hermes.prune({ ...provider, id: "keepme" });
 });

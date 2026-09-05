@@ -6,6 +6,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-05
+
+### Fixed
+
+- Corrected the overly broad `/v1` stripping introduced in 0.6.0. OpenAI
+  clients append only `/responses` or `/chat/completions`, so omp, pi,
+  prime-agent, DeepSeek Harness, OpenCode, and Hermes now retain versioned
+  OpenAI base URLs while Anthropic SDK clients still avoid `/v1/v1/messages`.
+- OpenCode now uses `@ai-sdk/openai` for Responses providers, keeps its
+  Anthropic AI SDK base URL version, writes only complete `limit` objects, and
+  continues to honor `OPENCODE_CONFIG_DIR` for shared configuration.
+- Hermes now maps Responses providers to its `codex_responses` transport
+  instead of sending reasoning/tool requests through chat completions.
+
 ## [0.6.0] - 2026-09-03
 
 ### Fixed
@@ -201,7 +215,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/tchivs/agentsw/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/tchivs/agentsw/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/tchivs/agentsw/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/tchivs/agentsw/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/tchivs/agentsw/compare/v0.5.2...v0.5.3

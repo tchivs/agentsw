@@ -5,8 +5,7 @@ import { backupFile, home, readTextIfExists, writeFileAtomic } from "../fsutil.j
 import { looksLikeEnvName } from "../slug.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { stripApiVersion } from "./wire.js";
-import { apiValue, classifyApi, entryApi, mergeModels, stripConflictingOverrides } from "./wire.js";
+import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
 
 /** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
 const OWNED_MODEL_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
@@ -43,6 +42,7 @@ export const omp: TargetApp = {
       | undefined;
     const anthropic = provider.protocol === "anthropic";
     const api = apiValue(provider.protocol, provider.openaiApi, entryApi(prev ?? {}));
+    const baseUrl = sdkBaseUrl(provider.protocol, provider.baseUrl);
     const models = mergeModels(
       prev?.models,
       provider.models.map((m) => ({
@@ -65,10 +65,10 @@ export const omp: TargetApp = {
       })),
       OWNED_MODEL_KEYS,
     );
-    const conflicts = stripConflictingOverrides(models, api, provider.baseUrl);
+    const conflicts = stripConflictingOverrides(models, api, baseUrl);
     if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
     const entry: Record<string, unknown> = {
-      baseUrl: stripApiVersion(provider.baseUrl),
+      baseUrl,
       apiKey: provider.apiKey, // omp treats value as env-var name first, then literal
       api,
       models,
