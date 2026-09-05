@@ -6,6 +6,37 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-05
+
+### Fixed
+
+- Stage every adapter's multi-file changes before committing, preserve permissions,
+  create private unique backups, and reject stale provider-store saves under a
+  shared short-lived write lock. Dry-run output is redacted and never writes.
+- Isolate generated credential references for distinct provider IDs; preserve
+  shared/custom references, YAML aliases and complete multiline dotenv values.
+- Disambiguate WorkBuddy account removal, allow credentialless local entries,
+  verify active Codex credentials before global deletion, and apply target-specific
+  literal/reference semantics during rename and import.
+- Preserve existing options on repeated automatic onboarding, retain Responses
+  routing and custom Codex fields, reject mixed effective model protocols, and
+  maintain WorkBuddy endpoint paths and owned model lists across synchronization.
+- Fetch complete model-list pagination before updating the store, preserve query
+  parameters when constructing requests, distinguish non-v1 API identities, and
+  prefer complete model-ID metadata matches over basename fallbacks.
+- Keep help/version and agent-local management independent of malformed central
+  configuration; validate selected targets before changing active-provider state.
+- Correct SemVer precedence, probe Windows batch shims correctly, propagate failed
+  installer pipelines, and report unknown/failed version checks rather than success.
+
+### Changed
+
+- Minimum Node.js is now **22.13.0**, where built-in SQLite no longer needs an
+  experimental flag. CI includes the exact minimum and installed-package CLI
+  smoke tests on Linux, macOS and Windows.
+- Expanded command, account-isolation, transaction, discovery, platform and metadata
+  regressions; clarified backup scope, non-interactive import and adapter integration docs.
+
 ## [0.7.1] - 2026-09-05
 
 ### Changed
@@ -263,7 +294,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/tchivs/agentsw/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tchivs/agentsw/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tchivs/agentsw/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/tchivs/agentsw/compare/v0.6.1...v0.6.2

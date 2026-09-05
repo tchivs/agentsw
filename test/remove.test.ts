@@ -7,8 +7,12 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
 import type { Provider } from "../src/types.js";
+import { legacyManagedCredentialRef, localProviderId, managedCredentialRef } from "../src/provider-identity.js";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-remove-"));
+const envNames = ["HOME", "AGENTSW_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "FIXTURE_CODEX_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_"))];
+const originalEnv = new Map(envNames.map((name) => [name, process.env[name]]));
+for (const name of envNames) delete process.env[name];
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
@@ -30,11 +34,17 @@ const provider: Provider = {
 beforeEach(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
   fs.mkdirSync(sandbox);
-  for (const name of ["PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "HERMES_HOME", "DSH_HOME"]) delete process.env[name];
+  for (const name of ["PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "HERMES_HOME", "DSH_HOME", "FIXTURE_CODEX_KEY", "CUSTOM_KEY"]) delete process.env[name];
   process.env.OPENCODE_CONFIG_DIR = path.join(sandbox, "opencode-custom");
   process.env.OPENCODE_CONFIG = path.join(sandbox, "opencode-shared.jsonc");
 });
-after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+after(() => {
+  fs.rmSync(sandbox, { recursive: true, force: true });
+  for (const [name, value] of originalEnv) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+});
 
 function put(relative: string, content: string | object): string {
   const file = path.join(sandbox, relative);
@@ -90,8 +100,9 @@ test("store plus prune backs up every changed original before removing matching 
   const pi = put(".pi/agent/models.json", { providers: { [provider.id]: {}, keep: {} } });
   const piSettings = put(".pi/agent/settings.json", { defaultProvider: provider.id, defaultModel: "model-a", theme: "light" });
   const opencode = put(".config/opencode/opencode.json", { provider: { [provider.id]: {} }, model: `${provider.id}/model-a`, theme: "dark" });
-  const hermes = put(".hermes/config.yaml", { providers: { [provider.id]: { key_env: "AGENTSW_REMOVE_ME_API_KEY" } }, model: { provider: provider.id, default: "model-a" }, agent: { max_turns: 7 } });
-  const env = put(".hermes/.env", `AGENTSW_REMOVE_ME_API_KEY=${provider.apiKey}\nKEEP=fixture-keep\n`);
+  const ref = managedCredentialRef(provider.id);
+  const hermes = put(".hermes/config.yaml", { providers: { [provider.id]: { key_env: ref } }, model: { provider: provider.id, default: "model-a" }, agent: { max_turns: 7 } });
+  const env = put(".hermes/.env", `${ref}=${provider.apiKey}\nKEEP=fixture-keep\n`);
   const originals = snapshot();
   const result = await removeProvider(provider.id, { prune: true });
   assert.deepEqual(new Set(result.files), new Set([configFile, omp, ompConfig, pi, piSettings, opencode, hermes, env]));
@@ -480,4 +491,131 @@ test("OpenCode removal clears command model references without deleting the comm
   const file = put(".config/opencode/opencode.json", { provider: { local: {} }, command: { custom: { model: "local/model-a", template: "keep this" } } });
   await removeProvider("local", { apps: "opencode" });
   assert.deepEqual(parsed(file).command.custom, { template: "keep this" });
+});
+
+test("WorkBuddy account-qualified listing removes the selected account, never the first endpoint match", async () => {
+  const file = put(".workbuddy/models.json", { models: [
+    { id: "shared", vendor: "First", url: "https://wb.example/v1/chat/completions?tenant=fixture", apiKey: "fixture-first" },
+    { id: "shared", vendor: "Second", url: "https://wb.example/v1/chat/completions?tenant=fixture", apiKey: "fixture-second" },
+  ], availableModels: ["shared"] });
+  const settings = put(".workbuddy/settings.json", { model: "shared", custom: true });
+  const rows = listRemovableProviders("workbuddy");
+  assert.equal(rows.length, 2);
+  assert.equal(new Set(rows.map((row) => row.id)).size, 2);
+  assert.doesNotMatch(JSON.stringify(rows), /fixture-first|fixture-second|https:/);
+  const candidates = targets.find((target) => target.id === "workbuddy")!.candidates!();
+  assert.equal(candidates[0]!.id, candidates[1]!.id);
+  const before = snapshot();
+  for (const dryRun of [true, false]) {
+    await assert.rejects(removeProvider(candidates[0]!.id, { apps: "workbuddy", dryRun }), /ambiguous/);
+    assert.deepEqual(snapshot(), before);
+  }
+  const selected = rows.find((row) => row.name === "Second")!;
+  await removeProvider(selected.id, { apps: "workbuddy", dryRun: true });
+  assert.deepEqual(snapshot(), before);
+  await removeProvider(selected.id, { apps: "workbuddy" });
+  assert.deepEqual(parsed(file).models.map((row: { vendor: string }) => row.vendor), ["First"]);
+  assert.deepEqual(parsed(file).availableModels, ["shared"]);
+  assert.equal(parsed(settings).model, "shared");
+});
+
+test("WorkBuddy keyless removal preserves empty-string and authenticated accounts", async () => {
+  const file = put(".workbuddy/models.json", [
+    { id: "keyless", vendor: "Keyless", url: "https://wb.example/v1/chat/completions" },
+    { id: "empty", vendor: "Empty", url: "https://wb.example/v1/chat/completions", apiKey: "" },
+    { id: "private", vendor: "Private", url: "https://wb.example/v1/chat/completions", apiKey: "fixture-private" },
+  ]);
+  const rows = listRemovableProviders("workbuddy");
+  assert.equal(rows.length, 3);
+  await removeProvider(rows.find((row) => row.name === "Keyless")!.id, { apps: "workbuddy" });
+  assert.deepEqual(parsed(file).map((row: { id: string }) => row.id), ["empty", "private"]);
+});
+
+test("WorkBuddy legacy IDs remain removable only when unambiguous", async () => {
+  const file = put(".workbuddy/models.json", [{ id: "a", vendor: "Only", url: "https://wb.example/v1/chat/completions" }]);
+  const candidate = targets.find((target) => target.id === "workbuddy")!.candidates!()[0]!;
+  assert.equal(candidate.localId, localProviderId(candidate));
+  await removeProvider(candidate.id, { apps: "workbuddy" });
+  assert.deepEqual(parsed(file), []);
+});
+
+test("WorkBuddy global prune selects the store account from colliding legacy IDs", async () => {
+  const file = put(".workbuddy/models.json", [
+    { id: "a", vendor: "First", url: "https://wb.example/v1/chat/completions", apiKey: "fixture-first" },
+    { id: "b", vendor: "Second", url: "https://wb.example/v1/chat/completions", apiKey: "fixture-second" },
+  ]);
+  const candidate = targets.find((target) => target.id === "workbuddy")!.candidates!().find((row) => row.name === "Second")!;
+  put(".config/agentsw/config.json", { version: 1, providers: { [candidate.id]: {
+    ...provider, id: candidate.id, baseUrl: candidate.baseUrl, apiKey: candidate.apiKey,
+  } } });
+  await removeProvider(candidate.id, { prune: true });
+  assert.deepEqual(parsed(file).map((row: { vendor: string }) => row.vendor), ["First"]);
+});
+
+for (const credential of ["auth", "env"] as const) test(`Codex global prune rejects a different ${credential} account before every write`, async () => {
+  store();
+  put(".pi/agent/models.json", { providers: { [provider.id]: {} } });
+  put(".codex/config.toml", `model_provider = "${provider.id}"\nmodel = "a"\n[model_providers.${provider.id}]\nbase_url = "${provider.baseUrl}"\nrequires_openai_auth = true\n${credential === "env" ? 'env_key = "FIXTURE_CODEX_KEY"\n' : ""}`);
+  put(".codex/auth.json", { OPENAI_API_KEY: credential === "auth" ? "fixture-other-account" : provider.apiKey });
+  if (credential === "env") process.env.FIXTURE_CODEX_KEY = "fixture-other-account";
+  const before = snapshot();
+  for (const dryRun of [true, false]) {
+    await assert.rejects(removeProvider(provider.id, { prune: true, dryRun }), /different credential/);
+    assert.deepEqual(snapshot(), before);
+  }
+  assert.equal(fs.existsSync(backupsDir), false);
+});
+
+test("Codex global prune retains matching shared auth and does not attribute inactive auth", async () => {
+  store();
+  const config = put(".codex/config.toml", `model_provider = "${provider.id}"\n[model_providers.${provider.id}]\nbase_url = "${provider.baseUrl}"\nrequires_openai_auth = true\n`);
+  const auth = put(".codex/auth.json", { OPENAI_API_KEY: provider.apiKey, tokens: { keep: true } });
+  const authBefore = fs.readFileSync(auth, "utf8");
+  await removeProvider(provider.id, { prune: true });
+  assert.equal(fs.readFileSync(auth, "utf8"), authBefore);
+  assert.equal(parsed(config).model_provider, undefined);
+  store();
+  put(".codex/config.toml", `model_provider = "other"\n[model_providers.${provider.id}]\nbase_url = "${provider.baseUrl}"\nrequires_openai_auth = true\n`);
+  put(".codex/auth.json", { OPENAI_API_KEY: "fixture-other-account" });
+  await removeProvider(provider.id, { prune: true });
+  assert.equal(parsed(auth).OPENAI_API_KEY, "fixture-other-account");
+});
+
+for (const refFor of [managedCredentialRef, legacyManagedCredentialRef]) test(`removal recognizes ${refFor.name} and preserves colliding or custom credential users`, async () => {
+  const ref = refFor("foo-bar");
+  const otherRef = refFor("foo_bar");
+  put(".hermes/config.yaml", { providers: { "foo-bar": { key_env: ref }, foo_bar: { key_env: otherRef } } });
+  const env = put(".hermes/.env", `${ref}=fixture-one\n${ref === otherRef ? "" : `${otherRef}=fixture-two\n`}`);
+  await removeProvider("foo-bar", { apps: "hermes" });
+  assert.equal(fs.readFileSync(env, "utf8"), `${otherRef}=${ref === otherRef ? "fixture-one" : "fixture-two"}\n`);
+});
+
+test("custom credential routes retain unrelated generated secrets", async () => {
+  const ref = managedCredentialRef("local");
+  put(".hermes/config.yaml", { providers: { local: { key_env: "CUSTOM_KEY" } } });
+  const env = put(".hermes/.env", `CUSTOM_KEY=fixture-custom\n${ref}=fixture-other\n`);
+  put(".dsh/settings.yaml", { "llm-pi-ai": { providers: { local: { apiKeyEnv: "CUSTOM_KEY" } } } });
+  const credentials = put(".dsh/.credentials.yaml", { version: 1, refs: { CUSTOM_KEY: "fixture-custom", [ref]: "fixture-other" } });
+  const before = snapshot();
+  await removeProvider("local", { apps: "hermes,dsh" });
+  assert.equal(fs.readFileSync(env, "utf8"), before.get(env));
+  assert.equal(fs.readFileSync(credentials, "utf8"), before.get(credentials));
+});
+
+test("WorkBuddy global prune rejects a changed account carrying the central ownership marker", async () => {
+  store();
+  put(".workbuddy/models.json", [{ id: "model-a", agentswProviderId: provider.id, vendor: "Custom label", url: `${provider.baseUrl}/chat/completions`, apiKey: "fixture-other-account" }]);
+  const before = snapshot();
+  for (const dryRun of [true, false]) {
+    await assert.rejects(removeProvider(provider.id, { prune: true, dryRun }), /different credential/);
+    assert.deepEqual(snapshot(), before);
+  }
+});
+
+test("DSH removes canonical locally owned refs without deleting external refs", async () => {
+  const ref = managedCredentialRef("local");
+  put(".dsh/settings.yaml", { "llm-pi-ai": { providers: { local: { apiKeyEnv: ref } } } });
+  const credentials = put(".dsh/.credentials.yaml", { version: 1, refs: { [ref]: "fixture-private", CUSTOM_KEY: "fixture-external" } });
+  await removeProvider("local", { apps: "dsh" });
+  assert.deepEqual(parsed(credentials).refs, { CUSTOM_KEY: "fixture-external" });
 });

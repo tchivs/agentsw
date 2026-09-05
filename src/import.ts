@@ -23,12 +23,12 @@ export function normalizeUrl(u: string): string {
 /** True when the path already names the API version, e.g. `.../v1`. */
 const hasApiVersion = (baseUrl: string) => /\/v\d+(?:beta\d*)?$/.test(baseUrl.split(/[?#]/, 1)[0]!);
 
-/** Apps may append their own API version; all other URL components remain significant. */
+/** Apps may append /v1; other API versions and URL components remain significant. */
 export function endpointKey(baseUrl: string): string {
   const normalized = normalizeUrl(baseUrl);
   const suffixAt = normalized.search(/[?#]/);
   const path = suffixAt < 0 ? normalized : normalized.slice(0, suffixAt);
-  return path.replace(/\/v\d+(?:beta\d*)?$/, "") + (suffixAt < 0 ? "" : normalized.slice(suffixAt));
+  return path.replace(/\/v1$/, "") + (suffixAt < 0 ? "" : normalized.slice(suffixAt));
 }
 
 interface ProviderConnection {

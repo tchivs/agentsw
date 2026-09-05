@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { readTextIfExists } from "./fsutil.js";
 import {
   applyEdits,
   createScanner,
@@ -51,13 +51,8 @@ function parseJsoncObject(file: string, text: string): Record<string, unknown> {
 
 /** Only missing files initialize to an empty object; unreadable or invalid files must not be replaced. */
 export function readJsoncObject(file: string): JsoncDocument {
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file, text: "{}\n", value: {} };
-    throw error;
-  }
+  const text = readTextIfExists(file);
+  if (text === undefined) return { file, text: "{}\n", value: {} };
   return { file, text, value: parseJsoncObject(file, text) };
 }
 

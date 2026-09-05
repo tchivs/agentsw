@@ -66,7 +66,8 @@ test("omp first sync resolves model anchors before replacing their definitions",
   assert.equal(omp.candidates!().find((p) => p.id === "sub")?.openaiApi, "responses");
   for (let pass = 0; pass < 2; pass++) {
     const applied = await omp.apply(provider);
-    assert.ok(applied.changed.includes(file));
+    if (pass === 0) assert.ok(applied.changed.includes(file));
+    else assert.deepEqual(applied.changed, [], "a repeated identical sync is a no-op");
     const result = load();
     assert.equal(result.providers.sub.api, "openai-responses");
     assert.deepEqual(result.providers.sub.models[0].customInput, ["text", "image"]);

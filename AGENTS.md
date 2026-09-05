@@ -18,13 +18,15 @@ User → index.ts (Commander) → commands.ts (cmd*) → store.ts (load/save con
                                    targets/*.ts (apply/prune to app configs)
 ```
 
-**Core flow**: Every command loads the store fresh (`loadStore()`), performs its action, and saves via `saveStore()` (atomic write, mode 0600). Provider objects are the central domain model — they carry protocol, endpoint, API key, model list with metadata, and filter preferences. Target adapters translate a Provider into each app's native config format.
+**Core flow**: Every command loads the store fresh (`loadStore()`), performs its action, and saves via `saveStore()` (mode 0600, private backup, optimistic snapshot check and a short commit lock). A stale save must reject, never overwrite another command's work. Provider objects carry protocol, endpoint, key, models, metadata and filter preferences; target adapters translate them into app-native configuration.
 
-**Quick-add flow**: `cmdQuickAdd` → `probeProtocols()` → `discoverProviderModels()` per protocol → `enrichModels()`. Automatic IDs use the full hostname plus protocol even for a single protocol; an existing same-account ID/name is reused. Explicit IDs remain user-owned.
+**Quick-add flow**: `cmdQuickAdd` → `probeProtocols()` → paginated `discoverProviderModels()` per protocol → `enrichModels()`. Automatic IDs use the full hostname plus protocol; repeated same-account onboarding preserves existing IDs, names, wire flavor, defaults and preferences unless explicitly overridden.
 
 **Import flow**: `scanCandidates()` → `mergeCandidates()` dedupes by normalized endpoint, protocol, and credential identity. `ProviderCandidate.generatedId` distinguishes generated suggestions from explicit names; explicit names win for the same account. Different or unresolved credentials are not silently merged.
 
 **Management flow**: `provider-actions.ts` handles CLI/menu output; `rename.ts` and `remove.ts` plan changes; `config-transaction.ts` preflights snapshots, creates private backups, writes atomically per file, and rolls back earlier writes on failure. Never implement rename by applying a fresh provider then pruning the old one: that loses unmodeled config.
+
+**Adapter writes**: Wrap each TargetApp with `transactionalTarget()`. `fsutil` stages reads/writes in scoped async context; commit only after all input validation and serialization succeeds. Preserve file permissions, use private new files, and reuse shared identity/YAML/JSONC helpers. Multi-target sync remains best-effort per target, not globally atomic.
 
 ## Key Directories
 
@@ -86,6 +88,7 @@ Each adapter in `src/targets/` implements the `TargetApp` interface:
 - `supportsProtocol(protocol)` — checks if adapter handles openai/anthropic
 
 Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), `jsonc.ts` (pi/prime), or native JSON. Preserve YAML alias values and JSONC comments; validate before mutation. The `wire.ts` module provides shared API and model-merge helpers.
+New adapters also require schema/reference support in `rename.ts` and `remove.ts`, account-qualified local selectors when no native ID exists, and corresponding transaction, identity, dry-run and lifecycle regressions. Add `apps.ts` platform commands if installable. Generated credential references must use `provider-identity.ts`; never normalize IDs to environment names with a lossy uppercase/underscore transform.
 
 ### i18n
 - Message keys live in a flat `messages` object (`src/i18n.ts`), each with `en` and `zh-CN` variants.
@@ -120,7 +123,7 @@ Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), `jsonc.ts` (pi/prim
 
 ## Runtime/Tooling Preferences
 
-- **Runtime**: Node.js >= 22.12.0 (required, enforced via `engines`). CI tests on Node 22 and 24.
+- **Runtime**: Node.js >= 22.13.0 (built-in SQLite without the experimental flag). CI tests the exact minimum plus current Node 22 and 24.
 - **Package manager**: npm (no pnpm/yarn.lock committed). `npm ci` in CI.
 - **TypeScript**: ESM (`"type": "module"`), target ES2022, `NodeNext` module resolution, `strict: true`, `noUncheckedIndexedAccess: true`.
 - **No linting/formatting tools** — no eslint, prettier, or editorconfig.
@@ -133,6 +136,6 @@ Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), `jsonc.ts` (pi/prim
 - **Assertions**: `node:assert/strict`.
 - **Regression coverage**: Includes initialization, repeated sync, malformed configs, reference migration, deletion scope, dry-run nonwrites, and interactive confirmation; use `npm test` for the current count.
 - **Sandbox pattern**: Tests use `AGENTSW_HOME` env var or `os.tmpdir()` to isolate config writes. No real network calls — model metadata is mocked or hardcoded.
-- **CI matrix**: Ubuntu + macOS (Node 22, 24), Windows (Node 22). Smoke test in CI: `add` → `use` → `status` → `prune` across pi/omp/opencode with sandbox HOME.
+- **CI matrix**: Ubuntu + macOS (Node 22, 24), Ubuntu (exact Node 22.13.0), Windows (Node 22). Installed-package smoke on every job exercises npm-pack installation, both binary aliases, add/use/redacted-preview/status/rename and scoped/global removal in a sandbox.
 - **Windows note**: File permission assertions (`mode & 0o077 === 0`) are skipped on win32 (NTFS doesn't honor Unix chmod bits).
-- **Coverage**: No coverage tool configured. Tests focus on adapter roundtrips, filter semantics, import dedup, i18n, and app command resolution.
+- **Coverage**: No coverage percentage gate. Regressions include command orchestration, pagination, metadata matching, shell/probe failures, SemVer, account isolation, file permissions, stale store writes, adapter roundtrips and bilingual management UI. Run `node scripts/package-smoke.mjs` after building to test the actual distributable.

@@ -99,8 +99,12 @@ export function findModelMeta(
     const m = scan(hinted);
     if (m) return { spec: toModelSpec(modelId, m), provider: hinted.id };
   }
-  for (const p of Object.values(catalog)) {
-    if (p === hinted) continue;
+  const providers = Object.values(catalog).filter((p) => p !== hinted);
+  for (const p of providers) {
+    const m = p.models[modelId];
+    if (m) return { spec: toModelSpec(modelId, m), provider: p.id };
+  }
+  for (const p of providers) {
     const m = scan(p);
     if (m) return { spec: toModelSpec(modelId, m), provider: p.id };
   }

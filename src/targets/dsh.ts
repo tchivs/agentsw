@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { backupFile, expandHome, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "../provider-identity.js";
+import { transactionalTarget } from "../target-transaction.js";
+import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, mergeModels, sdkBaseUrl } from "./wire.js";
@@ -29,9 +32,6 @@ const credentialsFile = (): string => path.join(dshHome(), ".credentials.yaml");
 
 /** Layout version of `.credentials.yaml` this build reads and writes. */
 const CREDENTIALS_VERSION = 1;
-
-/** Credential reference: a POSIX identifier (`/^[A-Za-z_][A-Za-z0-9_]*$/`). */
-const credentialRef = (id: string): string => `AGENTSW_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
 
 /** Thinking levels a `reasoningEfforts` entry may offer (llm-pi-ai THINKING_LEVEL_GATE). */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -65,18 +65,21 @@ function modelEntry(m: ModelSpec): Record<string, unknown> {
 }
 
 function parseSettings(file: string): YAML.Document {
-  const text = readTextIfExists(file);
-  const doc: YAML.Document = text ? YAML.parseDocument(text) : new YAML.Document({});
-  if (doc.errors.length) {
-    throw new Error(`${file} has settings errors; refusing to rewrite: ${doc.errors[0]?.message}`);
+  const doc = parseYamlMapping(file, readTextIfExists(file));
+  for (const at of [["llm-pi-ai"], ["llm-pi-ai", "providers"], ["agent-default-model"]]) {
+    if (doc.hasIn(at) && !YAML.isMap(doc.getIn(at))) throw new Error(`${file}: expected ${at.join(".")} to be a mapping`);
   }
-  if (doc.contents == null) doc.contents = doc.createNode({});
+  const providers = doc.getIn(["llm-pi-ai", "providers"]);
+  if (YAML.isMap(providers) && providers.items.some((pair) => !YAML.isMap(pair.value))) {
+    throw new Error(`${file}: expected provider mappings`);
+  }
   return doc;
 }
 
 /** JSON documents re-serialize without comments; YAML keeps them (dsh reads both). */
 function renderSettings(file: string, doc: YAML.Document): string {
-  return file.endsWith(".json") ? JSON.stringify(doc.toJSON(), null, 2) + "\n" : doc.toString();
+  const text = serializeYamlMapping(file, doc);
+  return file.endsWith(".json") ? JSON.stringify(doc.toJS(), null, 2) + "\n" : text;
 }
 
 /**
@@ -84,7 +87,7 @@ function renderSettings(file: string, doc: YAML.Document): string {
  * `$DSH_HOME/settings.yaml`, the picked default in `agent-default-model`, and
  * the key in `$DSH_HOME/.credentials.yaml` — settings carry only a reference.
  */
-export const dsh: TargetApp = {
+export const dsh: TargetApp = transactionalTarget({
   id: "dsh",
   name: "DeepSeek Harness",
   protocols: ["openai", "anthropic"],
@@ -99,21 +102,37 @@ export const dsh: TargetApp = {
 
     const at = ["llm-pi-ai", "providers", provider.id];
     const prev = (doc.getIn(at) as YAML.YAMLMap | undefined)?.toJSON?.() as Record<string, unknown> | undefined;
-    const ref = credentialRef(provider.id);
+    const ref = managedCredentialRef(provider.id);
     const entry: Record<string, unknown> = {
       displayName: provider.name,
       apiKeyEnv: ref, // credential reference, never the secret
       api: apiValue(provider.protocol, provider.openaiApi, prev?.api),
       baseURL: sdkBaseUrl(provider.protocol, provider.baseUrl),
-      models: mergeModels(prev?.models, provider.models.map(modelEntry), OWNED_MODEL_KEYS),
     };
 
     if (YAML.isMap(doc.getIn(at))) {
       // Key-by-key: compat, headers, defaultInput, retryPolicy and their comments are the user's.
-      for (const [key, value] of Object.entries(entry)) doc.setIn([...at, key], doc.createNode(value));
+      for (const [key, value] of Object.entries(entry)) doc.setIn([...at, key], value);
     } else {
       doc.setIn(at, doc.createNode(entry));
     }
+    const modelsAt = [...at, "models"];
+    const previousModels = doc.getIn(modelsAt);
+    const models: YAML.YAMLSeq = YAML.isSeq(previousModels) ? previousModels : doc.createNode([]);
+    const previousById = new Map<unknown, YAML.YAMLMap>();
+    for (const node of models.items) {
+      if (YAML.isMap(node)) previousById.set(node.get("id"), node);
+    }
+    models.items = mergeModels(prev?.models, provider.models.map(modelEntry), OWNED_MODEL_KEYS).map((model) => {
+      const node = previousById.get(model.id);
+      if (!node) return doc.createNode(model);
+      for (const key of OWNED_MODEL_KEYS) {
+        if (!(key in model)) node.delete(key);
+        else node.set(key, typeof model[key] === "object" ? doc.createNode(model[key]) : model[key]);
+      }
+      return node;
+    });
+    doc.setIn(modelsAt, models);
     if (doc.hasIn([...at, "modelOverrides"])) {
       // llm-pi-ai refuses modelOverrides beside an explicit models list.
       doc.deleteIn([...at, "modelOverrides"]);
@@ -121,32 +140,37 @@ export const dsh: TargetApp = {
     }
     // The picker writes this section whole; a partial write would keep a stale reasoningEffort.
     doc.set("agent-default-model", doc.createNode({ provider: provider.id, model: provider.defaultModel }));
+    const referenced = credentialReferences(doc, provider.id);
+    const oldRef = typeof prev?.apiKeyEnv === "string" && isManagedCredentialRef(prev.apiKeyEnv, provider.id) && !referenced.has(prev.apiKeyEnv)
+      ? prev.apiKeyEnv : undefined;
+    const credential = writeCredential(ref, provider.apiKey, notes, oldRef, referenced);
 
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
     writeFileAtomic(file, renderSettings(file, doc));
 
-    const changed = [file, writeCredential(ref, provider.apiKey, notes)];
+    const changed = [file, credential];
     notes.push(`select in dsh with the model picker, or run: dsh web`);
     return { app: this.id, changed, notes };
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
-    // The stored key is removed even when the route is already gone, so a hand-deleted
-    // route never leaves its secret behind.
-    const droppedCredential = deleteCredential(credentialRef(provider.id), notes);
     const file = settingsFile();
-    const doc = fs.existsSync(file) ? parseSettings(file) : undefined;
+    // Settings must be understood before any credential can be removed.
+    const doc = parseSettings(file);
     const at = ["llm-pi-ai", "providers", provider.id];
-    if (!doc?.hasIn(at)) {
-      const why = doc ? `no llm-pi-ai.providers.${provider.id} entry` : "no settings document";
+    const hasProvider = doc.hasIn(at);
+    if (hasProvider) doc.deleteIn(at);
+    const referenced = credentialReferences(doc);
+    const removable = new Set([managedCredentialRef(provider.id), legacyManagedCredentialRef(provider.id)].filter((ref) => !referenced.has(ref)));
+    const droppedCredential = deleteCredentials(removable, notes);
+    if (!hasProvider) {
+      const why = `no llm-pi-ai.providers.${provider.id} entry`;
       if (!droppedCredential) return { app: this.id, changed: [], notes, skipped: why };
       notes.push(why);
       return { app: this.id, changed: [droppedCredential], notes };
     }
-    doc.deleteIn(at);
-
     if (doc.getIn(["agent-default-model", "provider"]) === provider.id) {
       doc.delete("agent-default-model");
       notes.push("default model selection reset (was pointing at this provider)");
@@ -159,10 +183,7 @@ export const dsh: TargetApp = {
     const backup = backupFile(file);
     if (backup) notes.push(`backup: ${backup}`);
     writeFileAtomic(file, renderSettings(file, doc));
-
-    const changed = [file];
-    if (droppedCredential) changed.push(droppedCredential);
-    return { app: this.id, changed, notes };
+    return { app: this.id, changed: droppedCredential ? [file, droppedCredential] : [file], notes };
   },
 
   current(): string | undefined {
@@ -224,31 +245,38 @@ export const dsh: TargetApp = {
       ];
     });
   },
-};
+});
 
 /** Read the managed store's `refs` section; an unreadable document yields no keys. */
 function readCredentialRefs(): Record<string, string> {
-  const text = readTextIfExists(credentialsFile());
-  if (!text) return {};
   try {
-    const parsed = YAML.parse(text) as Record<string, unknown> | null;
-    const refs = parsed?.refs;
-    if (refs && typeof refs === "object") return refs as Record<string, string>;
-    // pre-release flat layout: top-level reference-to-secret mapping
-    if (parsed && !("version" in parsed)) return parsed as Record<string, string>;
-    return {};
+    const doc = parseCredentials(credentialsFile());
+    const parsed = doc.toJS() as Record<string, unknown>;
+    return (doc.get("version") === undefined ? parsed : parsed.refs ?? {}) as Record<string, string>;
   } catch {
     return {};
   }
 }
 
 function parseCredentials(file: string): YAML.Document {
-  const text = readTextIfExists(file);
-  const doc: YAML.Document = text ? YAML.parseDocument(text) : new YAML.Document({});
-  if (doc.errors.length) {
-    throw new Error(`${file} has YAML errors; refusing to rewrite: ${doc.errors[0]?.message}`);
+  const doc = parseYamlMapping(file, readTextIfExists(file));
+  const version = doc.get("version");
+  if (version !== undefined && version !== CREDENTIALS_VERSION) {
+    const label = typeof version === "number" ? String(version) : "an unsupported value";
+    throw new Error(`${file} declares version ${label}; agentsw writes version ${CREDENTIALS_VERSION}`);
   }
-  if (doc.contents == null) doc.contents = doc.createNode({});
+  if (version === undefined) {
+    const flat = Object.entries(doc.toJS() as Record<string, unknown>).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === "string" && value.length > 0);
+    if (!flat) throw new Error(`${file} is neither the version ${CREDENTIALS_VERSION} layout nor a pre-release flat document; refusing to rewrite it`);
+  } else if (doc.has("refs") && !YAML.isMap(doc.get("refs"))) {
+    throw new Error(`${file}: expected refs to be a mapping`);
+  }
+  const refs = doc.get("refs");
+  if (version !== undefined && YAML.isMap(refs) && refs.items.some((pair) =>
+    !YAML.isScalar(pair.key) || typeof pair.key.value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(pair.key.value) ||
+    !YAML.isScalar(pair.value) || typeof pair.value.value !== "string" || pair.value.value.length === 0)) {
+    throw new Error(`${file}: expected non-empty credential values with valid reference names`);
+  }
   return doc;
 }
 
@@ -259,42 +287,56 @@ function parseCredentials(file: string): YAML.Document {
  * looks unversioned (a hand-written `refs:` block, a future layout) is refused
  * instead of being re-rooted one level deeper. Returns the file.
  */
-function writeCredential(ref: string, apiKey: string, notes: string[]): string {
+function writeCredential(ref: string, apiKey: string, notes: string[], oldRef: string | undefined, referenced: ReadonlySet<string>): string {
   const file = credentialsFile();
   const doc = parseCredentials(file);
-  const root = (doc.toJSON() ?? {}) as Record<string, unknown>;
-  const version = root.version;
-  if (version !== undefined && version !== CREDENTIALS_VERSION) {
-    throw new Error(`${file} declares version ${JSON.stringify(version)}; agentsw writes version ${CREDENTIALS_VERSION}`);
+  if (doc.get("version") === undefined) {
+    const refs = doc.contents;
+    const migrating = YAML.isMap(refs) && refs.items.length > 0;
+    doc.contents = doc.createNode({ version: CREDENTIALS_VERSION });
+    doc.set("refs", refs);
+    if (migrating) notes.push(`migrated ${file} to the version ${CREDENTIALS_VERSION} layout`);
   }
-  if (version === undefined && Object.keys(root).length > 0) {
-    const flat = Object.entries(root).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === "string" && value.length > 0);
-    if (!flat) {
-      throw new Error(`${file} is neither the version ${CREDENTIALS_VERSION} layout nor a pre-release flat document; refusing to rewrite it`);
-    }
-    doc.contents = doc.createNode({ version: CREDENTIALS_VERSION, refs: root });
-    notes.push(`migrated ${file} to the version ${CREDENTIALS_VERSION} layout`);
+  if (referenced.has(ref) && doc.getIn(["refs", ref]) !== apiKey) {
+    throw new Error(`${file}: credential reference is shared by another provider; refusing to replace it`);
   }
-  doc.set("version", CREDENTIALS_VERSION);
   doc.setIn(["refs", ref], apiKey);
+  if (oldRef && oldRef !== ref) doc.deleteIn(["refs", oldRef]);
+  const text = serializeYamlMapping(file, doc);
   const backup = backupFile(file);
   if (backup) notes.push(`backup: ${backup}`);
   // dsh refuses a credentials document readable beyond its owner.
-  writeFileAtomic(file, doc.toString(), 0o600);
+  writeFileAtomic(file, text, 0o600);
   return file;
 }
 
-/** Drop this provider's reference. Returns the file when it was rewritten. */
-function deleteCredential(ref: string, notes: string[]): string | undefined {
+/** Drop only managed references that no surviving route uses. */
+function deleteCredentials(refs: ReadonlySet<string>, notes: string[]): string | undefined {
   const file = credentialsFile();
-  const text = readTextIfExists(file);
-  if (!text) return undefined;
+  if (readTextIfExists(file) === undefined) return undefined;
   const doc = parseCredentials(file);
-  const at = doc.hasIn(["refs", ref]) ? ["refs", ref] : doc.has(ref) ? [ref] : undefined;
-  if (!at) return undefined;
-  doc.deleteIn(at);
+  let changed = false;
+  for (const ref of refs) {
+    const at = doc.get("version") === undefined ? [ref] : ["refs", ref];
+    if (doc.hasIn(at)) { doc.deleteIn(at); changed = true; }
+  }
+  if (!changed) return undefined;
+  const text = serializeYamlMapping(file, doc);
   const backup = backupFile(file);
   if (backup) notes.push(`backup: ${backup}`);
-  writeFileAtomic(file, doc.toString(), 0o600);
+  writeFileAtomic(file, text, 0o600);
   return file;
+}
+
+function credentialReferences(doc: YAML.Document, exceptId?: string): Set<string> {
+  const providers = doc.getIn(["llm-pi-ai", "providers"]);
+  const refs = new Set<string>();
+  if (YAML.isMap(providers)) {
+    for (const pair of providers.items) {
+      if ((YAML.isScalar(pair.key) ? pair.key.value : pair.key) === exceptId) continue;
+      const ref = YAML.isMap(pair.value) ? pair.value.get("apiKeyEnv") : undefined;
+      if (typeof ref === "string") refs.add(ref);
+    }
+  }
+  return refs;
 }

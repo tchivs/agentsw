@@ -6,9 +6,10 @@ import path from "node:path";
 import YAML from "yaml";
 import { parse as parseJsonc } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
+import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "../src/provider-identity.js";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-rename-"));
-const envNames = ["HOME", "AGENTSW_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "AGENTSW_OLDID_API_KEY", "AGENTSW_API_EXAMPLE_OPENAI_API_KEY"];
+const envNames = ["HOME", "AGENTSW_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "UPPERCASE_LITERAL_KEY", "FIXTURE_LOOKUP_KEY", "MY_EXTERNAL_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_")), managedCredentialRef("OldID"), managedCredentialRef("api-example-openai"), legacyManagedCredentialRef("OldID"), legacyManagedCredentialRef("api-example-openai")];
 const originalEnv = new Map(envNames.map((key) => [key, process.env[key]]));
 for (const key of envNames) delete process.env[key];
 process.env.HOME = sandbox;
@@ -22,8 +23,8 @@ const { backupsDir } = await import("../src/fsutil.js");
 
 const oldId = "OldID";
 const newId = "api-example-openai";
-const oldKey = "AGENTSW_OLDID_API_KEY";
-const newKey = "AGENTSW_API_EXAMPLE_OPENAI_API_KEY";
+const oldKey = managedCredentialRef(oldId);
+const newKey = managedCredentialRef(newId);
 const provider = {
   id: oldId, name: oldId, protocol: "openai", openaiApi: "responses",
   baseUrl: "https://api.example/v1", apiKey: "test-key", defaultModel: "m-a",
@@ -214,12 +215,15 @@ test("YAML fallback and aliased provider maps preserve reference semantics", asy
   assert.equal(fs.existsSync(file(".omp/agent/models.yml")), false);
 });
 
-test("local flat credential references migrate without changing their layout", async () => {
-  write(".dsh/.credentials.yaml", `${oldKey}: test-key\nUNRELATED: keep\n`);
-  write(".dsh/settings.yml", `llm-pi-ai:\n  providers:\n    ${oldId}: {apiKeyEnv: ${oldKey}}\n    shared: {apiKeyEnv: ${oldKey}}\n`);
+test("shared local credential references remain intact during rename", async () => {
+  const legacyKey = legacyManagedCredentialRef(oldId);
+  write(".dsh/.credentials.yaml", `${legacyKey}: test-key\nUNRELATED: keep\n`);
+  write(".dsh/settings.yml", `llm-pi-ai:\n  providers:\n    ${oldId}: {apiKeyEnv: ${legacyKey}}\n    shared: {apiKeyEnv: ${legacyKey}}\n`);
+  const before = text(".dsh/.credentials.yaml");
   await renameProvider(oldId, newId);
-  assert.deepEqual(yaml(".dsh/.credentials.yaml"), { [newKey]: "test-key", UNRELATED: "keep" });
-  assert.equal(yaml(".dsh/settings.yml")["llm-pi-ai"].providers.shared.apiKeyEnv, newKey);
+  assert.equal(text(".dsh/.credentials.yaml"), before);
+  assert.equal(yaml(".dsh/settings.yml")["llm-pi-ai"].providers.shared.apiKeyEnv, legacyKey);
+  assert.equal(yaml(".dsh/settings.yml")["llm-pi-ai"].providers[newId].apiKeyEnv, legacyKey);
 });
 
 test("external-only and custom credential references are retained without creating secrets", async () => {
@@ -409,4 +413,99 @@ test("transaction rollback restores modified and deleted files and removes newly
   assert.equal(fs.existsSync(created), false);
   assert.equal(fs.existsSync(file("created")), false);
   assert.equal(fs.readdirSync(sandbox).some((name) => name.includes(".tmp")), false);
+});
+
+test("generated credential refs resist punctuation and case collisions while recognizing legacy names", () => {
+  const ids = ["foo-bar", "foo_bar", "Foo-bar", "FOO-BAR"];
+  assert.equal(new Set(ids.map(managedCredentialRef)).size, ids.length);
+  assert.equal(new Set(ids.map(legacyManagedCredentialRef)).size, 1);
+  for (const id of ids) {
+    assert.match(managedCredentialRef(id), /^AGENTSW_[A-Z0-9_]+_API_KEY$/);
+    assert.equal(isManagedCredentialRef(managedCredentialRef(id), id), true);
+    assert.equal(isManagedCredentialRef(legacyManagedCredentialRef(id), id), true);
+    assert.equal(isManagedCredentialRef("CUSTOM_KEY", id), false);
+  }
+});
+
+test("legacy locally owned refs migrate to canonical keys in Hermes and flat DSH credentials", async () => {
+  const legacy = legacyManagedCredentialRef(oldId);
+  write(".hermes/config.yaml", `providers: {${oldId}: {key_env: ${legacy}}}\n`);
+  write(".hermes/.env", `export ${legacy}="test-key" # keep\n`);
+  write(".dsh/settings.yml", `llm-pi-ai: {providers: {${oldId}: {apiKeyEnv: ${legacy}}}}\n`);
+  write(".dsh/.credentials.yaml", `${legacy}: test-key\nCUSTOM: keep\n`);
+  const before = tree();
+  await renameProvider(oldId, newId, { dryRun: true });
+  assert.deepEqual(tree(), before);
+  await renameProvider(oldId, newId);
+  assert.equal(yaml(".hermes/config.yaml").providers[newId].key_env, newKey);
+  assert.equal(text(".hermes/.env"), `export ${newKey}="test-key" # keep\n`);
+  assert.deepEqual(yaml(".dsh/.credentials.yaml"), { [newKey]: "test-key", CUSTOM: "keep" });
+});
+
+test("legacy refs colliding with another provider stay owned by their existing users", async () => {
+  const source = "foo-bar";
+  const other = "foo_bar";
+  const legacy = legacyManagedCredentialRef(source);
+  write(configFile, JSON.stringify({ version: 1, providers: {
+    [source]: { ...provider, id: source }, [other]: { ...provider, id: other },
+  } }));
+  write(".hermes/config.yaml", `providers: {${source}: {key_env: ${legacy}}, ${other}: {key_env: ${legacy}}}\n`);
+  write(".hermes/.env", `${legacy}=test-key\n`);
+  await renameProvider(source, "renamed");
+  assert.equal(text(".hermes/.env"), `${legacy}=test-key\n`);
+  assert.equal(yaml(".hermes/config.yaml").providers.renamed.key_env, legacy);
+  assert.equal(yaml(".hermes/config.yaml").providers[other].key_env, legacy);
+});
+
+test("explicit custom refs do not migrate unrelated generated local secrets", async () => {
+  write(".hermes/config.yaml", `providers: {${oldId}: {key_env: CUSTOM_KEY}}\n`);
+  write(".hermes/.env", `CUSTOM_KEY=test-key\n${oldKey}=unrelated-account\n`);
+  write(".dsh/settings.yaml", `llm-pi-ai: {providers: {${oldId}: {apiKeyEnv: CUSTOM_KEY}}}\n`);
+  write(".dsh/.credentials.yaml", `version: 1\nrefs: {CUSTOM_KEY: test-key, ${oldKey}: unrelated-account}\n`);
+  const env = text(".hermes/.env");
+  const credentials = text(".dsh/.credentials.yaml");
+  await renameProvider(oldId, newId);
+  assert.equal(text(".hermes/.env"), env);
+  assert.equal(text(".dsh/.credentials.yaml"), credentials);
+});
+
+for (const app of ["pi", "prime", "omp"]) test(`${app} uppercase literal credentials conflict before normal or preview rename`, async () => {
+  const name = app === "omp" ? ".omp/agent/models.yml" : `.${app}/agent/models.json`;
+  write(name, JSON.stringify({ providers: { [oldId]: { apiKey: "UPPERCASE_LITERAL_KEY" } } }));
+  const before = tree();
+  for (const dryRun of [true, false]) {
+    await assert.rejects(renameProvider(oldId, newId, { dryRun }), /credentials conflict/);
+    assert.deepEqual(tree(), before);
+  }
+  assert.equal(fs.existsSync(backupsDir), false);
+});
+
+test("Pi uppercase keys are literals even when a same-name environment variable exists", async () => {
+  process.env.UPPERCASE_LITERAL_KEY = provider.apiKey;
+  write(".pi/agent/models.json", JSON.stringify({ providers: { [oldId]: { apiKey: "UPPERCASE_LITERAL_KEY" } } }));
+  await assert.rejects(renameProvider(oldId, newId), /credentials conflict/);
+});
+
+for (const app of ["prime", "omp"]) test(`${app} resolves actual environment keys and leaves command/file references unresolved`, async () => {
+  process.env.FIXTURE_LOOKUP_KEY = provider.apiKey;
+  const name = app === "omp" ? ".omp/agent/models.yml" : `.${app}/agent/models.json`;
+  write(name, JSON.stringify({ providers: { [oldId]: { apiKey: "FIXTURE_LOOKUP_KEY", models: [
+    { id: "command", apiKey: "!do-not-execute" }, { id: "file", apiKey: "{file:/do-not-read}" },
+  ] } } }));
+  await renameProvider(oldId, newId);
+  const result = app === "omp" ? yaml(name) : json(name);
+  assert.equal(result.providers[newId].apiKey, "FIXTURE_LOOKUP_KEY");
+});
+
+test("WorkBuddy ownership markers rename independently of display labels and reject other accounts", async () => {
+  seedStore({}, "Custom label");
+  const row = { id: "m-a", vendor: "Custom label", agentswProviderId: oldId, url: "https://api.example/v1/chat/completions", apiKey: "wrong-account" };
+  write(".workbuddy/models.json", JSON.stringify([row]));
+  const before = tree();
+  await assert.rejects(renameProvider(oldId, newId, { dryRun: true }), /conflicts with the store/);
+  assert.deepEqual(tree(), before);
+  write(".workbuddy/models.json", JSON.stringify([{ ...row, apiKey: provider.apiKey }]));
+  await renameProvider(oldId, newId);
+  assert.equal(json(".workbuddy/models.json")[0].agentswProviderId, newId);
+  assert.equal(json(".workbuddy/models.json")[0].vendor, "Custom label");
 });

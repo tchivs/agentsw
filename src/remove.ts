@@ -15,6 +15,8 @@ import { resolveTargets, targets } from "./targets/index.js";
 import type { ProviderCandidate, TargetApp } from "./targets/types.js";
 import { classifyApi, entryApi } from "./targets/wire.js";
 import type { Provider } from "./types.js";
+import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "./provider-identity.js";
+import { workbuddyBaseUrl } from "./targets/workbuddy.js";
 
 type RecordValue = Record<string, unknown>;
 type Location = string[];
@@ -292,9 +294,6 @@ function candidateProvider(candidate: ProviderCandidate): Provider {
   };
 }
 
-function credentialRef(id: string): string {
-  return `AGENTSW_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
-}
 
 function addPlan(plans: Map<string, FileChange>, change: FileChange): void {
   const file = path.resolve(change.file);
@@ -367,6 +366,12 @@ function assertNamedIdentities(target: TargetApp, files: TargetFiles, stored: Pr
       baseUrl = entry.base_url;
       protocol = "openai";
       if (typeof entry.env_key === "string") apiKey = process.env[entry.env_key];
+      else if (entry.requires_openai_auth === true && valueAt(document, ["model_provider"]) === stored.id) {
+        const authFile = path.join(path.dirname(document.file), "auth.json");
+        const authText = readText(authFile);
+        files.extras.set(authFile, authText);
+        if (authText !== undefined) apiKey = valueAt(parseDocument(authFile, authText), ["OPENAI_API_KEY"]);
+      }
     }
     assertIdentity(target.id, stored, { baseUrl, protocol, apiKey });
   }
@@ -377,13 +382,14 @@ function candidatesFor(target: TargetApp): ProviderCandidate[] {
   catch { throw new Error(`${target.name}: invalid configuration; refusing to modify it`); }
 }
 
-function matchingCandidate(target: TargetApp, id: string, stored?: Provider): Provider | undefined {
+function matchingCandidate(target: TargetApp, id: string, stored?: Provider): ProviderCandidate | undefined {
   const candidates = candidatesFor(target);
   if (!candidates.length) return undefined;
-  const local = candidates.find((candidate) => candidate.id === id);
-  if (local) {
-    if (stored) assertIdentity(target.id, stored, local);
-    return candidateProvider(local);
+  const local = candidates.filter((candidate) => (candidate.localId ?? candidate.id) === id);
+  const legacy = local.length ? local : candidates.filter((candidate) => candidate.id === id);
+  if (!stored && legacy.length) {
+    if (legacy.length !== 1) throw new Error(`${target.name}: ambiguous provider ID; use an account-qualified ID from list --apps`);
+    return legacy[0];
   }
   // Single-endpoint apps have no persisted provider ID. A custom store ID can
   // still select them, but only when both endpoint and credential match.
@@ -396,9 +402,12 @@ function matchingCandidate(target: TargetApp, id: string, stored?: Provider): Pr
     }
   }
   if (!stored || typeof stored.baseUrl !== "string") return undefined;
-  const matching = candidates.find((candidate) => candidate.protocol === stored.protocol &&
+  const matching = (legacy.length ? legacy : candidates).filter((candidate) => candidate.protocol === stored.protocol &&
     sameEndpoint(candidate.baseUrl, stored.baseUrl) && candidate.apiKey === stored.apiKey);
-  return matching ? candidateProvider(matching) : undefined;
+  if (matching.length > 1) throw new Error(`${target.name}: ambiguous provider identity; use an account-qualified ID from list --apps`);
+  if (matching.length === 1) return matching[0];
+  if (legacy.length) throw new Error(`${target.name}: provider "${id}" has a different account; use --apps with an account-qualified ID`);
+  return undefined;
 }
 
 /** One row per store ID and per app-local ID, never endpoint or credential values. */
@@ -415,7 +424,7 @@ export function listRemovableProviders(apps?: string): Array<{ id: string; app?:
     const files = targetFiles(target, true);
     const entries = new Map<string, string | undefined>();
     if (target.id === "claude" || target.id === "workbuddy") {
-      for (const candidate of candidatesFor(target)) entries.set(candidate.id, candidate.name);
+      for (const candidate of candidatesFor(target)) entries.set(candidate.localId ?? candidate.id, candidate.name);
     } else {
       for (const { document, at } of files.maps) {
         for (const [id, entry] of Object.entries(providerMap(document, at))) {
@@ -439,13 +448,22 @@ async function planTargetRemoval(target: TargetApp, id: string, plans: Map<strin
     const provider = matchingCandidate(target, id, stored);
     if (!provider) return false;
     found = true;
-    await previewPrune(target, provider, files);
+    await previewPrune(target, candidateProvider(provider), files);
     for (const document of files.refs) removeAt(document, ["env", "ANTHROPIC_API_KEY"]);
   } else if (["omp", "pi", "prime", "codex"].includes(target.id)) {
     await previewPrune(target, namedProvider(id), files);
   }
 
-  const managedKey = credentialRef(id);
+  const managedKeys = [managedCredentialRef(id), legacyManagedCredentialRef(id)];
+  const ownedRefs = new Set<string>();
+  for (const { document, at } of files.maps) {
+    const entry = providerMap(document, at)[id];
+    if (!isJsonObject(entry)) continue;
+    const ref = target.id === "hermes" ? entry.key_env : entry.apiKeyEnv;
+    if (typeof ref === "string" && isManagedCredentialRef(ref, id)) ownedRefs.add(ref);
+    // No explicit reference: older releases may have left an unused managed key.
+    else if (ref === undefined) for (const key of managedKeys) ownedRefs.add(key);
+  }
   for (const { document, at } of files.maps) {
     const removed = removeAt(document, [...at, id]);
     if (removed && ["opencode", "codex", "hermes", "dsh"].includes(target.id)) removeEmpty(document, at);
@@ -485,27 +503,31 @@ async function planTargetRemoval(target: TargetApp, id: string, plans: Map<strin
       for (const key of ["model", "defaultModel", "models", "modelRoles", "enabledModels", "recentModels"]) clearModelRefs(document, [key], id);
     }
   }
-  if (target.id === "hermes" && found) {
-    const stillUsed = files.maps.some(({ document, at }) => Object.values(providerMap(document, at)).some((entry) =>
-      isJsonObject(entry) && entry.key_env === managedKey));
-    if (!stillUsed) {
-      for (const [file, before] of files.extras) {
-        if (before === undefined) continue;
-        const edits = envAssignments(file, before).filter((assignment) => assignment.name === managedKey)
-          .map((assignment) => ({ offset: assignment.start, length: assignment.length, content: "" }));
-        const after = applyEdits(before, edits);
-        if (after !== before) addPlan(plans, { file, before, after, mode: 0o600 });
+  for (const managedKey of ownedRefs) {
+    if (target.id === "hermes" && found) {
+      const stillUsed = files.maps.some(({ document, at }) => Object.entries(providerMap(document, at)).some(([otherId, entry]) =>
+        isJsonObject(entry) && (entry.key_env === managedKey || isManagedCredentialRef(managedKey, otherId))));
+      if (!stillUsed) {
+        for (const [file, before] of files.extras) {
+          if (before === undefined) continue;
+          const prior = plans.get(path.resolve(file));
+          const source = prior?.after ?? before;
+          const edits = envAssignments(file, source).filter((assignment) => assignment.name === managedKey)
+            .map((assignment) => ({ offset: assignment.start, length: assignment.length, content: "" }));
+          const after = applyEdits(source, edits);
+          if (after !== source) plans.set(path.resolve(file), { file, before, after, mode: 0o600 });
+        }
       }
     }
-  }
-  if (target.id === "dsh" && (found || stored)) {
-    const stillUsed = files.maps.some(({ document, at }) => Object.values(providerMap(document, at)).some((entry) =>
-      isJsonObject(entry) && entry.apiKeyEnv === managedKey));
-    if (!stillUsed) {
-      for (const document of files.documents.values()) {
-        if (path.basename(document.file) !== ".credentials.yaml") continue;
-        removeAt(document, ["refs", managedKey]);
-        removeAt(document, [managedKey]);
+    if (target.id === "dsh" && found) {
+      const stillUsed = files.maps.some(({ document, at }) => Object.entries(providerMap(document, at)).some(([otherId, entry]) =>
+        isJsonObject(entry) && (entry.apiKeyEnv === managedKey || isManagedCredentialRef(managedKey, otherId))));
+      if (!stillUsed) {
+        for (const document of files.documents.values()) {
+          if (path.basename(document.file) !== ".credentials.yaml") continue;
+          removeAt(document, ["refs", managedKey]);
+          removeAt(document, [managedKey]);
+        }
       }
     }
   }
@@ -514,12 +536,15 @@ async function planTargetRemoval(target: TargetApp, id: string, plans: Map<strin
     addPlan(plans, { file: document.file, before: document.before, after: render(document),
       ...(path.basename(document.file) === ".credentials.yaml" ? { mode: 0o600 } : {}) });
   }
+  for (const [file, before] of files.extras) {
+    if (!plans.has(path.resolve(file))) addPlan(plans, { file, before, after: before });
+  }
   return found;
 }
 
 function planWorkbuddyRemoval(target: TargetApp, id: string, plans: Map<string, FileChange>, stored?: Provider): boolean {
-  const dir = process.env.WORKBUDDY_CONFIG_DIR?.trim() ?? process.env.CODEBUDDY_CONFIG_DIR?.trim() ??
-    (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
+  const override = process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim();
+  const dir = override ? expandHome(override) : (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
   const file = path.join(dir, "models.json");
   const before = readText(file);
   if (before === undefined) return false;
@@ -527,14 +552,23 @@ function planWorkbuddyRemoval(target: TargetApp, id: string, plans: Map<string, 
   try { raw = JSON.parse(before); } catch { throw new Error(`${file}: invalid configuration; refusing to modify it`); }
   const models = Array.isArray(raw) ? raw : isJsonObject(raw) && Array.isArray(raw.models) ? raw.models : undefined;
   if (!models) throw new Error(`${file}: expected a model array`);
+  if (stored) for (const entry of models) {
+    if (!isJsonObject(entry) || entry.agentswProviderId !== stored.id) continue;
+    assertIdentity(target.id, stored, {
+      protocol: "openai",
+      baseUrl: typeof entry.url === "string" ? workbuddyBaseUrl(entry.url) : undefined,
+      apiKey: entry.apiKey,
+    });
+  }
   const provider = matchingCandidate(target, id, stored);
   if (!provider) return false;
   const removed = new Set<string>();
   const kept = models.filter((entry: unknown) => {
     if (!isJsonObject(entry) || typeof entry.id !== "string" || typeof entry.url !== "string") return true;
-    const endpoint = entry.url.replace(/\/chat\/completions\/?$/, "");
-    if (!sameEndpoint(endpoint, provider.baseUrl) || entry.apiKey !== provider.apiKey ||
-        !provider.models.some((model) => model.id === entry.id)) return true;
+    if (stored && typeof entry.agentswProviderId === "string" && entry.agentswProviderId !== stored.id) return true;
+    const endpoint = workbuddyBaseUrl(entry.url);
+    if (endpoint === undefined || !sameEndpoint(endpoint, provider.baseUrl) || entry.apiKey !== provider.apiKey ||
+        !provider.models.includes(entry.id)) return true;
     removed.add(entry.id);
     return false;
   });

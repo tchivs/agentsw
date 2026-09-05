@@ -21,7 +21,7 @@ delete process.env.OPENCODE_CONFIG_DIR;
 delete process.env.OPENCODE_CONFIG;
 
 const { targets } = await import("../src/targets/index.js");
-const { mergeCandidates, normalizeUrl } = await import("../src/import.js");
+const { mergeCandidates, normalizeUrl, endpointKey } = await import("../src/import.js");
 const { ccSwitchCandidates } = await import("../src/sources/ccswitch.js");
 
 after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
@@ -283,12 +283,13 @@ test("URL normalization folds hostname only and preserves path, port, and query 
   const equivalent = mergeCandidates([
     candidate(),
     candidate({ id: "different-explicit-id", baseUrl: "https://api.example.com/Tenant", source: "pi" }),
-    candidate({ baseUrl: "https://api.example.com/Tenant/v2beta1", source: "codex" }),
   ], []);
   assert.equal(equivalent.length, 1);
   assert.equal(equivalent[0]!.id, "custom-account", "imports preserve the first explicit candidate ID");
   assert.equal(equivalent[0]!.name, "Custom account");
   for (const baseUrl of [
+    "https://api.example.com/Tenant/v2",
+    "https://api.example.com/Tenant/v2beta1",
     "https://api.example.com/tenant/v1",
     "https://api.example.com:8443/Tenant/v1",
     "https://api.example.com:443/Tenant/v1",
@@ -354,4 +355,14 @@ test("Claude's generated ID never replaces OMP's explicit sub identity for the s
   const existing = [{ id: "stable-store-id", protocol: "anthropic" as const, baseUrl: explicit.baseUrl, apiKey: explicit.apiKey }];
   assert.equal(mergeCandidates([generated, explicit], existing)[0]!.configured, "stable-store-id", "existing store identity still wins over every candidate");
   assert.equal(mergeCandidates([explicit, { ...explicit, id: "second-explicit", name: "Second explicit" }], [])[0]!.id, "sub", "two explicit identities retain first-candidate precedence");
+});
+
+test("only the known /v1 alias folds into a root endpoint identity", () => {
+  assert.equal(endpointKey("https://fixture.example/v1"), endpointKey("https://fixture.example"));
+  for (const suffix of ["/v2", "/v2beta1", "/V1"]) {
+    assert.notEqual(endpointKey(`https://fixture.example${suffix}`), endpointKey("https://fixture.example"));
+  }
+  assert.equal(endpointKey("https://fixture.example/v1?tenant=A"), "https://fixture.example?tenant=A");
+  assert.notEqual(endpointKey("https://fixture.example/v1?tenant=A"), endpointKey("https://fixture.example/v1?tenant=B"));
+  assert.notEqual(endpointKey("https://fixture.example:443/v1"), endpointKey("https://fixture.example/v1"));
 });

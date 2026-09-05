@@ -12,6 +12,8 @@ import type { FileChange } from "./config-transaction.js";
 import { endpointKey } from "./import.js";
 import { classifyApi, entryApi } from "./targets/wire.js";
 import { envAssignments } from "./envfile.js";
+import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "./provider-identity.js";
+import { workbuddyBaseUrl } from "./targets/workbuddy.js";
 
 type Location = Array<string | number>;
 type ObjectValue = Record<string, unknown>;
@@ -193,7 +195,6 @@ function tomlEditor(file: string, before: string): Editor {
 }
 
 
-const managedKey = (id: string): string => `AGENTSW_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
 
 /** Explicit provider ID migration; never recreates providers or edits session history. */
 export async function renameProvider(
@@ -212,10 +213,10 @@ export async function renameProvider(
   const provider = object(providers[oldId], configFile);
   const changes: FileChange[] = [];
   const visited = new Set<string>();
-  const oldKey = managedKey(oldId);
-  const newKey = managedKey(newId);
+  const oldKeys = [managedCredentialRef(oldId), legacyManagedCredentialRef(oldId)];
+  const newKey = managedCredentialRef(newId);
 
-  const assertConnection = (editor: Editor, entry: ObjectValue): void => {
+  const assertConnection = (editor: Editor, entry: ObjectValue, envLookup = false): void => {
     const options = isJsonObject(entry.options) ? entry.options : {};
     const endpoint = entry.baseUrl ?? entry.baseURL ?? entry.base_url ?? options.baseURL ?? (entry.transport ? entry.api : undefined);
     if (typeof endpoint === "string" && /^https?:\/\//i.test(endpoint) && typeof provider.baseUrl === "string" && endpointKey(endpoint) !== endpointKey(provider.baseUrl)) {
@@ -228,10 +229,10 @@ export async function renameProvider(
             typeof entry.npm === "string" && entry.npm.includes("openai") ? "openai" : undefined);
     if (protocol && provider.protocol && protocol !== provider.protocol) throw new Error(`${editor.file}: source provider protocol conflicts with the store`);
     const rawKey = entry.apiKey ?? options.apiKey;
-    if (typeof rawKey === "string" && rawKey) {
+    if (typeof rawKey === "string") {
       const ref = rawKey.match(/^\$([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? rawKey.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/)?.[1];
       // Command/file references remain unresolved; no shell execution or secret-file reads.
-      const key = ref ? process.env[ref] : /^(?:!|\{file:)/.test(rawKey) ? undefined : /^[A-Z][A-Z0-9_]*$/.test(rawKey) ? process.env[rawKey] : rawKey;
+      const key = ref ? process.env[ref] : /^(?:!|\{file:)/.test(rawKey) ? undefined : envLookup ? process.env[rawKey] ?? rawKey : rawKey;
       if (key !== undefined && typeof provider.apiKey === "string" && key !== provider.apiKey) throw new Error(`${editor.file}: source provider credentials conflict with the store`);
     }
   };
@@ -247,13 +248,17 @@ export async function renameProvider(
     const value = get(editor.value, at);
     return value === undefined ? [] : Object.entries(object(value, editor.file));
   };
-  const renameMap = (editor: Editor, at: Location, names = ["id", "name"]): void => {
+  const renameMap = (editor: Editor, at: Location, names = ["id", "name"], envLookup = false): void => {
     const map = get(editor.value, at);
     if (map === undefined) return;
     const entries = object(map, editor.file);
     if (Object.hasOwn(entries, newId)) throw new Error(`${editor.file}: destination provider ID already exists`);
     if (!Object.hasOwn(entries, oldId)) return;
-    assertConnection(editor, object(entries[oldId], editor.file));
+    const entry = object(entries[oldId], editor.file);
+    assertConnection(editor, entry, envLookup);
+    if (Array.isArray(entry.models)) for (const model of entry.models) {
+      if (isJsonObject(model)) assertConnection(editor, model, envLookup);
+    }
     for (const key of names) exact(editor, [...at, oldId, key]);
     editor.move(at, oldId, newId);
   };
@@ -302,7 +307,7 @@ export async function renameProvider(
   });
 
   const ompDir = path.join(home, ".omp", "agent");
-  for (const name of ["models.yml", "models.yaml"]) visit(path.join(ompDir, name), "yaml", (editor) => renameMap(editor, ["providers"]));
+  for (const name of ["models.yml", "models.yaml"]) visit(path.join(ompDir, name), "yaml", (editor) => renameMap(editor, ["providers"], undefined, true));
   for (const name of ["config.yml", "config.yaml"]) visit(path.join(ompDir, name), "yaml", (editor) => {
     compound(editor, ["model"]);
     for (const [role] of entries(editor, ["modelRoles"])) compound(editor, ["modelRoles", role]);
@@ -310,7 +315,7 @@ export async function renameProvider(
 
   for (const [env, fallback] of [["PI_CODING_AGENT_DIR", ".pi/agent"], ["PRIME_AGENT_CODING_AGENT_DIR", ".prime/agent"]] as const) {
     const dir = process.env[env] ? expandHome(process.env[env]!) : path.join(home, fallback);
-    visit(path.join(dir, "models.json"), "json", (editor) => renameMap(editor, ["providers"]));
+    visit(path.join(dir, "models.json"), "json", (editor) => renameMap(editor, ["providers"], undefined, env === "PRIME_AGENT_CODING_AGENT_DIR"));
     visit(path.join(dir, "settings.json"), "json", (editor) => {
       exact(editor, ["defaultProvider"]);
       const recent = get(editor.value, ["recentModels"]);
@@ -339,58 +344,76 @@ export async function renameProvider(
     }
   });
 
+  const migrationKey = (file: string, local: Map<string, unknown>, maps: Array<Array<[string, unknown]>>, field: string): string | undefined => {
+    const sourceRefs = maps.flatMap((map) => map.filter(([id]) => id === oldId).map(([, entry]) => get(entry, [field])));
+    const eligible = oldKeys.filter((key) => local.has(key) &&
+      (sourceRefs.includes(key) || sourceRefs.every((ref) => ref === undefined)) &&
+      !Object.keys(providers).some((id) => id !== oldId && isManagedCredentialRef(key, id)) &&
+      !maps.some((map) => map.some(([id, entry]) => id !== oldId &&
+        (get(entry, [field]) === key || isManagedCredentialRef(key, id)))));
+    if (eligible.length > 1) throw new Error(`${file}: ambiguous managed credential references`);
+    const key = eligible[0];
+    if (!key) return undefined;
+    if (local.has(newKey) || process.env[newKey] !== undefined ||
+        maps.some((map) => map.some(([, entry]) => get(entry, [field]) === newKey))) {
+      throw new Error(`${file}: destination credential reference already exists`);
+    }
+    if (process.env[key] !== undefined && process.env[key] !== local.get(key)) throw new Error(`${file}: inherited credential overrides the local definition`);
+    if (typeof provider.apiKey === "string" && local.get(key) !== provider.apiKey) throw new Error(`${file}: source provider credentials conflict with the store`);
+    return key;
+  };
+
   const hermesDir = process.env.HERMES_HOME?.trim() ? expandHome(process.env.HERMES_HOME.trim()) : localAppDataDir("hermes");
   const envFile = path.join(hermesDir, ".env");
   const envBefore = readExisting(envFile);
   const assignments = envBefore === undefined ? [] : envAssignments(envFile, envBefore);
   const envValues = new Map(assignments.map((assignment) => [assignment.name, assignment.value]));
-  const migrateEnv = oldKey !== newKey && assignments.some((assignment) => assignment.name === oldKey);
-  if (migrateEnv) {
-    if (assignments.some((assignment) => assignment.name === newKey) || process.env[newKey] !== undefined) throw new Error(`${envFile}: destination credential reference already exists`);
-    if (process.env[oldKey] !== undefined && process.env[oldKey] !== envValues.get(oldKey)) throw new Error(`${envFile}: inherited credential overrides the local definition`);
-    const after = applyEdits(envBefore!, assignments.filter((assignment) => assignment.name === oldKey).map((assignment) => ({ offset: assignment.offset, length: oldKey.length, content: newKey })));
-    changes.push({ file: envFile, before: envBefore, after, mode: 0o600 });
-  }
-  if (!migrateEnv) changes.push({ file: envFile, before: envBefore, after: envBefore });
+  let envKey: string | undefined;
+  let hermesPresent = false;
   visit(path.join(hermesDir, "config.yaml"), "yaml", (editor) => {
+    hermesPresent = true;
     const keyRef = get(editor.value, ["providers", oldId, "key_env"]);
     const key = typeof keyRef === "string" ? process.env[keyRef] ?? envValues.get(keyRef) : undefined;
     if (key !== undefined && provider.apiKey !== undefined && key !== provider.apiKey) throw new Error(`${editor.file}: source provider credentials conflict with the store`);
-    if (migrateEnv) for (const [id, entry] of entries(editor, ["providers"])) {
-      if (get(entry, ["key_env"]) === newKey) throw new Error(`${editor.file}: destination credential reference already exists`);
-      exact(editor, ["providers", id, "key_env"], oldKey, newKey);
-    }
+    envKey = migrationKey(envFile, envValues, [entries(editor, ["providers"])], "key_env");
+    if (envKey) exact(editor, ["providers", oldId, "key_env"], envKey, newKey);
     renameMap(editor, ["providers"]);
     exact(editor, ["model", "provider"]);
   });
+  if (!hermesPresent) envKey = migrationKey(envFile, envValues, [], "key_env");
+  const envAfter = envKey ? applyEdits(envBefore!, assignments.filter((assignment) => assignment.name === envKey)
+    .map((assignment) => ({ offset: assignment.offset, length: envKey!.length, content: newKey }))) : envBefore;
+  changes.push({ file: envFile, before: envBefore, after: envAfter, mode: 0o600 });
 
   const dshDir = process.env.DSH_HOME?.trim() ? expandHome(process.env.DSH_HOME.trim()) : localAppDataDir("dsh");
+  const settings: Array<{ editor: Editor; before: string }> = [];
+  for (const name of ["settings.yaml", "settings.yml", "settings.json"]) {
+    const file = path.join(dshDir, name);
+    const before = readExisting(file);
+    if (before === undefined) changes.push({ file, before, after: before });
+    else settings.push({ editor: name.endsWith("json") ? jsonEditor(file, before) : yamlEditor(file, before), before });
+  }
+  const dshMaps = settings.map(({ editor }) => entries(editor, ["llm-pi-ai", "providers"]));
   const credentialFile = path.join(dshDir, ".credentials.yaml");
-  let migrateCredential = false;
+  let credentialKey: string | undefined;
   let credentialRefs: ObjectValue = {};
   visit(credentialFile, "yaml", (editor) => {
     const version = get(editor.value, ["version"]);
     if (version !== undefined && version !== 1) throw new Error(`${credentialFile}: unsupported credential layout version`);
     const at: Location = version === undefined && get(editor.value, ["refs"]) === undefined ? [] : ["refs"];
-    const refs = object(get(editor.value, at), credentialFile);
-    credentialRefs = refs;
-    if (oldKey === newKey || !Object.hasOwn(refs, oldKey)) return;
-    if (Object.hasOwn(refs, newKey) || process.env[newKey] !== undefined) throw new Error(`${credentialFile}: destination credential reference already exists`);
-    if (process.env[oldKey] !== undefined && process.env[oldKey] !== refs[oldKey]) throw new Error(`${credentialFile}: inherited credential overrides the local definition`);
-    editor.move(at, oldKey, newKey);
-    migrateCredential = true;
+    credentialRefs = object(get(editor.value, at), credentialFile);
+    credentialKey = migrationKey(credentialFile, new Map(Object.entries(credentialRefs)), dshMaps, "apiKeyEnv");
+    if (credentialKey) editor.move(at, credentialKey, newKey);
   }, 0o600);
-  for (const name of ["settings.yaml", "settings.yml", "settings.json"]) visit(path.join(dshDir, name), name.endsWith("json") ? "json" : "yaml", (editor) => {
+  for (const { editor, before } of settings) {
     const keyRef = get(editor.value, ["llm-pi-ai", "providers", oldId, "apiKeyEnv"]);
     const key = typeof keyRef === "string" ? process.env[keyRef] ?? credentialRefs[keyRef] : undefined;
     if (key !== undefined && provider.apiKey !== undefined && key !== provider.apiKey) throw new Error(`${editor.file}: source provider credentials conflict with the store`);
-    if (migrateCredential) for (const [id, entry] of entries(editor, ["llm-pi-ai", "providers"])) {
-      if (get(entry, ["apiKeyEnv"]) === newKey) throw new Error(`${editor.file}: destination credential reference already exists`);
-      exact(editor, ["llm-pi-ai", "providers", id, "apiKeyEnv"], oldKey, newKey);
-    }
+    if (credentialKey) exact(editor, ["llm-pi-ai", "providers", oldId, "apiKeyEnv"], credentialKey, newKey);
     renameMap(editor, ["llm-pi-ai", "providers"], ["id", "displayName"]);
     exact(editor, ["agent-default-model", "provider"]);
-  });
+    finish(editor, before);
+  }
 
   const workbuddyEnv = process.env.WORKBUDDY_CONFIG_DIR?.trim() ?? process.env.CODEBUDDY_CONFIG_DIR?.trim();
   const workbuddyDir = workbuddyEnv ? expandHome(workbuddyEnv) : process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy");
@@ -399,11 +422,17 @@ export async function renameProvider(
     const rows = get(editor.value, at);
     if (rows === undefined) return;
     if (!Array.isArray(rows)) throw new Error(`${editor.file}: expected WorkBuddy models array`);
-    const base = typeof provider.baseUrl === "string" ? provider.baseUrl.replace(/\/+$/, "") : "";
-    const url = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-    if (provider.name !== oldId) return;
     rows.forEach((row, index) => {
-      if (isJsonObject(row) && row.url === url && row.apiKey === provider.apiKey) exact(editor, [...at, index, "vendor"]);
+      if (!isJsonObject(row)) return;
+      if (row.agentswProviderId === newId) throw new Error(`${editor.file}: destination provider ID already exists`);
+      const owned = row.agentswProviderId === oldId;
+      const endpoint = typeof row.url === "string" ? workbuddyBaseUrl(row.url) : undefined;
+      const matches = typeof endpoint === "string" && typeof provider.baseUrl === "string" &&
+        endpointKey(endpoint) === endpointKey(provider.baseUrl) && row.apiKey === provider.apiKey;
+      if (owned && !matches) throw new Error(`${editor.file}: source provider connection conflicts with the store`);
+      if (!matches || (row.agentswProviderId !== undefined && !owned)) return;
+      if (owned) exact(editor, [...at, index, "agentswProviderId"]);
+      if (provider.name === oldId) exact(editor, [...at, index, "vendor"]);
     });
   }, undefined, true);
   // Claude and WorkBuddy settings contain model IDs, not provider IDs; leave them intact.

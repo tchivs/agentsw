@@ -1,6 +1,6 @@
 {
   "name": "agentsw",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "CLI provider switcher for coding agents: manage OpenAI/Anthropic-protocol providers in one place and sync them, with models.dev metadata, into Claude Code, Codex, omp, pi, prime-agent, opencode, Hermes, WorkBuddy and DeepSeek Harness",
   "type": "module",
   "repository": {
@@ -30,7 +30,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -44,12 +44,14 @@
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
     "prompts": "^2.4.2",
+    "semver": "^7.8.5",
     "smol-toml": "^1.8.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
     "@types/prompts": "^2.4.9",
+    "@types/semver": "^7.8.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }
