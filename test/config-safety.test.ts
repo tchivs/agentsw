@@ -288,6 +288,24 @@ test("read-then-write catches replacement even if the replacement has identical 
   assert.equal(fs.existsSync(backupsDir), false);
 });
 
+test("64-bit file IDs remain distinct beyond JavaScript number precision", () => {
+  const first = put("large-id-a.json", "first");
+  const second = put("large-id-b.json", "second");
+  const ids = new Map([[first, 9007199254740992n], [second, 9007199254740993n]]);
+  assert.equal(Number(ids.get(first)), Number(ids.get(second)), "ordinary stat numbers lose this distinction");
+  const original = fs.lstatSync;
+  mock.method(fs, "lstatSync", (file: fs.PathLike, options?: fs.StatOptions) => {
+    const stat = original(file, options);
+    const id = ids.get(String(file));
+    if (id !== undefined) Object.defineProperty(stat, "ino", { value: options?.bigint ? id : Number(id) });
+    return stat;
+  });
+  assert.deepEqual(commitFileChanges([
+    { file: first, before: "first", after: "updated-first" },
+    { file: second, before: "second", after: "updated-second" },
+  ], { dryRun: true }).files, [first, second]);
+});
+
 test("scoped preview survives global switch changes without intercepting unrelated writes", async () => {
   const file = put("preview/config.json", "old");
   const created = path.join(sandbox, "preview/new/secret.json");
