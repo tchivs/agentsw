@@ -45,9 +45,9 @@ export interface FileSnapshot {
 /** Read exactly one regular file. A broken path or unreadable file is not an empty config. */
 export function readFileSnapshot(file: string): FileSnapshot {
   try {
-    const stat = fs.lstatSync(file);
+    const stat = fs.lstatSync(file, { bigint: true });
     if (!stat.isFile()) throw new Error(`${file}: not a regular configuration file`);
-    return { text: fs.readFileSync(file, "utf8"), mode: stat.mode & 0o777, identity: `${stat.dev}:${stat.ino}` };
+    return { text: fs.readFileSync(file, "utf8"), mode: Number(stat.mode & 0o777n), identity: `${stat.dev}:${stat.ino}` };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { text: undefined };
     throw new Error(`${file}: cannot read a regular configuration file`);

@@ -28,9 +28,9 @@ function atomicWrite(file: string, text: string, mode: number): FileSnapshot {
   try {
     fs.writeFileSync(temp, text, { flag: "wx", mode });
     fs.chmodSync(temp, mode);
-    const stat = fs.lstatSync(temp);
+    const stat = fs.lstatSync(temp, { bigint: true });
     fs.renameSync(temp, file);
-    return { text, mode: stat.mode & 0o777, identity: `${stat.dev}:${stat.ino}` };
+    return { text, mode: Number(stat.mode & 0o777n), identity: `${stat.dev}:${stat.ino}` };
   } finally {
     fs.rmSync(temp, { force: true });
   }
@@ -83,7 +83,7 @@ function withWriteLock<T>(operation: () => T): T {
     throw new Error(`${lockFile}: cannot acquire configuration write lock`);
   }
   try {
-    const owned = fs.fstatSync(fd);
+    const owned = fs.fstatSync(fd, { bigint: true });
     try {
       try {
         fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }) + "\n");
@@ -95,7 +95,7 @@ function withWriteLock<T>(operation: () => T): T {
       // Keep the descriptor open while checking ownership, preventing inode reuse.
       // A replaced lock belongs to somebody else; never remove it on their behalf.
       try {
-        const current = fs.lstatSync(lockFile);
+        const current = fs.lstatSync(lockFile, { bigint: true });
         if (current.dev === owned.dev && current.ino === owned.ino) fs.unlinkSync(lockFile);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
