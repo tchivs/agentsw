@@ -161,14 +161,18 @@ asw discover myproxy --no-filter                # 清除规则
 |---|---|
 | `agentsw` | 交互菜单（不带参数） |
 | `add` | 添加或更新供应商；`--discover` 自动填模型列表 |
+| `quick` | 只需 URL + API key，自动探测协议与模型，按完整域名 + 协议命名 |
 | `import [--all]` | 接管各智能体配置与 cc-switch 里已有的供应商 |
 | `list` / `status` | 已配置的供应商 / 各智能体当前指向 |
+| `list --apps omp,prime` | 列出智能体本地供应商 ID，包括未导入 agentsw 的条目 |
+| `rename <id> <new-id>` | 备份并迁移 ID 和配置引用，支持 `--dry-run` |
 | `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
 | `sync` | 重新应用当前供应商（比如某个智能体升级之后） |
 | `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据 |
 | `models [query]` | 搜索 models.dev 目录 |
 | `refresh` | 重新拉取所有供应商的元数据 |
 | `prune <id>` / `remove <id> [--prune]` | 从各应用配置中清除 / 从存储中删除 |
+| `remove <id> --apps omp` | 仅删除指定智能体内的条目，支持 `--dry-run` |
 | `apps` / `install <app>` / `upgrade` | 智能体版本管理 |
 
 ```bash
@@ -176,6 +180,23 @@ asw use myproxy -a codex,omp -m glm-5.2
 asw discover myproxy --sync
 asw remove myproxy --prune
 ```
+
+新建供应商的自动 ID 使用完整域名和协议，例如 `api-example-com-openai`。
+显式指定的 `--id` 会保留，同步不会自动重命名。导入去重会同时比较端点、协议和凭据，
+不同账号保持独立；同一账号的自定义名称优先于自动生成名称。
+
+```bash
+asw rename myproxy api-example-com-openai --dry-run
+asw rename myproxy api-example-com-openai
+asw list --apps omp
+asw remove unused-provider --apps omp --dry-run
+asw remove unused-provider --apps omp
+```
+
+单独 `remove` 只删除 agentsw 中央条目；`--prune` 还会清理匹配的智能体配置。
+`--apps` 则仅作用于指定智能体，也能删除从未导入 agentsw 的供应商，请勿和 `--prune` 同用。
+重命名和删除会先检查全部计划变更，再创建私有备份并写入。
+仅从智能体删除时中央条目仍保留，之后主动同步该供应商会重新写入该智能体。
 
 ## 它如何对待你的配置
 

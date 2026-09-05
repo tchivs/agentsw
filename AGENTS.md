@@ -20,18 +20,20 @@ User → index.ts (Commander) → commands.ts (cmd*) → store.ts (load/save con
 
 **Core flow**: Every command loads the store fresh (`loadStore()`), performs its action, and saves via `saveStore()` (atomic write, mode 0600). Provider objects are the central domain model — they carry protocol, endpoint, API key, model list with metadata, and filter preferences. Target adapters translate a Provider into each app's native config format.
 
-**Quick-add flow**: `cmdQuickAdd` → `probeProtocols()` (tries `/v1/models` with both Bearer and x-api-key headers) → `discoverProviderModels()` per protocol → `enrichModels()` from models.dev → save provider(s) with `-openai`/`-anthropic` suffixes if both protocols work.
+**Quick-add flow**: `cmdQuickAdd` → `probeProtocols()` → `discoverProviderModels()` per protocol → `enrichModels()`. Automatic IDs use the full hostname plus protocol even for a single protocol; an existing same-account ID/name is reused. Explicit IDs remain user-owned.
 
-**Import flow**: `scanCandidates()` iterates all targets' `.candidates()` + cc-switch SQLite → `mergeCandidates()` dedupes by `protocol|normalizedUrl` (treats `host` and `host/v1` as same) → interactive multiselect → save to store.
+**Import flow**: `scanCandidates()` → `mergeCandidates()` dedupes by normalized endpoint, protocol, and credential identity. `ProviderCandidate.generatedId` distinguishes generated suggestions from explicit names; explicit names win for the same account. Different or unresolved credentials are not silently merged.
+
+**Management flow**: `provider-actions.ts` handles CLI/menu output; `rename.ts` and `remove.ts` plan changes; `config-transaction.ts` preflights snapshots, creates private backups, writes atomically per file, and rolls back earlier writes on failure. Never implement rename by applying a fresh provider then pruning the old one: that loses unmodeled config.
 
 ## Key Directories
 
 | Directory | Purpose |
 |-----------|---------|
 | `src/` | All TypeScript source — entry point, commands, store, i18n, discovery, models.dev, filesystem utils |
-| `src/targets/` | Per-app adapters: `claude.ts`, `codex.ts`, `omp.ts`, `pi.ts`, `prime.ts`, `opencode.ts`, `hermes.ts`, `workbuddy.ts`, `dsh.ts`, `wire.ts` (shared wire helpers), `types.ts` (TargetApp interface) |
+| `src/targets/` | Per-app adapters: `claudecode.ts`, `codex.ts`, `omp.ts`, `pistyle.ts` (pi/prime), `opencode.ts`, `hermes.ts`, `workbuddy.ts`, `dsh.ts`, `wire.ts`, `types.ts` |
 | `src/sources/` | External config importers: `ccswitch.ts` (cc-switch SQLite reader) |
-| `test/` | Node.js built-in test runner — `targets.test.ts` (15 tests), `import.test.ts` (4 tests), `apps.test.ts` (2 tests), `filter.test.ts` (7 tests), `i18n.test.ts` (3 tests) |
+| `test/` | Node.js test runner: adapter roundtrips, YAML aliases, JSONC, naming/import identity, rename/removal transactions, CLI/menu workflows, and filters |
 | `dist/` | Compiled output (gitignored) |
 | `.github/workflows/` | `ci.yml` (matrix test + smoke), `release.yml` (npm OIDC publish on tag) |
 
@@ -59,7 +61,7 @@ No linting or formatting tools are configured. No external test framework — us
 - Command handlers: `cmdXxx` (e.g., `cmdAdd`, `cmdQuickAdd`, `cmdInstall`).
 - Target adapters: lowercase app id (e.g., `claude`, `codex`, `dsh`).
 - i18n keys: dot-separated `section.key` (e.g., `cmd.add`, `menu.quickAdd`, `add.autoDiscover`).
-- Provider slug: derived from URL hostname via `slugFromBaseUrl()` — strips `api`/`www` labels, lowercases, replaces non-alphanumeric with `-`.
+- Automatic provider ID: `providerIdFromBaseUrl(baseUrl, protocol)` retains the entire hostname and appends the protocol; `availableProviderId()` prevents collisions. Sync must never rename an existing ID.
 
 ### Async Patterns
 - Command handlers are `async` functions; Commander awaits them via `parseAsync()`.
@@ -71,6 +73,7 @@ No linting or formatting tools are configured. No external test framework — us
 - Store is a flat JSON file at `~/.config/agentsw/config.json` (or `%APPDATA%/agentsw/` on Windows). No database, no caching — loaded fresh each command.
 - `AGENTSW_HOME` env var overrides entire home directory layout (used in tests and CI smoke tests).
 - Dry-run mode: `setDryRun(true)` intercepts `writeFileAtomic()` to record intents instead of writing; `drainPendingWrites()` retrieves them for preview output.
+- Management commands have their own preplanned transaction dry-run. `remove --apps` is agent-only, including unregistered entries; `remove --prune` removes a central entry plus matching app entries. These scopes are mutually exclusive.
 
 ### Target Adapter Pattern
 Each adapter in `src/targets/` implements the `TargetApp` interface:
@@ -82,10 +85,10 @@ Each adapter in `src/targets/` implements the `TargetApp` interface:
 - `candidates()` — reads existing custom providers from app config for import
 - `supportsProtocol(protocol)` — checks if adapter handles openai/anthropic
 
-Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), or native `JSON` (claude, pi, prime, opencode, workbuddy) depending on the app's config format. The `wire.ts` module provides shared helpers: `classifyApi`, `apiValue`, `entryApi`, `mergeModels`, `stripConflictingOverrides`.
+Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), `jsonc.ts` (pi/prime), or native JSON. Preserve YAML alias values and JSONC comments; validate before mutation. The `wire.ts` module provides shared API and model-merge helpers.
 
 ### i18n
-- ~90 message keys in a flat `messages` object (`src/i18n.ts`), each with `en` and `zh-CN` variants.
+- Message keys live in a flat `messages` object (`src/i18n.ts`), each with `en` and `zh-CN` variants.
 - `t(key, vars?)` — looks up message, replaces `{placeholder}` tokens via `replaceAll`.
 - Locale precedence: CLI `--lang` > `$AGENTSW_LANG` > `store.language` > system locale (`LC_ALL` > `LC_MESSAGES` > `LANG` > `Intl` > `en`).
 
@@ -94,7 +97,11 @@ Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), or native `JSON` (c
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | CLI entry point (`#!/usr/bin/env node`); Commander program, locale init, command registration |
-| `src/commands.ts` | All command handlers + shared helpers (`fail`, `table`, `createProvider`, `runTargets`) |
+| `src/commands.ts` | Provider creation/discovery/sync commands + shared helpers (`fail`, `table`, `createProvider`, `runTargets`) |
+| `src/provider-actions.ts` | Localized CLI/menu wrappers for rename, scoped removal, and local provider listing |
+| `src/rename.ts`, `src/remove.ts` | Schema-aware provider ID/reference migration and scoped deletion plans |
+| `src/config-transaction.ts` | Preflight, private unique backups, atomic writes, and rollback |
+| `src/jsonc.ts` | Comment-preserving JSONC validation and incremental edits |
 | `src/types.ts` | Core types: `Protocol`, `Provider`, `ModelSpec`, `Store`, `ApplyResult`, `Locale` |
 | `src/store.ts` | Config store load/save (`~/.config/agentsw/config.json`, mode 0600) |
 | `src/apps.ts` | App catalog (9 apps), version detection, install/upgrade commands |
@@ -104,7 +111,7 @@ Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), or native `JSON` (c
 | `src/i18n.ts` | Bilingual messages (en/zh-CN), locale detection/normalization |
 | `src/fsutil.ts` | Atomic writes, dry-run, backups, platform-aware paths (`appDataDir`, `localAppDataDir`) |
 | `src/import.ts` | Provider import/merge pipeline, `scanCandidates()`, `mergeCandidates()` |
-| `src/slug.ts` | `slugFromBaseUrl()` — URL hostname → provider slug |
+| `src/slug.ts` | Full-hostname/protocol IDs, display names, and collision-safe allocation |
 | `src/targets/wire.ts` | Shared wire helpers for OpenAI/Anthropic protocol classification |
 | `src/targets/types.ts` | `TargetApp` and `ProviderCandidate` interfaces |
 | `src/sources/ccswitch.ts` | cc-switch SQLite importer (read-only, 3 shape parsers) |
@@ -124,7 +131,7 @@ Adapters use `YAML` (omp, hermes, dsh), `smol-toml` (codex), or native `JSON` (c
 
 - **Framework**: Node.js built-in `node:test` runner via `tsx --test test/*.test.ts`.
 - **Assertions**: `node:assert/strict`.
-- **32 tests** across 5 files, all pass in <1s.
+- **Regression coverage**: Includes initialization, repeated sync, malformed configs, reference migration, deletion scope, dry-run nonwrites, and interactive confirmation; use `npm test` for the current count.
 - **Sandbox pattern**: Tests use `AGENTSW_HOME` env var or `os.tmpdir()` to isolate config writes. No real network calls — model metadata is mocked or hardcoded.
 - **CI matrix**: Ubuntu + macOS (Node 22, 24), Windows (Node 22). Smoke test in CI: `add` → `use` → `status` → `prune` across pi/omp/opencode with sandbox HOME.
 - **Windows note**: File permission assertions (`mode & 0o077 === 0`) are skipped on win32 (NTFS doesn't honor Unix chmod bits).

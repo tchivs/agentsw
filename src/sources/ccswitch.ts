@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { appDataDir, home } from "../fsutil.js";
-import { slugFromBaseUrl } from "../slug.js";
+import { providerIdFromBaseUrl } from "../slug.js";
 import type { OpenAIApi, Protocol } from "../types.js";
 import type { ProviderCandidate } from "../targets/types.js";
 import { classifyApi } from "../targets/wire.js";
@@ -154,8 +154,10 @@ export function ccSwitchCandidates(): ProviderCandidate[] {
     const name = row.name || row.app_type;
     // cc-switch ids are UUIDs; the display name is what the user recognizes.
     const slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[-_]+|[-_]+$/g, "");
+    const generatedId = !/^[a-z0-9]/.test(slug);
     out.push({
-      id: /^[a-z0-9]/.test(slug) ? slug : slugFromBaseUrl(parsed.baseUrl),
+      id: generatedId ? providerIdFromBaseUrl(parsed.baseUrl, parsed.protocol) : slug,
+      ...(generatedId ? { generatedId: true } : {}),
       name,
       protocol: parsed.protocol,
       ...(parsed.openaiApi ? { openaiApi: parsed.openaiApi as OpenAIApi } : {}),

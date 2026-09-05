@@ -164,14 +164,18 @@ Explicit `--models` entries and the default model are never filtered out.
 |---|---|
 | `agentsw` | interactive menu (no arguments) |
 | `add` | add or update a provider; `--discover` fills the model list |
+| `quick` | discover protocols/models from URL + API key; auto-name by hostname + protocol |
 | `import [--all]` | adopt providers from your agents' configs and cc-switch |
 | `list` / `status` | configured providers / what each agent points at |
+| `list --apps omp,prime` | list agent-local provider IDs, including entries absent from agentsw |
+| `rename <id> <new-id>` | back up and migrate the ID and config references; supports `--dry-run` |
 | `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--dry-run` |
 | `sync` | re-apply the active provider (after an agent update, say) |
 | `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models` |
 | `models [query]` | search the models.dev catalog |
 | `refresh` | re-fetch metadata for every configured provider |
 | `prune <id>` / `remove <id> [--prune]` | remove from app configs / from the store |
+| `remove <id> --apps omp` | delete only the selected app's entry; supports `--dry-run` |
 | `apps` / `install <app>` / `upgrade` | agent version manager |
 
 ```bash
@@ -179,6 +183,24 @@ asw use myproxy -a codex,omp -m glm-5.2
 asw discover myproxy --sync
 asw remove myproxy --prune
 ```
+
+New automatic IDs include the full hostname and protocol, e.g. `api-example-com-openai`.
+An explicit `--id` is retained, and syncing never renames an existing provider. Import
+deduplication compares endpoint, protocol, and credentials; different accounts remain separate.
+
+```bash
+asw rename myproxy api-example-com-openai --dry-run
+asw rename myproxy api-example-com-openai
+asw list --apps omp
+asw remove unused-provider --apps omp --dry-run
+asw remove unused-provider --apps omp
+```
+
+`remove` alone changes only the agentsw store; `--prune` also cleans matching app configs.
+`--apps` is instead app-only and can remove a provider never imported into agentsw.
+Do not combine `--apps` and `--prune`. Renames and removals preflight changes and create
+private backups before writes. App-only removal leaves the store intact, so a later explicit
+sync of a managed provider can add it back to that app.
 
 ## How your configs are treated
 

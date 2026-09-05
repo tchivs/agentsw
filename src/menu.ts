@@ -8,7 +8,6 @@ import {
   cmdDiscover,
   cmdImport,
   cmdList,
-  cmdRemove,
   cmdStatus,
   cmdSync,
   cmdUpgrade,
@@ -18,6 +17,10 @@ import { getLocale, setLocale, t } from "./i18n.js";
 import { loadStore, saveStore } from "./store.js";
 import { appPackages, appCommand, installedVersion } from "./apps.js";
 import type { Locale } from "./types.js";
+import { cmdRemoveProvider, cmdRename } from "./provider-actions.js";
+import { listRemovableProviders } from "./remove.js";
+import { providerIdFromBaseUrl } from "./slug.js";
+import { targets } from "./targets/index.js";
 
 function bye(): never {
   console.log(pc.dim(`\n${t("menu.bye")}`));
@@ -85,6 +88,77 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
   return { id, defaultModel: p.defaultModel, models: p.models.map((m) => m.id) };
 }
 
+async function renameFromMenu(): Promise<void> {
+  const picked = await pickProvider(t("menu.renameProvider"));
+  if (!picked) return;
+  const provider = loadStore().providers[picked.id]!;
+  const { newId } = await prompts({
+    type: "text",
+    name: "newId",
+    message: t("menu.newId"),
+    initial: providerIdFromBaseUrl(provider.baseUrl, provider.protocol),
+    validate: (value: string) => /^[a-z0-9][a-z0-9_-]*$/.test(value.trim()) || t("add.idInvalid"),
+  }, cancel);
+  if (!newId) return;
+  const next = String(newId).trim();
+  await cmdRename(picked.id, next, { dryRun: true });
+  if (await askToggle(t("menu.renameConfirm", { oldId: picked.id, newId: next }))) {
+    await cmdRename(picked.id, next);
+  }
+}
+
+async function removeFromMenu(): Promise<void> {
+  const { scope } = await prompts({
+    type: "select",
+    name: "scope",
+    message: t("menu.removeScope"),
+    hint: t("menu.selectInstructions"),
+    choices: [
+      { title: t("menu.removeStore"), value: "store" },
+      { title: t("menu.removeEverywhere"), value: "everywhere" },
+      { title: t("menu.removeLocal"), value: "local" },
+    ],
+  }, cancel);
+  if (!scope) return;
+  let app: string | undefined;
+  if (scope === "local") {
+    const answer = await prompts({
+      type: "select",
+      name: "app",
+      message: t("menu.removeApp"),
+      hint: t("menu.selectInstructions"),
+      choices: targets.map((target) => ({ title: `${target.id} · ${target.name}`, value: target.id })),
+    }, cancel);
+    app = answer.app;
+    if (!app) return;
+  }
+  const entries: Array<{ id: string; app?: string; name?: string }> = app
+    ? listRemovableProviders(app)
+    : Object.values(loadStore().providers).map((provider) => ({ id: provider.id, name: provider.name }));
+  if (!entries.length) {
+    console.log(pc.dim(t("menu.noRemovable")));
+    return;
+  }
+  const { selected } = await prompts({
+    type: "select",
+    name: "selected",
+    message: t("menu.removeProvider"),
+    hint: t("menu.selectInstructions"),
+    choices: entries.map((entry, index) => ({
+      title: `${entry.id} · ${entry.app ?? "agentsw"}${entry.name && entry.name !== entry.id ? ` · ${entry.name}` : ""}`,
+      value: index,
+    })),
+  }, cancel);
+  const picked = entries[selected];
+  if (!picked) return;
+  const opts = scope === "local" ? { apps: picked.app! } : { prune: scope === "everywhere" };
+  await cmdRemoveProvider(picked.id, { ...opts, dryRun: true });
+  const scopeLabel = picked.app ?? t(scope === "everywhere" ? "menu.removeEverywhere" : "menu.removeStore");
+  if (await askToggle(t("menu.removeConfirmScope", { id: picked.id, scope: scopeLabel }))) {
+    await cmdRemoveProvider(picked.id, opts);
+  }
+}
+
 export async function cmdMenu(): Promise<void> {
   if (!loadStore().language) await chooseLanguage();
   console.log(pc.bold("agentsw") + pc.dim(t("menu.title")));
@@ -109,6 +183,7 @@ export async function cmdMenu(): Promise<void> {
           { title: t("menu.list"), value: "list" },
           { title: t("menu.sync"), value: "sync" },
           { title: t("menu.discover"), value: "discover" },
+          { title: t("menu.rename"), value: "rename" },
           { title: t("menu.remove"), value: "remove" },
           { title: t("menu.apps"), value: "apps" },
           { title: t("menu.installApp"), value: "install" },
@@ -167,12 +242,13 @@ export async function cmdMenu(): Promise<void> {
       if (!picked) continue;
       const sync = await askToggle(t("menu.pushRefresh"));
       await cmdDiscover(picked.id, { sync });
-    } else if (action === "remove") {
-      const picked = await pickProvider(t("menu.removeProvider"));
-      if (!picked) continue;
-      if (!(await askToggle(t("menu.reallyRemove", { id: pc.bold(picked.id) })))) continue;
-      const prune = await askToggle(t("menu.pruneConfigs"));
-      await cmdRemove(picked.id, { prune });
+    } else if (action === "rename" || action === "remove") {
+      try {
+        if (action === "rename") await renameFromMenu();
+        else await removeFromMenu();
+      } catch (error) {
+        console.error(pc.red(error instanceof Error ? error.message : String(error)));
+      }
     } else if (action === "apps") {
       await cmdApps();
       if (await askToggle(t("menu.upgrade"))) await cmdUpgrade([]);

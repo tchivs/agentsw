@@ -1,14 +1,14 @@
 import pc from "picocolors";
 import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
-import { scanCandidates, normalizeUrl, type MergedCandidate } from "./import.js";
+import { scanCandidates, normalizeUrl, findMatchingProvider, type MergedCandidate } from "./import.js";
 import { enrichModels, loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
 import { appCommand, appPackages, installedVersion, isNewer, latestVersion, runShell } from "./apps.js";
 import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
-import { slugFromBaseUrl } from "./slug.js";
+import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
 
@@ -143,8 +143,8 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
         {
           type: "text",
           name: "id",
-          message: t("add.id"),
-          validate: (v: string) => (/^[a-z0-9][a-z0-9_-]*$/.test(v) ? true : t("add.idInvalid")),
+          message: t("add.idAuto"),
+          validate: (v: string) => (!v || /^[a-z0-9][a-z0-9_-]*$/.test(v) ? true : t("add.idInvalid")),
         },
         { type: "text", name: "name", message: t("add.name"), initial: (prev: string) => prev },
         {
@@ -181,14 +181,14 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
     );
   } else {
     const required = opts.discover
-      ? (["id", "protocol", "baseUrl", "apiKey"] as const)
-      : (["id", "protocol", "baseUrl", "apiKey", "models"] as const);
+      ? (["protocol", "baseUrl", "apiKey"] as const)
+      : (["protocol", "baseUrl", "apiKey", "models"] as const);
     for (const field of required) {
       if (!opts[field]) fail(t("add.fieldRequired", { field: field === "baseUrl" ? "base-url" : field === "apiKey" ? "api-key" : field }));
     }
     answers = {
-      id: opts.id!,
-      name: opts.name ?? opts.id!,
+      id: opts.id ?? "",
+      name: opts.name ?? "",
       protocol: opts.protocol!,
       baseUrl: opts.baseUrl!,
       apiKey: opts.apiKey!,
@@ -202,7 +202,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const wire = answers.openaiApi ?? opts.openaiApi;
   if (wire && wire !== "completions" && wire !== "responses") fail(t("add.openaiApiInvalid"));
   const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) : undefined;
-  const baseUrl = answers.baseUrl!.replace(/\/+$/, "");
+  const baseUrl = normalizeUrl(answers.baseUrl!);
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
   const modelFilter = parseFilterOpts(opts);
@@ -231,9 +231,13 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
   if (opts.smallModel && !modelIds.includes(opts.smallModel)) fail(t("add.smallMissing", { model: opts.smallModel }));
 
+  const explicitId = answers.id || undefined;
+  const existing = explicitId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
+  const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
+
   const provider: Provider = {
-    id: answers.id!,
-    name: answers.name || answers.id!,
+    id,
+    name: answers.name || existing?.name || (explicitId ? explicitId : providerNameFromBaseUrl(baseUrl, protocol)),
     protocol,
     ...(openaiApi ? { openaiApi } : {}),
     baseUrl,
@@ -331,7 +335,6 @@ export async function cmdQuickAdd(opts: {
 
   let baseUrl: string;
   let apiKey: string;
-  let baseId: string;
 
   if (interactive) {
     const answers = await prompts(
@@ -341,15 +344,13 @@ export async function cmdQuickAdd(opts: {
       ],
       { onCancel: () => fail(t("add.cancelled")) },
     );
-    baseUrl = answers.baseUrl.replace(/\/+$/, "");
+    baseUrl = normalizeUrl(answers.baseUrl);
     apiKey = answers.apiKey;
-    baseId = opts.id ?? slugFromBaseUrl(baseUrl);
   } else {
     if (!opts.baseUrl) fail(t("add.fieldRequired", { field: "base-url" }));
     if (!opts.apiKey) fail(t("add.fieldRequired", { field: "api-key" }));
-    baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    baseUrl = normalizeUrl(opts.baseUrl);
     apiKey = opts.apiKey;
-    baseId = opts.id ?? slugFromBaseUrl(baseUrl);
   }
 
   process.stderr.write(pc.dim(t("quick.probing", { url: baseUrl }) + "\n"));
@@ -364,9 +365,10 @@ export async function cmdQuickAdd(opts: {
   const createdIds: string[] = [];
 
   for (const protocol of protocols) {
-    const suffix = multi ? `-${protocol}` : "";
-    const id = `${baseId}${suffix}`;
-    const name = multi ? `${baseId} (${protocol})` : baseId;
+    const explicitId = opts.id === undefined ? undefined : `${opts.id}${multi ? `-${protocol}` : ""}`;
+    const existing = explicitId === undefined ? findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey }) : undefined;
+    const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
+    const name = existing?.name ?? (opts.id === undefined ? providerNameFromBaseUrl(baseUrl, protocol) : multi ? `${opts.id} (${protocol})` : opts.id);
 
     process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })} [${protocol}]\n`));
     const discovered = await discoverProviderModels({ baseUrl, apiKey, protocol });
@@ -424,21 +426,6 @@ export function cmdList(): void {
     ];
   });
   console.log(table(rows, [" ", "ID", t("table.protocol"), "BASE URL", t("table.defaultModel"), t("table.models")]));
-}
-
-export async function cmdRemove(id: string, opts: { prune?: boolean }): Promise<void> {
-  const store = loadStore();
-  const provider = getProvider(store, id);
-  if (opts.prune) {
-    console.log(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
-    reportResults(await runTargets("prune", provider, undefined));
-    console.log("");
-  }
-  delete store.providers[id];
-  if (store.active === id) store.active = undefined;
-  saveStore(store);
-  console.log(pc.green(t("remove.removed", { id })));
-  if (!opts.prune) console.log(pc.dim(t("remove.note")));
 }
 
 export async function cmdPrune(id: string, opts: { apps?: string }): Promise<void> {
@@ -772,7 +759,7 @@ export interface ImportOptions {
   all?: boolean;
 }
 
-/** Collect custom providers from app configs, dedupe by protocol+baseUrl, import what is new. */
+/** Collect custom providers, dedupe by endpoint and credentials, and import what is new. */
 export async function cmdImport(opts: ImportOptions): Promise<void> {
   const rows = scanCandidates();
   const fresh = rows.filter((r) => !r.configured);
@@ -848,6 +835,13 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
       apiKey = a.key;
     }
 
+    // A prompted credential can identify a provider imported earlier in this same batch.
+    const existing = findMatchingProvider(Object.values(store.providers), { protocol: c.protocol, baseUrl: c.baseUrl, apiKey });
+    if (existing) {
+      console.log(`${pc.yellow(t("import.skip"))} ${pc.bold(c.id)} · ${c.protocol} · ${c.baseUrl} — ${t("import.already", { id: pc.bold(existing.id) })}`);
+      continue;
+    }
+
     let ids = [...c.models];
     if (ids.length === 0) {
       process.stderr.write(pc.dim(`${t("import.discovering", { id: c.id })}\n`));
@@ -860,8 +854,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     }
     if (ids.length === 0) fail(t("import.noModelsImport", { id: c.id }));
 
-    let id = c.id;
-    for (let n = 2; store.providers[id]; n++) id = `${c.id}-${n}`;
+    const id = availableProviderId(c.id, store.providers);
     const hint = guessProviderHint(catalog, c.baseUrl);
     const models = enrichModels(catalog, ids, hint);
     const defaultModel = c.defaultModel && ids.includes(c.defaultModel) ? c.defaultModel : ids[0]!;
@@ -884,5 +877,5 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     );
   }
   saveStore(store);
-  console.log(pc.dim(`\n${t("import.next", { id: imported[0]! })}`));
+  if (imported.length) console.log(pc.dim(`\n${t("import.next", { id: imported[0]! })}`));
 }

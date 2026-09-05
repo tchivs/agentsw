@@ -4,50 +4,68 @@ import type { Protocol } from "./types.js";
 import { targets } from "./targets/index.js";
 import type { ProviderCandidate } from "./targets/types.js";
 
-/** candidates merged across apps: same protocol + base URL = one agentsw provider */
+/** Candidates merged only when endpoint, protocol, and credential identity agree. */
 export interface MergedCandidate extends Omit<ProviderCandidate, "source"> {
   sources: string[];
-  /** id of an already-configured provider covering the same protocol + base URL */
+  /** ID of an already-configured provider with the same endpoint and resolved credentials. */
   configured?: string;
 }
 
+/** Normalize host casing and trailing path slashes without rewriting paths or explicit ports. */
 export function normalizeUrl(u: string): string {
-  return u.replace(/\/+$/, "");
+  const parts = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)([?#].*)?$/i.exec(u);
+  if (!parts) return u.replace(/\/+$/, "");
+  const [, scheme, authority, pathname, suffix] = parts;
+  const at = authority!.lastIndexOf("@") + 1;
+  return `${scheme!.toLowerCase()}${authority!.slice(0, at)}${authority!.slice(at).toLowerCase()}${pathname!.replace(/\/+$/, "")}${suffix ?? ""}`;
 }
 
-/** True when a base URL already names the API version, e.g. `.../v1`. */
-const hasApiVersion = (baseUrl: string) => /\/v\d+(?:beta\d*)?$/i.test(baseUrl);
+/** True when the path already names the API version, e.g. `.../v1`. */
+const hasApiVersion = (baseUrl: string) => /\/v\d+(?:beta\d*)?$/.test(baseUrl.split(/[?#]/, 1)[0]!);
 
-/**
- * Endpoint identity for dedupe. Apps disagree about who owns the `/v1` segment:
- * omp/pi/opencode store it in the base URL, while Codex (and cc-switch's Codex
- * rows) leave it off because the client appends it. `https://host` and
- * `https://host/v1` on one protocol are the same upstream, so they must merge
- * into one provider instead of importing twice.
- */
-const matchKey = (protocol: Protocol, baseUrl: string) =>
-  `${protocol}|${normalizeUrl(baseUrl).replace(/\/v\d+(?:beta\d*)?$/i, "")}`;
+/** Apps may append their own API version; all other URL components remain significant. */
+export function endpointKey(baseUrl: string): string {
+  const normalized = normalizeUrl(baseUrl);
+  const suffixAt = normalized.search(/[?#]/);
+  const path = suffixAt < 0 ? normalized : normalized.slice(0, suffixAt);
+  return path.replace(/\/v\d+(?:beta\d*)?$/, "") + (suffixAt < 0 ? "" : normalized.slice(suffixAt));
+}
 
-/** pure merge: dedupe candidates by protocol+baseUrl, union models, keep first resolved key */
+interface ProviderConnection {
+  protocol: Protocol;
+  baseUrl: string;
+  apiKey?: string;
+}
+
+/** An unresolved credential is not evidence that two configurations use the same account. */
+export function findMatchingProvider<T extends ProviderConnection>(existing: T[], candidate: ProviderConnection): T | undefined {
+  if (!candidate.apiKey) return undefined;
+  const endpoint = endpointKey(candidate.baseUrl);
+  return existing.find((p) => p.protocol === candidate.protocol && p.apiKey === candidate.apiKey && endpointKey(p.baseUrl) === endpoint);
+}
+
+/** Pure merge: union models only within the same credential-qualified endpoint. */
 export function mergeCandidates(
   rows: ProviderCandidate[],
-  existing: Array<{ id: string; protocol: Protocol; baseUrl: string }>,
+  existing: Array<ProviderConnection & { id: string }>,
 ): MergedCandidate[] {
   const merged = new Map<string, MergedCandidate>();
   for (const { source, ...c } of rows) {
-    const key = matchKey(c.protocol, c.baseUrl);
+    const credentials = c.apiKey ? ["literal", c.apiKey] : c.keyEnv ? ["env", c.keyEnv] : ["missing", source, c.id];
+    const key = JSON.stringify([c.protocol, endpointKey(c.baseUrl), credentials]);
     const cur = merged.get(key);
     if (!cur) {
       merged.set(key, { ...c, baseUrl: normalizeUrl(c.baseUrl), models: [...new Set(c.models)], sources: [source] });
       continue;
     }
-    if (!cur.sources.includes(source)) cur.sources.push(source);
-    if (!cur.apiKey && c.apiKey) {
-      cur.apiKey = c.apiKey;
-      cur.keyEnv = c.keyEnv;
-    } else if (!cur.keyEnv && c.keyEnv) {
-      cur.keyEnv = c.keyEnv;
+    // Explicit app identities outrank endpoint-derived suggestions, regardless of scan order.
+    if (cur.generatedId && !c.generatedId) {
+      cur.id = c.id;
+      cur.name = c.name;
+      delete cur.generatedId;
     }
+    if (!cur.sources.includes(source)) cur.sources.push(source);
+    if (!cur.keyEnv && c.keyEnv) cur.keyEnv = c.keyEnv;
     for (const m of c.models) if (!cur.models.includes(m)) cur.models.push(m);
     if (!cur.defaultModel && c.defaultModel) cur.defaultModel = c.defaultModel;
     // keep the variant that names the API version: model discovery and most adapters
@@ -59,7 +77,7 @@ export function mergeCandidates(
   }
   const out = [...merged.values()];
   for (const m of out) {
-    const hit = existing.find((e) => matchKey(e.protocol, e.baseUrl) === matchKey(m.protocol, m.baseUrl));
+    const hit = findMatchingProvider(existing, m);
     if (hit) m.configured = hit.id;
   }
   return out.sort((a, b) => a.id.localeCompare(b.id));
@@ -84,6 +102,6 @@ export function scanCandidates(): MergedCandidate[] {
   const store = loadStore();
   return mergeCandidates(
     rows,
-    Object.values(store.providers).map((p) => ({ id: p.id, protocol: p.protocol, baseUrl: p.baseUrl })),
+    Object.values(store.providers),
   );
 }

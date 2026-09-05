@@ -9,6 +9,8 @@ import type { ApplyResult, OpenAIApi, Protocol, Provider } from "../types.js";
 export interface ProviderCandidate {
   /** provider id/slug as used inside the app's config */
   id: string;
+  /** True only when the app carries no provider ID and this ID was generated from its endpoint. */
+  generatedId?: boolean;
   name: string;
   protocol: Protocol;
   /** OpenAI wire flavor the app config declares (`openai-responses` family vs chat completions) */

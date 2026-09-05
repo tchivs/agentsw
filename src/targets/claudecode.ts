@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
-import { slugFromBaseUrl } from "../slug.js";
+import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { stripApiVersion } from "./wire.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
@@ -87,11 +87,12 @@ export const claudecode: TargetApp = {
       env.ANTHROPIC_REASONING_MODEL,
       env.ANTHROPIC_SMALL_FAST_MODEL,
     ].filter((m): m is string => !!m);
-    const id = slugFromBaseUrl(baseUrl);
+    const id = providerIdFromBaseUrl(baseUrl, "anthropic");
     return [
       {
         id,
-        name: id,
+        generatedId: true,
+        name: providerNameFromBaseUrl(baseUrl, "anthropic"),
         protocol: "anthropic",
         baseUrl,
         apiKey: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || undefined,

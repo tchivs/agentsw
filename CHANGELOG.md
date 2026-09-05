@@ -6,6 +6,26 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-05
+
+### Added
+
+- Explicit `rename <id> <new-id>` with configuration-reference migration,
+  preflight conflict checks, private backups, and `--dry-run`.
+- `remove <id> --apps <apps>` removes agent-local providers, including entries
+  never imported into agentsw, without deleting the central store or other apps.
+- `list --apps <apps>` lists local provider IDs. The interactive menu now offers
+  rename and scoped removal with previews and confirmation.
+
+### Changed
+
+- Automatically named providers use the full hostname plus protocol, including
+  single-protocol endpoints. Explicit IDs and existing account names stay stable.
+- Import deduplication distinguishes credentials and prefers explicit provider
+  names over generated IDs for the same account.
+- Provider removal validates all planned changes and backs up affected files
+  before mutation, retaining the central entry if app cleanup fails preflight.
+
 ## [0.6.2] - 2026-09-05
 
 ### Fixed
@@ -229,7 +249,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/tchivs/agentsw/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/tchivs/agentsw/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tchivs/agentsw/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tchivs/agentsw/compare/v0.5.5...v0.6.0
