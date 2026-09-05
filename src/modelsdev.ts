@@ -32,34 +32,54 @@ export interface CatalogProvider {
 
 export type Catalog = Record<string, CatalogProvider>;
 
+const catalogFetchedAt = new WeakMap<Catalog, string>();
+
+/** Fetch time is kept outside the provider dictionary and never changes its public shape. */
+export function getCatalogFetchedAt(catalog: Catalog): string | undefined {
+  return catalogFetchedAt.get(catalog);
+}
+
+function readCachedCatalog(): Catalog | undefined {
+  const catalog = readJsonIfExists<Catalog>(CACHE_FILE);
+  if (catalog) {
+    try {
+      catalogFetchedAt.set(catalog, fs.statSync(CACHE_FILE).mtime.toISOString());
+    } catch {
+      // A concurrently removed cache still supplies useful metadata without a fetch time.
+    }
+  }
+  return catalog;
+}
+
 export async function loadCatalog(opts: { refresh?: boolean; offline?: boolean } = {}): Promise<Catalog | undefined> {
   if (!opts.refresh) {
     try {
       const stat = fs.statSync(CACHE_FILE);
       const fresh = Date.now() - stat.mtimeMs < CACHE_TTL_MS;
-      if (fresh || opts.offline) return readJsonIfExists<Catalog>(CACHE_FILE);
+      if (fresh || opts.offline) return readCachedCatalog();
     } catch {
       /* no cache */
     }
   }
-  if (opts.offline) return readJsonIfExists<Catalog>(CACHE_FILE);
+  if (opts.offline) return readCachedCatalog();
   try {
     const res = await fetch(API_URL, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`models.dev responded ${res.status}`);
     const text = await res.text();
-    JSON.parse(text); // validate before caching
+    const catalog = JSON.parse(text) as Catalog; // validate before caching
     writeFileAtomic(CACHE_FILE, text);
-    return JSON.parse(text) as Catalog;
+    catalogFetchedAt.set(catalog, new Date().toISOString());
+    return catalog;
   } catch (err) {
     // network failure: fall back to stale cache if present
-    const cached = readJsonIfExists<Catalog>(CACHE_FILE);
+    const cached = readCachedCatalog();
     if (cached) return cached;
     process.stderr.write(`warning: could not fetch models.dev catalog: ${(err as Error).message}\n`);
     return undefined;
   }
 }
 
-function toModelSpec(id: string, m: CatalogModel): ModelSpec {
+export function toModelSpec(id: string, m: CatalogModel): ModelSpec {
   const efforts = m.reasoning_options?.find((o) => o.type === "effort")?.values;
   return {
     id,
@@ -68,8 +88,10 @@ function toModelSpec(id: string, m: CatalogModel): ModelSpec {
     maxInput: m.limit?.input,
     maxOutput: m.limit?.output,
     reasoning: m.reasoning,
-    reasoningEfforts: efforts?.length ? efforts : undefined,
-    imageInput: m.attachment || m.modalities?.input?.includes("image") || undefined,
+    reasoningEfforts: efforts,
+    imageInput: m.attachment !== undefined || m.modalities?.input !== undefined
+      ? m.attachment === true || m.modalities?.input?.includes("image") === true
+      : undefined,
     cost: m.cost
       ? { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cache_read, cacheWrite: m.cost.cache_write }
       : undefined,

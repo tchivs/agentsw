@@ -18,8 +18,13 @@ function run(command, args, extra = {}) {
 }
 try {
   fs.mkdirSync(path.join(home, ".config", "agentsw"), { recursive: true });
-  // CLI smoke must never depend on a provider endpoint or models.dev availability.
+  // CLI smoke uses fresh local catalogs, never provider endpoints or metadata services.
   fs.writeFileSync(path.join(home, ".config", "agentsw", "models-dev.json"), "{}");
+  fs.writeFileSync(path.join(home, ".config", "agentsw", "ai-gateway.json"), JSON.stringify({
+    version: 1, fetchedAt: new Date().toISOString(), body: { data: [
+      { id: "vendor/m1", type: "language", context_window: 4096, max_tokens: 512, pricing: { input: "0.000001" } },
+    ] },
+  }));
   const packed = JSON.parse(run(windows ? "npm.cmd" : "npm", ["pack", "--json", "--pack-destination", root]));
   const tarball = path.join(root, packed[0].filename);
   run(windows ? "npm.cmd" : "npm", ["install", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball]);
@@ -28,7 +33,17 @@ try {
   for (const name of ["agentsw", "asw"]) assert.equal(run(bin(name), ["--version"]).trim(), expected);
   const cli = (...args) => run(bin("agentsw"), args);
   cli("add", "-y", "--id", "smoke", "--protocol", "openai", "--openai-api", "responses", "--base-url", "https://fixture.example/v1", "--api-key", "fixture-package-key", "--models", "m1,m2");
+  const metadataText = cli("models", "--provider", "smoke", "--metadata");
+  const audit = JSON.parse(metadataText);
+  assert.equal(audit.metadataMode, "auto");
+  assert.equal(audit.gatewayMetadata, "auto");
+  assert.equal(audit.models.find((m) => m.id === "m1").metadata.fields.maxOutput.source, "ai-gateway");
+  assert.equal(audit.models.find((m) => m.id === "m1").metadata.gateway.modelId, "vendor/m1");
+  assert.ok(!metadataText.includes("fixture-package-key"));
   cli("use", "smoke", "--apps", "pi,omp,opencode");
+  for (const file of [path.join(home, ".pi", "agent", "models.json"), path.join(home, ".omp", "agent", "models.yml"), path.join(home, ".config", "opencode", "opencode.json")]) {
+    assert.doesNotMatch(fs.readFileSync(file, "utf8"), /"?metadata"?\s*:|referenceCost|fetchedAt|ai-gateway/);
+  }
   const preview = cli("sync", "--apps", "pi,omp,opencode", "--dry-run");
   assert.ok(!preview.includes("fixture-package-key"));
   assert.match(cli("status"), /smoke/);
@@ -39,7 +54,7 @@ try {
   assert.ok(!JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "models.json"), "utf8")).providers?.["renamed-smoke"]);
   cli("remove", "renamed-smoke", "--prune");
   assert.equal(Object.keys(store().providers).length, 0);
-  console.log(`Installed-package smoke passed on ${process.platform}: agentsw/asw, add, use, preview, status, rename, scoped/global removal.`);
+  console.log(`Installed-package smoke passed on ${process.platform}: agentsw/asw, add, automatic Gateway metadata, use, preview, status, rename, scoped/global removal.`);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

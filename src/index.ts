@@ -81,6 +81,10 @@ program
   .option("--dedup", t("opt.dedup"))
   .option("--no-dedup", t("opt.noDedup"))
   .option("--models-dev <id>", t("opt.modelsDev"))
+  .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
+  .option("--gateway-metadata", t("opt.gatewayMetadata"))
+  .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
+  .option("--gateway-models <json>", t("opt.gatewayModels"))
   .option("-y, --yes", t("opt.yes"))
   .action(cmdAdd);
 
@@ -91,6 +95,10 @@ program
   .option("--name <name>", t("opt.name"))
   .option("--openai-api <flavor>", t("opt.openaiApi"))
   .option("--models-dev <id>", t("opt.modelsDev"))
+  .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
+  .option("--gateway-metadata", t("opt.gatewayMetadata"))
+  .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
+  .option("--gateway-models <json>", t("opt.gatewayModels"))
   .option("--base-url <url>", t("opt.baseUrl"))
   .option("--api-key <key>", t("opt.apiKey"))
   .option("--default-model <id>", t("opt.defaultModel"))
@@ -153,6 +161,7 @@ program
   .command("models [query]")
   .description(t("cmd.models"))
   .option("-p, --provider <id>", t("opt.showProvider"))
+  .option("--metadata", t("opt.metadataDetails"))
   .option("-r, --refresh", t("opt.refresh"))
   .option("-l, --limit <n>", t("opt.limit"), "30")
   .action(cmdModels);
@@ -167,18 +176,34 @@ program
   .option("--dedup", t("opt.dedup"))
   .option("--no-dedup", t("opt.noDedup"))
   .option("--no-filter", t("opt.noFilter"))
+  .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
+  .option("--gateway-metadata", t("opt.gatewayMetadata"))
+  .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
+  .option("--gateway-models <json>", t("opt.gatewayModels"))
   .action(cmdDiscover);
 
 program
   .command("import")
   .description(t("cmd.import"))
   .option("--all", t("opt.all"))
+  .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
+  .option("--gateway-metadata", t("opt.gatewayMetadata"))
+  .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
+  .option("--gateway-models <json>", t("opt.gatewayModels"))
   .action(cmdImport);
 
 program.command("apps").description(t("cmd.apps")).action(cmdApps);
 program.command("install <app>").description(t("cmd.install")).action(cmdInstall);
 program.command("upgrade [apps...]").description(t("cmd.upgrade")).action(cmdUpgrade);
-program.command("refresh").description(t("cmd.refresh")).action(cmdRefreshMeta);
+program
+  .command("refresh")
+  .description(t("cmd.refresh"))
+  .option("-p, --provider <id>", t("opt.refreshProvider"))
+  .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
+  .option("--gateway-metadata", t("opt.gatewayMetadata"))
+  .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
+  .option("--gateway-models <json>", t("opt.gatewayModels"))
+  .action(cmdRefreshMeta);
 
 program.parseAsync().catch((err: Error) => {
   process.stderr.write(`error: ${err.message}\n`);

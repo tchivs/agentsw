@@ -54,6 +54,10 @@ function capturePrompts(answers: unknown[]): prompts.PromptObject[] {
 
 beforeEach(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
+  put(path.join(sandbox, ".config/agentsw/models-dev.json"), {});
+  put(path.join(sandbox, ".config/agentsw/ai-gateway.json"), {
+    version: 1, fetchedAt: new Date().toISOString(), body: { data: [] },
+  });
   put(storeFile, { version: 1, language: "en", active: "legacy", providers: { legacy } });
   prompts.override({});
   setLocale("en");
@@ -155,7 +159,7 @@ for (const locale of ["en", "zh-CN"] as const) {
     await cmdMenu();
     const choices = questions.find((question) => question.name === "action")!.choices as prompts.Choice[];
     assert.deepEqual(choices.map((choice) => choice.value), [
-      "quickAdd", "add", "import", "use", "status", "list", "sync", "discover", "rename", "remove", "apps", "install", "language", "quit",
+      "quickAdd", "add", "import", "use", "status", "list", "sync", "discover", "metadata", "rename", "remove", "apps", "install", "language", "quit",
     ]);
     assert.equal(new Set(choices.map((choice) => choice.title)).size, choices.length);
     for (const choice of choices) {
@@ -170,6 +174,8 @@ for (const locale of ["en", "zh-CN"] as const) {
     assert.match(choice("status").title, /each agent|各智能体/);
     assert.match(choice("sync").description!, /without fetching|不重新获取/);
     assert.match(choice("discover").description!, /Fetch models|重新获取模型/);
+    assert.match(choice("metadata").description!, /Keep the model list|保留模型列表/);
+    assert.match(choice("metadata").description!, /AI Gateway/);
     assert.match(choice("rename").title, /ID/);
     assert.match(choice("rename").description!, /keep custom display names|保留自定义显示名称/);
     assert.match(choice("language").title, /language/i);
@@ -228,4 +234,55 @@ for (const locale of ["en", "zh-CN"] as const) {
     assert.equal(fs.existsSync(path.join(sandbox, ".config/agentsw/backups")), false);
     assert.deepEqual(errors, []);
   });
+}
+
+for (const locale of ["en", "zh-CN"] as const) {
+  for (const [stored, selected, initial, expected] of [
+    [undefined, "auto", 0, "auto"],
+    ["auto", "auto", 0, "auto"],
+    [true, "on", 1, true],
+    [false, "off", 2, false],
+    [false, "auto", 2, "auto"],
+  ] as const) {
+    test(`metadata menu selects ${selected} from ${String(stored)} and only refreshes stored parameters (${locale})`, async () => {
+      setLocale(locale);
+      put(storeFile, { version: 1, language: locale, active: "legacy", providers: { legacy: {
+        ...legacy, gatewayMetadata: stored,
+      } } });
+      setupLocal();
+      const beforePrime = fs.readFileSync(primeFile, "utf8");
+      const requests: string[] = [];
+      mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+        const url = String(input);
+        requests.push(url);
+        assert.ok(["https://models.dev/api.json", "https://ai-gateway.vercel.sh/v1/models"].includes(url));
+        return Response.json(url.includes("models.dev") ? {} : { data: [
+          { id: "vendor/model-a", type: "language", context_window: 4096, max_tokens: 512 },
+        ] });
+      });
+      const answers = ["metadata", "legacy", selected, "quit"];
+      const questions = capturePrompts(answers);
+      await cmdMenu();
+      assert.equal(answers.length, 0);
+      assert.deepEqual(questions.map((question) => question.name), ["action", "id", "metadataMode", "action"]);
+      const selection = questions.find((question) => question.name === "metadataMode")!;
+      assert.equal(selection.type, "select");
+      assert.equal(selection.initial, initial);
+      assert.equal(selection.message, t("menu.metadataMode"));
+      const choices = selection.choices as prompts.Choice[];
+      assert.deepEqual(choices.map((choice) => choice.value), ["auto", "on", "off"]);
+      assert.match(choices[0]!.title, /recommended|推荐/);
+      assert.match(choices[0]!.description!, /models\.dev/);
+      assert.match(choices[0]!.description!, /missing core specs|核心参数缺失/);
+      assert.match(choices[0]!.description!, /refresh its saved fields|刷新已有 Gateway 字段/);
+      const saved = JSON.parse(fs.readFileSync(storeFile, "utf8")).providers.legacy;
+      assert.equal(saved.gatewayMetadata, expected);
+      assert.deepEqual(saved.models.map((model: { id: string }) => model.id), ["model-a"]);
+      assert.equal(saved.models[0].maxOutput, selected === "off" ? undefined : 512);
+      if (selected === "off") assert.ok(!requests.includes("https://ai-gateway.vercel.sh/v1/models"));
+      else assert.equal(saved.models[0].metadata.gateway.modelId, "vendor/model-a");
+      assert.equal(fs.readFileSync(primeFile, "utf8"), beforePrime);
+      assert.deepEqual(errors, []);
+    });
+  }
 }

@@ -21,6 +21,9 @@ after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 beforeEach((t) => {
   saveStore({ version: 1, providers: {} });
   fs.writeFileSync(path.join(configDir, "models-dev.json"), "{}");
+  fs.writeFileSync(path.join(configDir, "ai-gateway.json"), JSON.stringify({
+    version: 1, fetchedAt: new Date().toISOString(), body: { data: [] },
+  }));
   t.mock.method(console, "log", () => {});
   t.mock.method(process.stderr, "write", () => true);
   t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network request"); });

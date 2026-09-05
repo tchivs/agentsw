@@ -44,7 +44,7 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
   （`authHeader`、`headers`、`compat`、`discovery`）、`thinkingLevelMap` 之类的模型级字段、
   以及 YAML 注释，都会在重新同步后原样保留。
 - **写的是元数据，不只是模型 id。** 转售商 `/v1/models` 只返回裸 id；agentsw 从
-  [models.dev](https://models.dev) 补全，并按各应用真正读取的字段下发：pi/prime 的
+  [models.dev](https://models.dev) 优先补全，并在有实际缺口时自动查询 AI Gateway，按各应用真正读取的字段下发：pi/prime 的
   `thinkingLevelMap`、opencode 的 `limit`/`attachment`、omp 的 `contextWindow`/`maxTokens`、
   dsh 的 `reasoningEfforts`/`input`。
 - **接管你已有的配置——包括 [cc-switch](https://github.com/farion1231/cc-switch)。**
@@ -143,7 +143,7 @@ imported zhipu-glm · anthropic · https://open.bigmodel.cn/api/anthropic · 1 m
 
 ## 模型发现过滤
 
-`--discover` 从供应商 `/v1/models` 拉取模型 id，再从 models.dev 补全元数据。
+`--discover` 从供应商 `/v1/models` 拉取模型 id，优先从 models.dev 补全元数据，必要时自动查询 AI Gateway。
 转售商列表噪音大，过滤规则持久化在供应商上，每次 `discover` 自动复用：
 
 ```bash
@@ -156,6 +156,69 @@ asw discover myproxy --no-filter                # 清除规则
 ```
 
 手动 `--models` 指定的 id 和默认模型永不被过滤。
+
+## 自动补全模型元数据
+
+**默认无需额外参数。** 新供应商和未保存模式的供应商使用 `auto`：先查询 models.dev，
+仅在核心参数（上下文窗口、最大输出、推理或图片输入能力）仍缺失、已有 Gateway 自动字段
+未被手动修改或 models.dev 替代而需刷新，或需核实旧自动值的身份冲突时，才查询公开的
+[AI Gateway 模型目录](https://vercel.com/docs/ai-gateway/models-and-providers#dynamic-model-discovery)。
+仅缺名称、价格、可选输入上限或推理等级列表，不会触发 Gateway 查询。
+直接请求 `https://ai-gateway.vercel.sh/v1/models`，不携带供应商密钥，也不安装 AI SDK。
+
+```bash
+# 按保存的模式刷新已有模型参数（未设置时为 auto）
+# 不发现新模型、不写智能体配置
+asw refresh --provider myproxy
+
+# 查看生效模式、字段来源、冲突和参考价格；JSON 不含 API key
+asw models --provider myproxy --metadata
+
+# 自定义或有歧义的名称需显式映射；实际调用的模型 ID 不变
+asw refresh --provider myproxy --metadata-mode auto \
+  --gateway-models '{"my-model":"openai/gpt-5.4"}'
+
+# 即使核心参数完整，也始终查询 Gateway
+asw refresh --provider myproxy --metadata-mode on
+
+# 停止后续 Gateway 获取；保留已保存的参数
+asw refresh --provider myproxy --metadata-mode off
+
+# 将显式关闭的供应商恢复为自动模式
+asw refresh --provider myproxy --metadata-mode auto
+
+# 单独预览、同步；sync 不查询目录
+asw sync --provider myproxy --dry-run
+asw sync --provider myproxy
+```
+
+交互菜单的“设置并刷新模型参数补充源”提供“自动按需（推荐）”“始终补充”“关闭”，
+默认选中该供应商当前模式；添加供应商时不增加提问。
+`add`、`quick`、`discover`、`import`、`refresh` 均支持 `--metadata-mode <auto|on|off>`。
+原有 `--gateway-metadata` / `--no-gateway-metadata` 仍分别表示显式 `on` / `off`。
+省略参数会保留已保存的设置：已有 `false` 仍保持关闭，直到主动选择 `auto` 或 `on`。
+无效模式或相互冲突的模式/布尔开关，会在查询或保存之前报错。
+`refresh` 不传 `--provider` 会作用于全部供应商，包括更新传入的模式。
+`--gateway-models` 替换整个映射，传 `{}` 清空；映射不会更改保存的模式，也不会覆盖 `off`。
+导入仍跳过已经配置的账号。
+
+- **按字段合并：** 用户手动值优先，其次 models.dev，最后 Gateway 补缺。已记录来源的自动值可以刷新，
+  手动修改后会保留；旧版本中没有来源记录的已有值保守视为手动值，不强制覆盖。未知扩展字段也保留。
+- **精确匹配：** 不含 `/` 的裸 ID 可按大小写精确匹配唯一的 Gateway `creator/model` 身份，
+  前提是 models.dev 没有身份线索或线索一致。任一目录中的创建者身份有歧义时拒绝自动匹配；
+  自定义或有歧义的名称仍需显式映射。带命名空间的 ID 不会剥离前缀，不按子串、大小写折叠或版本相似度猜测。
+  `auto` / `on` 模式下 models.dev 也采用保守的精确匹配；`off` 保留原有 models.dev 查询行为。
+  匹配失败不妨碍模型继续使用。修改/删除映射时，只清理确认已失效身份的自动值，保留手动修改。
+- **不改变调用语义：** 目录不会给供应商增加模型，不改模型 ID、协议、URL、默认模型或账户；
+  Gateway 能力是参考规格，不保证转售商实际实现。`supported_specifications` 不是 URL 版本。
+- **价格仅供参考：** Gateway 价格转换为美元/百万 token，单独保存在 `metadata.gateway.referenceCost`，
+  不写入供应商的有效 `cost`，也不下发为智能体计费价格；分档/供应商差异另有标记。
+  自动模式不会仅为刷新参考价格而查询：可查看 `metadata.gateway.fetchedAt` 判断快照时间，
+  需要重新查询参考价格时使用 `refresh --provider <id> --metadata-mode on`。
+- **可追溯、可降级：** `metadata.fields` 记录来源、原值快照和时间，`metadata.conflicts` 记录保留值与冲突。
+  审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败可使用旧缓存，无缓存时只跳过补充。
+- **自动查询不等于自动同步：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，并不新增自动推送。
+  同步行为不变：普通 `sync` 仅写入已保存的设置，既不获取模型列表，也不请求元数据目录。
 
 ## 命令
 
@@ -172,7 +235,8 @@ asw discover myproxy --no-filter                # 清除规则
 | `sync` | 重新应用当前供应商（比如某个智能体升级之后） |
 | `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据 |
 | `models [query]` | 搜索 models.dev 目录 |
-| `refresh` | 重新拉取所有供应商的元数据 |
+| `refresh [--provider <id>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表 |
+| `models --provider <id> --metadata` | 以 JSON 查看字段来源、冲突和参考价格 |
 | `prune <id>` / `remove <id> [--prune]` | 从各应用配置中清除 / 从存储中删除 |
 | `remove <id> --apps omp` | 仅删除指定智能体内的条目，支持 `--dry-run` |
 | `apps` / `install <app>` / `upgrade` | 智能体版本管理 |

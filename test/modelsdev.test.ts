@@ -46,3 +46,16 @@ test("basename fallback is case insensitive only after exact identities are exha
   assert.equal(fallback?.spec.id, "reseller/MODEL");
   assert.deepEqual(enrichModels(catalog, ["vendor/model", "unknown"]), [findModelMeta(catalog, "vendor/model")!.spec, { id: "unknown" }]);
 });
+
+test("dry-run catalog refresh retains fetched metadata without requiring a cache file", async (t) => {
+  const { loadCatalog, getCatalogFetchedAt } = await import("../src/modelsdev.js");
+  const { setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
+  const { configDir } = await import("../src/store.js");
+  t.mock.method(globalThis, "fetch", async () => Response.json(catalog));
+  setDryRun(true);
+  t.after(() => { setDryRun(false); drainPendingWrites(); });
+  const loaded = await loadCatalog({ refresh: true });
+  assert.deepEqual(loaded, catalog);
+  assert.ok(getCatalogFetchedAt(loaded!));
+  assert.equal(fs.existsSync(configDir), false);
+});
