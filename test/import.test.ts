@@ -18,6 +18,7 @@ delete process.env.DSH_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
 delete process.env.OPENCODE_CONFIG_DIR;
+delete process.env.OPENCODE_CONFIG;
 
 const { targets } = await import("../src/targets/index.js");
 const { mergeCandidates } = await import("../src/import.js");
@@ -177,8 +178,8 @@ test("cc-switch's own store imports, one row shape per managed app", async () =>
 });
 
 test("a base URL with and without the /v1 segment is one provider", () => {
-  // Codex (and cc-switch's Codex rows) leave `/v1` off because the client appends it;
-  // omp/pi/opencode carry it. Both name the same upstream.
+  // OpenAI-compatible clients carry `/v1`; URL matching also recognizes an
+  // unversioned candidate from clients that append the version themselves.
   const merged = mergeCandidates(
     [
       { id: "sub", name: "sub", protocol: "openai", openaiApi: "responses", baseUrl: "https://new.vfing.de", apiKey: "sk-codex", models: ["gpt-5.6-sol"], source: "cc-switch" },

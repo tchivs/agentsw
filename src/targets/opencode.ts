@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { appDataDir, backupFile, expandHome, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { stripApiVersion } from "./wire.js";
 
-const configDir = process.env.OPENCODE_CONFIG_DIR?.trim() || appDataDir("opencode");
-const configFile = path.join(configDir, "opencode.json");
+const customDir = process.env.OPENCODE_CONFIG_DIR?.trim();
+const configFile = customDir
+  ? path.join(expandHome(customDir), "opencode.json")
+  : path.join(appDataDir("opencode"), "opencode.json");
 
 /**
  * opencode: custom providers in ~/.config/opencode/opencode.json "provider" map,
@@ -54,11 +55,11 @@ export const opencode: TargetApp = {
               },
             }
           : {}),
-        ...(m.contextWindow || m.maxOutput
+        ...(m.contextWindow && m.maxOutput
           ? {
               limit: {
-                ...(m.contextWindow ? { context: m.contextWindow } : {}),
-                ...(m.maxOutput ? { output: m.maxOutput } : {}),
+                context: m.contextWindow,
+                output: m.maxOutput,
               },
             }
           : {}),
@@ -67,11 +68,11 @@ export const opencode: TargetApp = {
 
     providerMap[provider.id] = {
       ...prev,
-      npm: anthropic ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
+      npm: anthropic ? "@ai-sdk/anthropic" : provider.openaiApi === "responses" ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible",
       name: provider.name,
       options: {
         ...(prev.options as Record<string, unknown> | undefined),
-        baseURL: stripApiVersion(provider.baseUrl),
+        baseURL: provider.baseUrl.replace(/\/+$/, ""),
         apiKey: provider.apiKey,
       },
       models,
@@ -128,6 +129,7 @@ export const opencode: TargetApp = {
       if (!entry || !baseUrl || baseUrl.startsWith("{")) return [];
       if (!entry.npm) return []; // built-in provider without a custom npm loader
       const protocol = entry.npm.includes("anthropic") ? "anthropic" : "openai";
+      const openaiApi = protocol === "openai" ? (entry.npm === "@ai-sdk/openai" ? "responses" : "completions") : undefined;
       let apiKey = entry.options?.apiKey;
       let keyEnv: string | undefined;
       const ref = apiKey?.match(/^\{env:([A-Za-z0-9_]+)\}$/);
@@ -138,7 +140,7 @@ export const opencode: TargetApp = {
       const models = Object.keys(entry.models ?? {});
       const defaultModel = activeProvider === id ? activeModel : undefined;
       if (defaultModel && !models.includes(defaultModel)) models.unshift(defaultModel);
-      return [{ id, name: entry.name ?? id, protocol, baseUrl, apiKey, keyEnv, models, defaultModel, source: self }];
+      return [{ id, name: entry.name ?? id, protocol, openaiApi, baseUrl, apiKey, keyEnv, models, defaultModel, source: self }];
     });
   },
 };

@@ -109,11 +109,15 @@ export function stripConflictingOverrides(
 }
 
 /**
- * Strip a trailing API version segment (e.g. `/v1`, `/v2beta`) from a base URL.
- * Use this when writing to apps whose own SDK appends `/v1/...` to the base URL
- * (Anthropic SDK, OpenAI SDK, omp, pi, hermes, dsh). Codex is the exception —
- * it appends `/responses` directly, so it keeps the `/v1` segment.
+ * Return the base URL expected by SDK-backed clients. Anthropic SDK methods
+ * append `/v1/...`, while OpenAI-compatible clients append only the operation
+ * path (`/responses` or `/chat/completions`) and therefore keep `/v1`.
  */
+export function sdkBaseUrl(protocol: Protocol, baseUrl: string): string {
+  return protocol === "anthropic" ? stripApiVersion(baseUrl) : baseUrl.replace(/\/+$/, "");
+}
+
+/** Strip a trailing API version segment (e.g. `/v1`, `/v2beta`). */
 export function stripApiVersion(baseUrl: string): string {
   return baseUrl.replace(/\/v\d+(?:beta\d*)?\/?$/i, "");
 }
