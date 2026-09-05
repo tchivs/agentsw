@@ -13,6 +13,8 @@ const originalEnv = new Map(envNames.map((key) => [key, process.env[key]]));
 for (const key of envNames) delete process.env[key];
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
+process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
+// Adapters capture home at module load, so load after installing sandbox overrides.
 const { renameProvider } = await import("../src/rename.js");
 const { commitFileChanges } = await import("../src/config-transaction.js");
 const { configFile } = await import("../src/store.js");
@@ -59,6 +61,7 @@ beforeEach(() => {
   for (const key of envNames) delete process.env[key];
   process.env.HOME = sandbox;
   process.env.AGENTSW_HOME = sandbox;
+  process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
   seedStore();
 });
 after(() => {
