@@ -153,7 +153,7 @@ test("rename preserves complete data and selections across all adapter schemas",
   assert.equal(wb.models[0].custom, true);
   assert.equal(wb.models[1].vendor, oldId);
   assert.deepEqual(wb.availableModels, ["m-a", "m-b"]);
-  for (const untouched of [".codex/auth.json", ".workbuddy/settings.json", ".claude/settings.json"]) assert.equal(text(untouched), before[untouched]);
+  for (const untouched of [".codex/auth.json", ".workbuddy/settings.json", ".claude/settings.json"]) assert.equal(text(untouched), before[path.normalize(untouched)]);
   const manifest = JSON.parse(text(path.join(result.backupDir!, "manifest.json")));
   assert.equal(manifest.length, result.files.length);
   for (const entry of manifest) assert.equal(text(path.join(result.backupDir!, entry.backup)), before[path.relative(sandbox, entry.file)]);
