@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-11
+
+### Changed
+
+- Example provider names, hosts and test fixtures no longer reference a real account.
+  Git history, tags and the npm tarball were rewritten so the previous name appears nowhere
+  in the repository or the published README.
+
 ## [0.9.0] - 2026-09-11
 
 ### Added
