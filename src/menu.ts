@@ -90,6 +90,44 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
   return { id, defaultModel: p.defaultModel, models: p.models.map((m) => m.id) };
 }
 
+/**
+ * Multi-select target apps, remembering the previous choice. The first row selects
+ * every detected app; picking it (or toggling everything off) returns undefined,
+ * which keeps the CLI default of "all detected apps". A narrower selection becomes
+ * an explicit --apps filter, which force-writes even undetected apps — so only
+ * offer real choices.
+ */
+async function pickApps(message: string): Promise<string | undefined> {
+  const remembered = (loadStore().syncTargets ?? []).filter((id) => targets.some((target) => target.id === id));
+  const detected = targets.filter((target) => target.detect());
+  const { apps } = await prompts(
+    {
+      type: "multiselect",
+      name: "apps",
+      message,
+      hint: t("menu.appsHint"),
+      instructions: false,
+      choices: [
+        { title: t("menu.appsAll", { count: detected.length }), value: "all", selected: remembered.length === 0 },
+        // Detected apps first, and say so: choosing an undetected one force-creates its config.
+        ...[...targets].sort((a, b) => Number(b.detect()) - Number(a.detect())).map((target) => ({
+          title: `${target.id} · ${target.name}${target.detect() ? "" : ` ${pc.dim(t("menu.appNotDetected"))}`}`,
+          value: target.id,
+          selected: remembered.includes(target.id),
+        })),
+      ],
+    },
+    cancel,
+  );
+  const picked = (Array.isArray(apps) ? apps : []).filter((value: string) => value !== "all");
+  const all = picked.length === 0 || apps.includes("all") || picked.length === targets.length;
+  const store = loadStore();
+  if (all) delete store.syncTargets;
+  else store.syncTargets = picked;
+  saveStore(store);
+  return all ? undefined : picked.join(",");
+}
+
 async function renameFromMenu(): Promise<void> {
   const picked = await pickProvider(t("menu.renameProvider"));
   if (!picked) return;
@@ -226,6 +264,7 @@ export async function cmdMenu(): Promise<void> {
     } else if (action === "use") {
       const picked = await pickProvider(t("menu.pickProvider"));
       if (!picked) continue;
+      const apps = await pickApps(t("menu.pickApps"));
       const { model } = await prompts(
         {
           type: picked.models.length > 1 ? "select" : null,
@@ -239,18 +278,18 @@ export async function cmdMenu(): Promise<void> {
         },
         cancel,
       );
-      await cmdUse(picked.id, { model: model || undefined });
+      await cmdUse(picked.id, { model: model || undefined, apps });
     } else if (action === "status") {
       cmdStatus();
     } else if (action === "list") {
       cmdList();
     } else if (action === "sync") {
-      await cmdSync({});
+      await cmdSync({ apps: await pickApps(t("menu.pickApps")) });
     } else if (action === "discover") {
       const picked = await pickProvider(t("menu.discoverFor"));
       if (!picked) continue;
       const sync = await askToggle(t("menu.pushRefresh"));
-      await cmdDiscover(picked.id, { sync });
+      await cmdDiscover(picked.id, { sync, apps: sync ? await pickApps(t("menu.pickApps")) : undefined });
     } else if (action === "metadata") {
       const picked = await pickProvider(t("menu.metadataProvider"));
       if (!picked) continue;

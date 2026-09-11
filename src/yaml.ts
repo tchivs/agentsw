@@ -1,11 +1,32 @@
 import YAML from "yaml";
+import { SafeConfigError } from "./fsutil.js";
+
+/** YAML errors embed the offending source line, which may hold credentials: keep only the code and position. */
+function describeYamlErrors(file: string, errors: readonly YAML.YAMLError[]): string {
+  const details = [...new Set(errors.map((error) => {
+    const position = error.linePos?.[0];
+    return [
+      error.code,
+      position ? `line ${position.line}` : undefined,
+      position ? `col ${position.col}` : undefined,
+    ].filter(Boolean).join(" ");
+  }))].slice(0, 3);
+  return details.length
+    ? `${file}: invalid YAML configuration (${details.join("; ")})`
+    : `${file}: invalid YAML configuration`;
+}
 
 /** Resolve aliases in document context before edits can mutate or remove anchors. */
 export function parseYamlMapping(file: string, text: string | undefined): YAML.Document {
+  let doc: YAML.Document;
   try {
-    const doc = text ? YAML.parseDocument(text) : new YAML.Document({});
-    if (doc.errors.length) throw new Error("parse error");
-    if (doc.contents == null) doc.contents = doc.createNode({});
+    doc = text ? YAML.parseDocument(text) : new YAML.Document({});
+  } catch {
+    throw new SafeConfigError(`${file}: invalid YAML configuration`);
+  }
+  if (doc.errors.length) throw new SafeConfigError(describeYamlErrors(file, doc.errors));
+  if (doc.contents == null) doc.contents = doc.createNode({});
+  try {
     // YAML permits cycles; application configuration does not. The document
     // conversion also enforces YAML's alias expansion limit before we detach.
     JSON.stringify(doc.toJS());
@@ -24,8 +45,8 @@ export function parseYamlMapping(file: string, text: string | undefined): YAML.D
     if (!YAML.isMap(doc.contents)) throw new Error("expected a configuration mapping");
     return doc;
   } catch {
-    // Parser messages include source lines, which may contain credentials.
-    throw new Error(`${file}: invalid YAML configuration (expected an acyclic mapping with valid aliases)`);
+    // Parser and conversion messages include source lines, which may contain credentials.
+    throw new SafeConfigError(`${file}: invalid YAML configuration (expected an acyclic mapping with valid aliases)`);
   }
 }
 

@@ -121,6 +121,12 @@ dsh        yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.
 An agent that is not installed is skipped, not guessed at. `--apps codex,omp` narrows a run;
 `--apps` with an uninstalled agent forces it.
 
+The interactive menu asks the same question before writing: a multi-select where the first row
+is **all detected apps**, detected agents are listed first and undetected ones are marked. The
+last selection is remembered, so a menu `use`/`sync` keeps rewriting only the agents you picked.
+An error in any config file (invalid JSON/YAML/TOML) is reported with the file and position, never
+with the offending line, and dry-run keeps that detail instead of hiding it.
+
 ## Import what you already configured
 
 `import` reads every agent's config **and cc-switch's SQLite store** (read-only), resolves

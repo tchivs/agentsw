@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { backupFile, home, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { SafeConfigError, backupFile, home, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import { isJsonObject } from "../jsonc.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
@@ -10,6 +10,17 @@ import type { ProviderCandidate, TargetApp } from "./types.js";
 const dir = path.join(home, ".codex");
 const configFile = path.join(dir, "config.toml");
 const authFile = path.join(dir, "auth.json");
+
+/** smol-toml quotes the offending source line, which may hold a key: report only the position. */
+function parseConfigToml(file: string, text: string): Record<string, unknown> {
+  try {
+    return parseToml(text) as Record<string, unknown>;
+  } catch (err) {
+    const { line, column } = err as { line?: number; column?: number };
+    const position = line === undefined ? "" : ` (line ${line}${column === undefined ? "" : `, col ${column}`})`;
+    throw new SafeConfigError(`${file}: invalid TOML configuration${position}`);
+  }
+}
 
 /**
  * Codex CLI: [model_providers.<id>] in ~/.codex/config.toml selects a custom
@@ -27,7 +38,7 @@ export const codex: TargetApp = transactionalTarget({
   async apply(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
     const text = readTextIfExists(configFile);
-    const config = (text ? parseToml(text) : {}) as Record<string, unknown>;
+    const config = text ? parseConfigToml(configFile, text) : {};
     const authValue = readJsonIfExists<Record<string, unknown>>(authFile);
     const auth = authValue === undefined ? {} : authValue;
     if (!isJsonObject(auth)) throw new Error(`${authFile}: expected a JSON object`);
@@ -87,7 +98,7 @@ export const codex: TargetApp = transactionalTarget({
   async prune(provider: Provider): Promise<ApplyResult> {
     const text = readTextIfExists(configFile);
     if (!text) return { app: this.id, changed: [], notes: [], skipped: "no config.toml" };
-    const config = parseToml(text) as Record<string, unknown>;
+    const config = parseConfigToml(configFile, text);
     if (config.model_providers !== undefined && !isJsonObject(config.model_providers)) {
       throw new Error(`${configFile}: expected model_providers to be a table`);
     }
@@ -115,7 +126,7 @@ export const codex: TargetApp = transactionalTarget({
     const text = readTextIfExists(configFile);
     if (!text) return undefined;
     try {
-      const config = parseToml(text) as Record<string, unknown>;
+      const config = parseConfigToml(configFile, text);
       if (!config.model_provider) return undefined;
       return `${String(config.model_provider)} · ${String(config.model ?? "?")}`;
     } catch {

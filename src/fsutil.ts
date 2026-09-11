@@ -5,6 +5,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { FileChange } from "./config-transaction.js";
 
+/**
+ * An error whose message is guaranteed to carry no file content. Dry-run redacts
+ * unknown errors wholesale (parser messages can embed credentials), so config
+ * parsers must throw this to stay actionable there.
+ */
+export class SafeConfigError extends Error {}
+
 // AGENTSW_HOME is an explicit portable/test override. Native Windows otherwise
 // uses USERPROFILE/os.homedir(), while Unix follows HOME as expected.
 export const home = process.env.AGENTSW_HOME?.trim() ||
@@ -108,7 +115,12 @@ export function readTextIfExists(file: string): string | undefined {
 export function readJsonIfExists<T = unknown>(file: string): T | undefined {
   const text = readTextIfExists(file);
   if (text === undefined) return undefined;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // Node quotes surrounding input in the message, which may hold credentials.
+    throw new SafeConfigError(`${file}: invalid JSON configuration`);
+  }
 }
 
 /** Compatibility preview switch. Each target captures its value when its scoped work starts. */

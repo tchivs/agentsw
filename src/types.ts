@@ -102,6 +102,8 @@ export interface Store {
   language?: Locale;
   /** id of the currently active provider */
   active?: string;
+  /** app ids last chosen in the menu's sync picker; absent means every detected app */
+  syncTargets?: string[];
   providers: Record<string, Provider>;
 }
 

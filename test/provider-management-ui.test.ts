@@ -15,6 +15,7 @@ for (const key of ["PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENC
 // The store and adapters capture home on import; load only after sandboxing.
 const { cmdMenu } = await import("../src/menu.js");
 const { listRemovableProviders } = await import("../src/remove.js");
+const { targets } = await import("../src/targets/index.js");
 const { setLocale, t } = await import("../src/i18n.js");
 const storeFile = path.join(sandbox, ".config/agentsw/config.json");
 const primeFile = path.join(sandbox, ".prime/agent/models.json");
@@ -43,7 +44,7 @@ function capturePrompts(answers: unknown[]): prompts.PromptObject[] {
   const questions: prompts.PromptObject[] = [];
   // Clear inject mode so the real prompt dispatcher reaches these test renderers.
   Reflect.deleteProperty(prompts, "_injected");
-  for (const type of ["select", "text", "toggle"] as const) {
+  for (const type of ["select", "text", "toggle", "multiselect"] as const) {
     mock.method(prompts.prompts, type, async (question: prompts.PromptObject) => {
       questions.push(question);
       return answers.shift();
@@ -153,6 +154,38 @@ test("scoped CLI listing and interactive deletion ignore another agent's malform
 });
 
 for (const locale of ["en", "zh-CN"] as const) {
+  test(`menu app picker narrows sync to selected apps (${locale})`, { timeout: 5000 }, async () => {
+    setLocale(locale);
+    const codexFile = path.join(sandbox, ".codex/config.toml");
+    fs.mkdirSync(path.dirname(codexFile), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, ".omp/agent"), { recursive: true });
+    fs.writeFileSync(codexFile, 'model = "untouched"\n');
+    const before = fs.readFileSync(codexFile, "utf8");
+    const questions = capturePrompts(["sync", ["omp"], "quit"]);
+    await cmdMenu();
+    const apps = questions.find((question) => question.name === "apps")!;
+    assert.ok(apps, "sync should ask which apps to write");
+    assert.equal(apps.type, "multiselect");
+    assert.equal(apps.message, t("menu.pickApps"));
+    const choices = apps.choices as prompts.Choice[];
+    assert.equal(choices[0]!.value, "all");
+    assert.equal(choices[0]!.selected, true);
+    assert.match(String(choices[0]!.title), /\d/, "the 'all' row states how many apps were detected");
+    assert.deepEqual(choices.slice(1).map((choice) => choice.value).sort(), targets.map((target) => target.id).sort());
+    assert.match(String(choices[1]!.title), /codex/, "detected apps are listed first");
+    assert.match(fs.readFileSync(path.join(sandbox, ".omp/agent/models.yml"), "utf8"), /api\.example\.test/);
+    assert.equal(fs.readFileSync(codexFile, "utf8"), before, "deselected apps must keep their config");
+    assert.deepEqual(JSON.parse(fs.readFileSync(storeFile, "utf8")).syncTargets, ["omp"]);
+
+    const next = capturePrompts(["sync", ["omp"], "quit"]);
+    await cmdMenu();
+    const recalled = next.find((question) => question.name === "apps")!.choices as prompts.Choice[];
+    assert.equal(recalled[0]!.selected, false, "a remembered narrow selection must uncheck 'all'");
+    assert.equal(recalled.find((choice) => choice.value === "omp")!.selected, true);
+    assert.equal(recalled.find((choice) => choice.value === "codex")!.selected, false);
+    assert.deepEqual(errors, []);
+  });
+
   test(`menu labels explain actions and sync direction (${locale})`, { timeout: 5000 }, async () => {
     setLocale(locale);
     const questions = capturePrompts(["quit"]);

@@ -122,7 +122,13 @@ for (const target of [pi, prime]) {
     assert.equal(imported.apiKey, "sk-fixture-old");
     assert.equal(read(files.modelsFile), modelsSource);
     assert.equal(read(files.settingsFile), settingsSource);
-    assert.throws(() => readJsonIfExists(files.modelsFile), SyntaxError, "other targets retain strict JSON parsing");
+    // Other targets keep strict JSON: JSONC is rejected, and the message must not quote the file.
+    assert.throws(() => readJsonIfExists(files.modelsFile), /invalid JSON configuration/);
+    try {
+      readJsonIfExists(files.modelsFile);
+    } catch (error) {
+      assert.doesNotMatch((error as Error).message, /Synchronised|model root comment/);
+    }
   });
 
   test(`${target.id} applies and prunes JSONC while retaining unknown fields and every comment`, async () => {

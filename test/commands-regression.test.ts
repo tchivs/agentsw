@@ -310,6 +310,25 @@ test("malformed preview configs never fall back to raw text and dry-run errors h
   assert.equal(process.exitCode, 1);
 });
 
+test("dry-run shows content-free config errors but still withholds unknown ones", async (t) => {
+  seed(provider());
+  const { readJsonIfExists } = await import("../src/fsutil.js");
+  const file = path.join(sandbox, "broken.json");
+  fs.writeFileSync(file, '{"apiKey":"fixture-broken-secret", oops');
+  useTargets(t,
+    fakeTarget("safe", async () => { readJsonIfExists(file); return { app: "safe", changed: [], notes: [] }; }),
+    fakeTarget("leaky", async () => { throw new Error("parser leaked fixture-unknown-secret"); }),
+  );
+  const before = snapshot();
+  await cmdSync({ apps: "safe,leaky", dryRun: true });
+  const output = messages.join("\n");
+  assert.match(output, /invalid JSON configuration/, "an actionable reason replaces the blanket message");
+  assert.match(output, /could not be previewed safely/);
+  assert.doesNotMatch(output, /fixture-(?:broken|unknown)-secret/);
+  assert.deepEqual(snapshot(), before);
+  assert.equal(process.exitCode, 1);
+});
+
 test("target detection and application errors set failure status while other targets continue", async (t) => {
   seed(provider());
   let applied = 0;

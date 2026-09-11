@@ -1,4 +1,4 @@
-import { readTextIfExists } from "./fsutil.js";
+import { SafeConfigError, readTextIfExists } from "./fsutil.js";
 import {
   applyEdits,
   createScanner,
@@ -26,10 +26,9 @@ function parseJsoncObject(file: string, text: string): Record<string, unknown> {
   const root = parseTree(source, errors, { allowTrailingComma: true });
   const error = errors[0];
   if (error) {
-    // Do not quote source text: config files can contain credentials.
-    throw new Error(`${file}: invalid JSONC (${printParseErrorCode(error.error)} at offset ${error.offset})`);
+    throw new SafeConfigError(`${file}: invalid JSONC (${printParseErrorCode(error.error)} at offset ${error.offset})`);
   }
-  if (root?.type !== "object") throw new Error(`${file}: expected a JSON object at the document root`);
+  if (root?.type !== "object") throw new SafeConfigError(`${file}: expected a JSON object at the document root`);
   // Parsing resolves duplicate keys last-wins, but modify edits the first occurrence.
   // Reject that ambiguity at any depth rather than syncing a value the agent will not read.
   const checkDuplicates = (node: JsoncNode): void => {
@@ -38,7 +37,7 @@ function parseJsoncObject(file: string, text: string): Record<string, unknown> {
       if (names) {
         const name = child.children![0]!.value as string;
         if (names.has(name)) {
-          throw new Error(`${file}: invalid JSONC (duplicate object property at offset ${child.offset})`);
+          throw new SafeConfigError(`${file}: invalid JSONC (duplicate object property at offset ${child.offset})`);
         }
         names.add(name);
       }

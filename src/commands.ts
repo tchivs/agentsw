@@ -13,7 +13,7 @@ import { loadGatewayCatalog, type GatewayCatalog } from "./gateway.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
 import { appCommand, appPackages, installedVersion, isNewer, latestVersion, normalizeAppVersion, runShell } from "./apps.js";
-import { drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
+import { SafeConfigError, drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
@@ -514,7 +514,8 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       }
       results.push(await target[op](provider));
     } catch (err) {
-      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(redactErrors ? "failed: configuration could not be previewed safely" : `failed: ${(err as Error).message}`) });
+      const safe = redactErrors && !(err instanceof SafeConfigError);
+      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${safe ? "configuration could not be previewed safely" : (err as Error).message}`) });
       process.exitCode = 1;
     }
   }

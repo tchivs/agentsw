@@ -6,6 +6,28 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-11
+
+### Added
+
+- Interactive menu app picker for `use`, `sync` and `discover --sync`: multi-select the agents
+  to write, with an "all detected apps" row, detected agents listed first and undetected ones
+  marked. The last selection is remembered in `syncTargets`, so the menu stops rewriting agents
+  you left out; CLI `--apps` semantics are unchanged.
+
+### Changed
+
+- Report why a config file was rejected instead of hiding it: JSON/YAML/TOML parse failures now
+  carry the file plus a position (YAML error code and line, JSON error offset, TOML line/column),
+  and dry-run shows that detail rather than "configuration could not be previewed safely".
+  Unclassified errors stay redacted wholesale.
+
+### Fixed
+
+- Never echo config source in parse errors. JSON, YAML and TOML parser messages quote the
+  offending line, which can contain a credential; all three are now converted to
+  content-free `SafeConfigError` messages.
+
 ## [0.8.0] - 2026-09-05
 
 ### Added
