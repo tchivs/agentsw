@@ -255,7 +255,7 @@ Import still skips already configured accounts.
 | `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--dry-run` |
 | `sync` | re-apply the active provider (after an agent update, say) |
 | `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models` |
-| `models [query]` | search the models.dev catalog |
+| `models [query]` | search the models.dev catalog (`-r` refresh the cache, `-l <n>` limit rows) |
 | `refresh [--provider <id>]` | refresh saved metadata and optionally configure Gateway; keep the model list |
 | `models --provider <id> --metadata` | inspect field sources, conflicts and reference pricing as JSON |
 | `prune <id>` / `remove <id> [--prune]` | remove from app configs / from the store |

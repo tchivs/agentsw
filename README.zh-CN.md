@@ -71,8 +71,11 @@ npm install -g agentsw    # 需要 Node >= 22.13，内置 SQLite 无需额外启
 ## 快速开始
 
 ```bash
-agentsw                   # 不带参数：交互菜单（添加、导入、切换、状态、应用管理）
+npx agentsw               # 免安装，直接打开交互菜单
+agentsw                   # 全局安装后可用；短名 `asw` 完全等价
 ```
+
+下文示例统一写作 `asw`；没有全局安装时，请改成 `npx agentsw <命令>`。
 
 存储为空时，首次运行会询问是否导入各智能体里已配置的供应商，并让你选择
 English 或简体中文。想用参数跑？同样的流程，全自动：
@@ -118,6 +121,11 @@ dsh        yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.
 
 未安装的应用会被跳过，而不是瞎猜。`--apps codex,omp` 只跑指定应用；
 对未检测到的应用显式传 `--apps` 可强制写入。
+
+交互菜单写配置前会问同一个问题：多选框第一行是**全部检测到的应用**，已检测到的排在前面，
+未检测到的会标注出来。上次的选择会被记住，所以菜单里的 `use`/`sync` 只会继续写你勾选的那几个。
+任何配置文件解析失败（JSON/YAML/TOML 非法）都会报出文件与位置，绝不回显出错那一行；
+`--dry-run` 同样保留这些细节，而不是含糊带过。
 
 ## 导入你已有的配置
 
@@ -234,7 +242,7 @@ asw sync --provider myproxy
 | `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
 | `sync` | 重新应用当前供应商（比如某个智能体升级之后） |
 | `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据 |
-| `models [query]` | 搜索 models.dev 目录 |
+| `models [query]` | 搜索 models.dev 目录（`-r` 强制刷新缓存，`-l <n>` 限制条数） |
 | `refresh [--provider <id>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表 |
 | `models --provider <id> --metadata` | 以 JSON 查看字段来源、冲突和参考价格 |
 | `prune <id>` / `remove <id> [--prune]` | 从各应用配置中清除 / 从存储中删除 |
@@ -250,6 +258,13 @@ asw remove myproxy --prune
 新建供应商的自动 ID 使用完整域名和协议，例如 `api-example-com-openai`。
 显式指定的 `--id` 会保留，同步不会自动重命名。导入去重会同时比较端点、协议和凭据，
 不同账号保持独立；同一账号的自定义名称优先于自动生成名称。
+
+纯 IP 的填写方式完全一样——域名里的每个点和冒号都变成短横线，**端口不属于 ID**：
+`http://152.53.108.231:3456` 生成的 ID 是 `152-53-108-231-openai`。因此同一 IP 上的两个端口
+共用一个基础 ID，第二个供应商会自动带上 `-2`（`152-53-108-231-openai-2`）；
+想区分请自己传 `--id`。IPv6 会去掉方括号并把冒号变短横线
+（`https://[2001:db8::1]:8080` → `2001-db8-1-openai`），国际化域名使用 punycode，
+无法解析的 base URL 退回 `imported`。
 
 ```bash
 asw rename myproxy api-example-com-openai --dry-run
