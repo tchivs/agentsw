@@ -73,8 +73,12 @@ when a portable home directory is desired.
 ## Quick start
 
 ```bash
-agentsw                   # no args: interactive menu (add, import, use, status, apps)
+npx agentsw               # no install needed — opens the interactive menu
+agentsw                   # once installed globally; the short alias `asw` is identical
 ```
+
+Every example below is written as `asw`. Without a global install, run them as
+`npx agentsw <command>` instead.
 
 The first run on an empty store offers to import the providers already configured in your
 agents, and asks for English or 简体中文. Prefer flags? The same flow, unattended:
@@ -267,6 +271,13 @@ asw remove myproxy --prune
 New automatic IDs include the full hostname and protocol, e.g. `api-example-com-openai`.
 An explicit `--id` is retained, and syncing never renames an existing provider. Import
 deduplication compares endpoint, protocol, and credentials; different accounts remain separate.
+
+A bare IP works the same way — every dot and colon becomes a dash, and the **port is not part
+of the ID**, so `http://152.53.108.231:3456` becomes `152-53-108-231-openai`. Two ports on that
+host therefore share a base ID and the second provider gets `-2` appended
+(`152-53-108-231-openai-2`); pass `--id` to name them yourself. IPv6 hosts lose their brackets
+and dashes (`https://[2001:db8::1]:8080` → `2001-db8-1-openai`), an IDN host uses its punycode
+form, and a base URL that cannot be parsed falls back to `imported`.
 
 ```bash
 asw rename myproxy api-example-com-openai --dry-run
