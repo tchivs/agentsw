@@ -77,21 +77,17 @@ npx agentsw               # no install needed — opens the interactive menu
 agentsw                   # once installed globally; the short alias `asw` is identical
 ```
 
-Every example below is written as `asw`. Without a global install, run them as
-`npx agentsw <command>` instead.
+**Run it with no arguments and you get a menu — that is the whole tool.** Every action lives
+there: add a provider (auto-detect or manual setup), import the providers already configured in
+your agents, switch provider and default model, re-sync, update a model list, configure model
+metadata, rename or delete, install/upgrade an agent, change language. On the first run it asks
+for English or 简体中文 and offers to adopt what your agents are already using.
 
-The first run on an empty store offers to import the providers already configured in your
-agents, and asks for English or 简体中文. Prefer flags? The same flow, unattended:
+Each menu action has a command equivalent for scripts, CI and headless machines — see
+[Commands](#commands). Examples below are written as `asw`; without a global install, run them
+as `npx agentsw <command>`.
 
-```bash
-# add a provider and let it discover its own model list
-asw add -y --id myproxy --protocol openai --openai-api responses \
-  --base-url https://api.example.com/v1 --api-key sk-... --discover
-
-asw use myproxy             # point every detected agent at it
-asw use myproxy --dry-run   # ...or just show the diffs
-asw status                # what each agent points at right now
-```
+One command that needs no menu — `asw status` prints what each agent currently points at:
 
 ```console
 $ asw status
@@ -263,7 +259,11 @@ Import still skips already configured accounts.
 | `apps` / `install <app>` / `upgrade` | agent version manager |
 
 ```bash
-asw use myproxy -a codex,omp -m glm-5.2
+# unattended add: discover the provider's model list, then write it everywhere
+asw add -y --id myproxy --protocol openai --openai-api responses \
+  --base-url https://api.example.com/v1 --api-key sk-... --discover
+asw use myproxy                           # every detected agent
+asw use myproxy -a codex,omp -m glm-5.2   # ...or only these, with another default model
 asw discover myproxy --sync
 asw remove myproxy --prune
 ```

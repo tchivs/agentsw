@@ -75,20 +75,14 @@ npx agentsw               # 免安装，直接打开交互菜单
 agentsw                   # 全局安装后可用；短名 `asw` 完全等价
 ```
 
+**不带参数运行就是一个菜单——整个工具都在里面。** 添加供应商（自动识别或手动设置）、导入各智能体
+已有的供应商、切换供应商和默认模型、重新同步、更新模型列表、设置模型参数补充源、重命名或删除、
+安装/升级智能体、切换语言。首次运行会先问你要 English 还是简体中文，并提议接管你各智能体已经在用的配置。
+
+菜单里的每项操作都有对应的命令，方便脚本、CI 和无头机器——见 [命令](#命令)。
 下文示例统一写作 `asw`；没有全局安装时，请改成 `npx agentsw <命令>`。
 
-存储为空时，首次运行会询问是否导入各智能体里已配置的供应商，并让你选择
-English 或简体中文。想用参数跑？同样的流程，全自动：
-
-```bash
-# 添加供应商，并让它自己发现模型列表
-asw add -y --id myproxy --protocol openai --openai-api responses \
-  --base-url https://api.example.com/v1 --api-key sk-... --discover
-
-asw use myproxy             # 把所有检测到的智能体指向它
-asw use myproxy --dry-run   # ……或者只看 diff
-asw status                # 各智能体当前指向什么
-```
+不用菜单也能看一眼——`asw status` 打印各智能体当前指向哪个供应商：
 
 ```console
 $ asw status
@@ -250,7 +244,11 @@ asw sync --provider myproxy
 | `apps` / `install <app>` / `upgrade` | 智能体版本管理 |
 
 ```bash
-asw use myproxy -a codex,omp -m glm-5.2
+# 无人值守：添加供应商并自动发现模型列表，然后写入所有智能体
+asw add -y --id myproxy --protocol openai --openai-api responses \
+  --base-url https://api.example.com/v1 --api-key sk-... --discover
+asw use myproxy                           # 所有检测到的智能体
+asw use myproxy -a codex,omp -m glm-5.2   # ……或只写这几个，并换一个默认模型
 asw discover myproxy --sync
 asw remove myproxy --prune
 ```
