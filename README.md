@@ -94,14 +94,14 @@ $ asw status
 config: ~/.config/agentsw/config.json
 active provider: myproxy
 
-APP        FOUND  PROTOCOLS         CURRENT                               CONFIG
----------  -----  ----------------  ------------------------------------  ---------------------------
-claude     yes    anthropic         -                                     ~/.claude/settings.json
-codex      yes    openai            myproxy · glm-5.3-flash                 ~/.codex/config.toml
-omp        yes    openai+anthropic  providers: sub, sub-anthropic, myproxy  ~/.omp/agent/models.yml
-pi         no     openai+anthropic  -                                     ~/.pi/agent/models.json
-opencode   yes    openai+anthropic  myproxy/glm-5.3-flash                   ~/.config/opencode/opencode.json
-dsh        yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.dsh/settings.yaml
+APP       FOUND  PROTOCOLS         CURRENT                                 CONFIG
+--------  -----  ----------------  --------------------------------------  --------------------------------
+claude    yes    anthropic         -                                       ~/.claude/settings.json
+codex     yes    openai            myproxy · glm-5.3-flash                 ~/.codex/config.toml
+omp       yes    openai+anthropic  providers: sub, sub-anthropic, myproxy  ~/.omp/agent/models.yml
+pi        no     openai+anthropic  -                                       ~/.pi/agent/models.json
+opencode  yes    openai+anthropic  myproxy/glm-5.3-flash                   ~/.config/opencode/opencode.json
+dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.dsh/settings.yaml
 ```
 
 ## Supported apps
@@ -135,11 +135,12 @@ lists and source apps are unioned. Different protocols on the same host stay sep
 
 ```console
 $ asw import --all
+
 ID             PROTOCOL   BASE URL                                MODELS  FROM       KEY
 -------------  ---------  --------------------------------------  ------  ---------  ---
-any            anthropic  https://a-long-reseller.cn-shanghai...     1       cc-switch  yes
-sub            openai     https://api.example.com/v1                 18      omp        yes
-sub-anthropic  anthropic  https://api.example.com                    18      omp        yes
+any            anthropic  https://a-long-reseller.example.com...  1       cc-switch  yes
+sub            openai     https://api.example.com/v1              18      omp        yes
+sub-anthropic  anthropic  https://api.example.com                 18      omp        yes
 zhipu-glm      anthropic  https://open.bigmodel.cn/api/anthropic  1       cc-switch  yes
 imported sub · openai · https://api.example.com/v1 · 18 models [from omp]
 imported zhipu-glm · anthropic · https://open.bigmodel.cn/api/anthropic · 1 models [from cc-switch]
