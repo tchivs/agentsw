@@ -117,20 +117,32 @@ export function mergeModels(
 export const OWNED_MODEL_METADATA_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
 
 /**
+ * Whether a store entry describes the model at all. A bare id is ignorance,
+ * not a catalog statement, so adapters must not clear what the app config
+ * already holds on its behalf.
+ */
+export function hasModelMetadata(m: ModelSpec): boolean {
+  return (
+    m.name !== undefined ||
+    m.reasoning !== undefined ||
+    m.reasoningEfforts !== undefined ||
+    m.imageInput !== undefined ||
+    m.contextWindow !== undefined ||
+    m.maxInput !== undefined ||
+    m.maxOutput !== undefined ||
+    m.cost !== undefined
+  );
+}
+
+/**
  * The per-model metadata agentsw writes into a pi-family models config. omp and
  * the pi/prime adapters share the shape; only the extras around it differ, so
  * keeping one builder is what stops the two from drifting apart.
  */
 export function ownedModelMetadata(m: ModelSpec): Record<string, unknown> {
-  // A spec with no metadata at all stays a bare id: `input` is a guess, and
-  // writing the guess would make the entry look authoritative to mergeModels.
-  const known =
-    m.name !== undefined ||
-    m.reasoning !== undefined ||
-    m.imageInput !== undefined ||
-    m.contextWindow !== undefined ||
-    m.maxOutput !== undefined ||
-    m.cost !== undefined;
+  // `input` is a guess for a spec that says nothing; writing it would make the
+  // entry look authoritative to mergeModels and clear the config's own values.
+  const known = hasModelMetadata(m);
   return {
     id: m.id,
     ...(m.name ? { name: m.name } : {}),

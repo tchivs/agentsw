@@ -7,7 +7,7 @@ import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl } from "./wire.js";
+import { apiValue, classifyApi, entryApi, hasModelMetadata, mergeModels, sdkBaseUrl } from "./wire.js";
 
 /** Layout version of `.credentials.yaml` this build reads and writes. */
 const CREDENTIALS_VERSION = 1;
@@ -34,7 +34,8 @@ function modelEntry(m: ModelSpec): Record<string, unknown> {
     ...(m.name ? { name: m.name } : {}),
     ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
     ...(m.maxOutput ? { maxTokens: m.maxOutput } : {}),
-    input: m.imageInput ? ["text", "image"] : ["text"],
+    // `input` is a guess for a spec that says nothing; see hasModelMetadata.
+    ...(hasModelMetadata(m) ? { input: m.imageInput ? ["text", "image"] : ["text"] } : {}),
     ...(m.reasoning === false
       ? { reasoningEfforts: false }
       : m.reasoning && m.reasoningEfforts?.length

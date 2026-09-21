@@ -8,6 +8,7 @@ import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
+import { hasModelMetadata } from "./wire.js";
 
 function configDir(): string {
   return workbuddyDir();
@@ -112,11 +113,13 @@ export const workbuddy: TargetApp = transactionalTarget({
     const previous = new Map(owned.map((row) => [row.id, row]));
     const ours: WorkbuddyModel[] = provider.models.map((model) => {
       const custom = { ...previous.get(model.id) };
-      for (const key of OWNED_MODEL_KEYS) delete custom[key];
+      // A bare id says nothing about the model; the row keeps what it already has.
+      const known = hasModelMetadata(model);
+      if (known) for (const key of OWNED_MODEL_KEYS) delete custom[key];
       return {
         ...custom,
         id: model.id,
-        name: model.name ?? model.id,
+        name: model.name ?? (known ? undefined : custom.name) ?? model.id,
         vendor: provider.name,
         url,
         apiKey: provider.apiKey,

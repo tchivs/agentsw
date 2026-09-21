@@ -686,6 +686,17 @@ test("a store model with no metadata of its own leaves the config's metadata alo
   assert.equal(after.contextWindow, 100000);
   assert.equal(after.maxTokens, 8192);
   assert.deepEqual(after.input, ["text", "image"]);
+
+  const workbuddy = targets.find((t) => t.id === "workbuddy")!;
+  await workbuddy.apply({ ...provider, id: "stub" });
+  await workbuddy.apply({ ...provider, id: "stub", models: [{ id: "model-a" }] });
+  const wbFile = JSON.parse(fs.readFileSync(path.join(sandbox, ".workbuddy", "models.json"), "utf8"));
+  const wbRows = (Array.isArray(wbFile) ? wbFile : wbFile.models) as Array<Record<string, unknown>>;
+  const wbModel = wbRows.find((m) => m.id === "model-a")!;
+  assert.equal(wbModel.name, "Model A", "workbuddy keeps the row name instead of falling back to the id");
+  assert.equal(wbModel.maxInputTokens, 100000);
+  assert.equal(wbModel.supportsImages, true);
+  await workbuddy.prune({ ...provider, id: "stub" });
   await omp.prune({ ...provider, id: "stub" });
 });
 
