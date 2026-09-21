@@ -1,4 +1,4 @@
-import type { OpenAIApi, Protocol } from "../types.js";
+import type { ModelSpec, OpenAIApi, Protocol } from "../types.js";
 
 /**
  * pi-family `api` values (pi, prime-agent, omp share the enum) that speak the
@@ -102,11 +102,53 @@ export function mergeModels(
   return written.map((m) => {
     const old = prev.get(m.id as string);
     if (!old) return m;
+    // An entry that carries nothing but its id says nothing about the model: it
+    // is no evidence that the config's metadata went stale, so clearing owned
+    // keys on its behalf would delete what a richer sync or the user put there.
+    if (Object.keys(m).length === 1) return { ...m, ...old };
     const kept: Record<string, unknown> = { ...old };
     const known = informative.some((key) => key in m);
     if (known) for (const key of owned) if (!(key in m)) delete kept[key];
     return { ...kept, ...m };
   });
+}
+
+/** Per-model keys every pi-family adapter owns; see `ownedModelMetadata`. */
+export const OWNED_MODEL_METADATA_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
+
+/**
+ * The per-model metadata agentsw writes into a pi-family models config. omp and
+ * the pi/prime adapters share the shape; only the extras around it differ, so
+ * keeping one builder is what stops the two from drifting apart.
+ */
+export function ownedModelMetadata(m: ModelSpec): Record<string, unknown> {
+  // A spec with no metadata at all stays a bare id: `input` is a guess, and
+  // writing the guess would make the entry look authoritative to mergeModels.
+  const known =
+    m.name !== undefined ||
+    m.reasoning !== undefined ||
+    m.imageInput !== undefined ||
+    m.contextWindow !== undefined ||
+    m.maxOutput !== undefined ||
+    m.cost !== undefined;
+  return {
+    id: m.id,
+    ...(m.name ? { name: m.name } : {}),
+    ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+    ...(known ? { input: m.imageInput ? ["text", "image"] : ["text"] } : {}),
+    ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+    ...(m.maxOutput ? { maxTokens: m.maxOutput } : {}),
+    ...(m.cost
+      ? {
+          cost: {
+            input: m.cost.input ?? 0,
+            output: m.cost.output ?? 0,
+            cacheRead: m.cost.cacheRead ?? 0,
+            cacheWrite: m.cost.cacheWrite ?? 0,
+          },
+        }
+      : {}),
+  };
 }
 
 /**

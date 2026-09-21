@@ -8,19 +8,19 @@ import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
+import {
+  apiValue,
+  classifyApi,
+  entryApi,
+  mergeModels,
+  OWNED_MODEL_METADATA_KEYS,
+  ownedModelMetadata,
+  sdkBaseUrl,
+  stripConflictingOverrides,
+} from "./wire.js";
 
-/** Per-model keys this adapter writes; one a metadata-bearing entry stops emitting is cleared, not inherited. */
-const OWNED_MODEL_KEYS = [
-  "id",
-  "name",
-  "reasoning",
-  "thinkingLevelMap",
-  "input",
-  "contextWindow",
-  "maxTokens",
-  "cost",
-] as const;
+/** pi writes the shared metadata plus its own thinking-level map. */
+const OWNED_MODEL_KEYS = [...OWNED_MODEL_METADATA_KEYS, "thinkingLevelMap"] as const;
 
 type ModelsConfig = Record<string, unknown> & { providers?: Record<string, Record<string, unknown>> };
 type SettingsConfig = Record<string, unknown> & { defaultProvider?: string; defaultModel?: string };
@@ -99,24 +99,9 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
       const models = mergeModels(
         prev.models,
         provider.models.map((m) => ({
-          id: m.id,
-          ...(m.name ? { name: m.name } : {}),
-          ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
+          ...ownedModelMetadata(m),
           ...(m.reasoning && m.reasoningEfforts?.length
             ? { thinkingLevelMap: thinkingLevelMap(m.reasoningEfforts) }
-            : {}),
-          input: m.imageInput ? ["text", "image"] : ["text"],
-          ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-          ...(m.maxOutput ? { maxTokens: m.maxOutput } : {}),
-          ...(m.cost
-            ? {
-                cost: {
-                  input: m.cost.input ?? 0,
-                  output: m.cost.output ?? 0,
-                  cacheRead: m.cost.cacheRead ?? 0,
-                  cacheWrite: m.cost.cacheWrite ?? 0,
-                },
-              }
             : {}),
         })),
         OWNED_MODEL_KEYS,

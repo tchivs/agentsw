@@ -7,10 +7,16 @@ import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
-
-/** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
-const OWNED_MODEL_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
+import {
+  apiValue,
+  classifyApi,
+  entryApi,
+  mergeModels,
+  OWNED_MODEL_METADATA_KEYS,
+  ownedModelMetadata,
+  sdkBaseUrl,
+  stripConflictingOverrides,
+} from "./wire.js";
 
 /** omp has no directory override; the file set is shared with remove/rename. */
 function modelFiles(): [string, string] {
@@ -62,28 +68,7 @@ export const omp: TargetApp = transactionalTarget({
     const anthropic = provider.protocol === "anthropic";
     const api = apiValue(provider.protocol, provider.openaiApi, prev?.api ?? entryApi(prev ?? {}));
     const baseUrl = sdkBaseUrl(provider.protocol, provider.baseUrl);
-    const models = mergeModels(
-      prev?.models,
-      provider.models.map((m) => ({
-        id: m.id,
-        ...(m.name ? { name: m.name } : {}),
-        ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
-        input: m.imageInput ? ["text", "image"] : ["text"],
-        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-        ...(m.maxOutput ? { maxTokens: m.maxOutput } : {}),
-        ...(m.cost
-          ? {
-              cost: {
-                input: m.cost.input ?? 0,
-                output: m.cost.output ?? 0,
-                cacheRead: m.cost.cacheRead ?? 0,
-                cacheWrite: m.cost.cacheWrite ?? 0,
-              },
-            }
-          : {}),
-      })),
-      OWNED_MODEL_KEYS,
-    );
+    const models = mergeModels(prev?.models, provider.models.map(ownedModelMetadata), OWNED_MODEL_METADATA_KEYS);
     const conflicts = stripConflictingOverrides(models, api, baseUrl);
     if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
     if (!anthropic) {

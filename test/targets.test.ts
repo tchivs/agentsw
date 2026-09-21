@@ -672,6 +672,23 @@ test("dsh refuses a credentials document it cannot prove it understands", async 
   await assert.rejects(() => dsh.apply({ ...provider, id: "guard" }), /declares version 2/);
 });
 
+test("a store model with no metadata of its own leaves the config's metadata alone", async () => {
+  const omp = targets.find((t) => t.id === "omp")!;
+  const file = path.join(sandbox, ".omp", "agent", "models.yml");
+  await omp.apply({ ...provider, id: "stub" });
+  const before = YAML.parse(fs.readFileSync(file, "utf8")).providers.stub.models[0];
+  assert.equal(before.contextWindow, 100000);
+
+  // the store knows only the id — that is ignorance, not a catalog saying the model shrank
+  await omp.apply({ ...provider, id: "stub", models: [{ id: "model-a" }] });
+  const after = YAML.parse(fs.readFileSync(file, "utf8")).providers.stub.models[0];
+  assert.equal(after.name, "Model A");
+  assert.equal(after.contextWindow, 100000);
+  assert.equal(after.maxTokens, 8192);
+  assert.deepEqual(after.input, ["text", "image"]);
+  await omp.prune({ ...provider, id: "stub" });
+});
+
 test("dsh prune removes the stored key even when the route is already gone", async () => {
   const dsh = targets.find((t) => t.id === "dsh")!;
   const settings = path.join(sandbox, ".dsh", "settings.yaml");
