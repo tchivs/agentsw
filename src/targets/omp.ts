@@ -18,6 +18,14 @@ function modelFiles(): [string, string] {
   return [yml!, yaml!];
 }
 
+/**
+ * omp keys its DeepSeek wire rules by provider name ("deepseek",
+ * "opencode-go", ...), so a gateway or reseller entry never picks them up: its
+ * Responses replay then omits reasoning_text and DeepSeek answers 400. Match
+ * on the model id instead and write the flag per model; a user value wins.
+ */
+const DEEPSEEK_MODEL_ID = /deepseek/i;
+
 function parseModelsDocument(file: string, text: string | undefined): YAML.Document {
   const doc = parseYamlMapping(file, text);
   if (doc.hasIn(["providers"]) && !YAML.isMap(doc.getIn(["providers"]))) {
@@ -78,6 +86,13 @@ export const omp: TargetApp = transactionalTarget({
     );
     const conflicts = stripConflictingOverrides(models, api, baseUrl);
     if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
+    if (!anthropic) {
+      for (const model of models) {
+        if (!DEEPSEEK_MODEL_ID.test(String(model.id))) continue;
+        const compat = (model.compat ?? {}) as Record<string, unknown>;
+        model.compat = { requiresReasoningContentForToolCalls: true, ...compat };
+      }
+    }
     const entry: Record<string, unknown> = {
       baseUrl,
       apiKey: provider.apiKey, // omp treats value as env-var name first, then literal

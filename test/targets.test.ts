@@ -200,6 +200,55 @@ test("omp keeps provider-level keys, wire flavor and per-model extras across a s
   await omp.prune({ ...provider, id: "reseller" });
 });
 
+test("omp gives gateway-fronted deepseek models the reasoning-replay compat flag", async () => {
+  const omp = targets.find((t) => t.id === "omp")!;
+  const file = path.join(sandbox, ".omp", "agent", "models.yml");
+  // omp's catalog keys the deepseek wire rules by provider name, and a gateway
+  // provider matches none of them, so DeepSeek 400s on replayed tool calls.
+  fs.writeFileSync(
+    file,
+    [
+      "providers:",
+      "  gw:",
+      "    baseUrl: https://gw.example/v1",
+      "    api: openai-responses",
+      "    models:",
+      "      - id: deepseek-v4-pro",
+      "        compat:",
+      "          requiresReasoningContentForToolCalls: false",
+      "",
+    ].join("\n"),
+  );
+  const gw = {
+    ...provider,
+    id: "gw",
+    baseUrl: "https://gw.example/v1",
+    openaiApi: "responses" as const,
+    models: [{ id: "deepseek-v4-flash" }, { id: "deepseek-v4-pro" }, { id: "gpt-5.6-luna" }],
+  };
+  type CompatModel = { id: string; compat?: Record<string, unknown> };
+  const flagOf = (m: CompatModel[], id: string) => m.find((x) => x.id === id)?.compat;
+
+  await omp.apply(gw);
+  let models: CompatModel[] = YAML.parse(fs.readFileSync(file, "utf8")).providers.gw.models;
+  assert.deepEqual(flagOf(models, "deepseek-v4-flash"), { requiresReasoningContentForToolCalls: true });
+  assert.deepEqual(
+    flagOf(models, "deepseek-v4-pro"),
+    { requiresReasoningContentForToolCalls: false },
+    "an explicit user value wins over the default",
+  );
+  assert.equal(flagOf(models, "gpt-5.6-luna"), undefined, "non-deepseek models get no flag");
+
+  await omp.apply(gw);
+  models = YAML.parse(fs.readFileSync(file, "utf8")).providers.gw.models;
+  assert.deepEqual(flagOf(models, "deepseek-v4-flash"), { requiresReasoningContentForToolCalls: true }, "re-sync is idempotent");
+
+  await omp.apply({ ...gw, protocol: "anthropic" as const });
+  models = YAML.parse(fs.readFileSync(file, "utf8")).providers.gw.models;
+  assert.deepEqual(flagOf(models, "deepseek-v4-flash"), { requiresReasoningContentForToolCalls: true }, "an anthropic sync neither re-adds nor drops it");
+  await omp.prune({ ...provider, id: "gw" });
+});
+
 test("omp keeps an existing responses wire when the store carries no flavor", async () => {
   const omp = targets.find((t) => t.id === "omp")!;
   const file = path.join(sandbox, ".omp", "agent", "models.yml");
