@@ -13,6 +13,8 @@ export interface CatalogModel {
   id: string;
   name?: string;
   reasoning?: boolean;
+  /** models.dev creator identity shared by every reseller listing of this model. */
+  canonical_model_id?: string;
   reasoning_options?: Array<{ type: string; values?: string[] }>;
   attachment?: boolean;
   modalities?: { input?: string[]; output?: string[] };

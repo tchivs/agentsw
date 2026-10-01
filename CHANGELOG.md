@@ -6,6 +6,30 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-01
+
+### Fixed
+
+- Reseller model listings no longer lose their metadata. models.dev lists one model under many
+  providers (29 rows for `glm-5.2`), each with its own provider-prefixed id, so a bare id taken from
+  a reseller's `/v1/models` looked like dozens of conflicting models and was refused
+  entirely — leaving pi/prime-agent configs without `reasoning` or `thinkingLevelMap`, i.e. no
+  thinking level to adjust. Matching now groups rows by models.dev's `canonical_model_id` and
+  takes the creator's own row, so context, output limits, reasoning and effort levels resolve;
+  rows under genuinely different creator identities stay ambiguous, and Gateway agreement is
+  compared in creator identity too.
+
+- Adding the same endpoint and API key under a different `--id` or display name no longer creates a
+  second provider. Account identity (normalized endpoint + protocol + credential) now outranks an
+  explicit id in `add` and `quick-add`, matching what `import` already did; the existing provider is
+  updated and the run says so. Protocol suffixes still apply to genuinely new accounts.
+- Only the creator's own models.dev row supplies limits, prices and reasoning levels for a model that
+  resellers also list. Gateways key their rows by the canonical model id and were being read as
+  authoritative, so e.g. `deepseek-v4.1-flash` picked up a gateway's price.
+- Model tables, `refresh` and provider output are localized, and models left without metadata are
+  split into ids an explicit `--gateway-models` mapping can fix, ids whose creator has no models.dev
+  row (AI Gateway fills those), and ids no creator lists at all — instead of one flat count.
+
 ## [0.9.1] - 2026-09-11
 
 ### Changed
@@ -345,7 +369,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/tchivs/agentsw/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/tchivs/agentsw/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/tchivs/agentsw/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tchivs/agentsw/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/tchivs/agentsw/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tchivs/agentsw/compare/v0.7.0...v0.7.1

@@ -21,6 +21,10 @@ User → index.ts (Commander) → commands.ts (cmd*) → store.ts (load/save con
 **Core flow**: Every command loads the store fresh (`loadStore()`), performs its action, and saves via `saveStore()` (mode 0600, private backup, optimistic snapshot check and a short commit lock). A stale save must reject, never overwrite another command's work. Provider objects carry protocol, endpoint, key, models, metadata and filter preferences; target adapters translate them into app-native configuration.
 
 **Quick-add flow**: `cmdQuickAdd` → `probeProtocols()` → paginated `discoverProviderModels()` per protocol → `enrichProviderModels()`. Automatic IDs use the full hostname plus protocol; repeated same-account onboarding preserves existing IDs, names, wire flavor, defaults and preferences unless explicitly overridden.
+An explicit `--id` never licenses a second entry for an account that is already configured: `add` and
+`quick-add` resolve identity as existing id → same account (normalized endpoint + protocol + credential)
+→ explicit id → generated id, so the same endpoint and key under a different name updates the original
+provider instead of duplicating it.
 
 **Import flow**: `scanCandidates()` → `mergeCandidates()` dedupes by normalized endpoint, protocol, and credential identity. `ProviderCandidate.generatedId` distinguishes generated suggestions from explicit names; explicit names win for the same account. Different or unresolved credentials are not silently merged.
 
@@ -29,6 +33,12 @@ User → index.ts (Commander) → commands.ts (cmd*) → store.ts (load/save con
 **Adapter writes**: Wrap each TargetApp with `transactionalTarget()`. `fsutil` stages reads/writes in scoped async context; commit only after all input validation and serialization succeeds. Preserve file permissions, use private new files, and reuse shared identity/YAML/JSONC helpers. Multi-target sync remains best-effort per target, not globally atomic.
 
 **Metadata flow**: `metadata.ts` merges tracked models.dev fields and `gateway.ts` public catalog data. `getMetadataMode(provider)` resolves `gatewayMetadata` as `undefined`/`'auto'` → auto, `true` → on, `false` → off. Auto is the default: models.dev first, then lazily load Gateway only for missing core fields (`contextWindow`, `maxOutput`, `reasoning`, `imageInput`), unchanged Gateway-owned fields needing refresh that the primary source has not replaced, or an identity conflict between tracked automatic values and an explicit canonical model ID. Name/prices/optional input limits/efforts alone never trigger auto lookup. On always consults Gateway for nonempty IDs; off never does and retains legacy models.dev lookup. Auto/on use conservative exact identities: a bare case-sensitive ID may map to a unique Gateway creator/model when primary evidence is absent or agrees; ambiguity rejects, qualified IDs never lose prefixes, and custom/ambiguous names require explicit aliases. Preserve manual/untracked values, custom model fields, discovered IDs and routing; auto values refresh only while they match their provenance snapshot. Gateway pricing stays reference-only in `ModelSpec.metadata`, never effective `cost` or routing; audit data never enters runtime agent configs. `--metadata-mode <auto|on|off>` is supported by add/quick/discover/import/refresh; legacy boolean flags remain explicit on/off, omitted options preserve saved settings, and invalid/conflicting options fail before fetch or mutation. `refresh --provider` updates saved metadata/settings without fetching a model list or writing agents; `models --provider --metadata` shows effective mode and audit. Automatic metadata lookup does not change sync behavior: ordinary sync does not fetch model lists or catalogs.
+Model identity is models.dev's `canonical_model_id`: reseller rows for one model carry distinct
+provider-prefixed ids but share it, so matching groups candidates by that key and reads limits,
+reasoning and effort levels from the creator's own namespace row only — gateways key rows by the
+canonical id too, and those rows carry gateway-specific limits and prices. Ids listed under genuinely
+different creator identities stay unresolved rather than guessing; `classifyUnresolved()` tells the
+user which of those an explicit `--gateway-models` mapping can still fix.
 
 ## Key Directories
 

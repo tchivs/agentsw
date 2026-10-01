@@ -8,7 +8,7 @@ import prompts from "prompts";
 import { loadStore, saveStore, getProvider, configFile } from "./store.js";
 import { scanCandidates, normalizeUrl, findMatchingProvider, type MergedCandidate } from "./import.js";
 import { loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
-import { enrichProviderModels, getMetadataMode, resolveMetadataOptions, type MetadataOptions } from "./metadata.js";
+import { classifyUnresolved, enrichProviderModels, getMetadataMode, resolveMetadataOptions, type MetadataOptions } from "./metadata.js";
 import { loadGatewayCatalog, type GatewayCatalog } from "./gateway.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
@@ -74,11 +74,17 @@ function modelRows(models: ModelSpec[]): string[][] {
 
 const MODEL_HEADER = ["MODEL", "CTX", "IN", "OUT", "REASONING", "$IN/$OUT per M"];
 
-/** Print a dim hint when some models have no catalog metadata. */
-function printUncatalogedHint(models: ModelSpec[]): void {
+/**
+ * Explain why some models stayed bare: only ambiguous ids are worth the user's
+ * attention, so those are named separately from ids nothing can resolve.
+ */
+function printUncatalogedHint(models: ModelSpec[], catalog?: Catalog, hint?: string): void {
   const bare = models.filter((m) => m.contextWindow === undefined && !m.cost);
-  if (bare.length > 0) {
-    console.log(pc.dim(`${bare.length} model(s) have no catalog metadata (shown as "-")`));
+  if (bare.length === 0) return;
+  console.log(pc.dim(t("meta.gap", { count: bare.length })));
+  const { ambiguous, unknown, noCreatorRow } = classifyUnresolved(catalog, bare.map((m) => m.id), hint);
+  for (const [key, ids] of [["meta.ambiguous", ambiguous], ["meta.noCreatorRow", noCreatorRow], ["meta.unknown", unknown]] as const) {
+    if (ids.length) console.log(pc.dim(`  ${t(key, { count: ids.length, ids: ids.join(", "), id: ids[0]! })}`));
   }
 }
 
@@ -218,8 +224,15 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   if (wire !== undefined && wire !== "completions" && wire !== "responses") fail(t("add.openaiApiInvalid"));
   const baseUrl = normalizeUrl(answers.baseUrl!);
   const explicitId = answers.id || undefined;
-  const existing = explicitId ? store.providers[explicitId] : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
-  const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
+  const byId = explicitId ? store.providers[explicitId] : undefined;
+  // Endpoint plus credential is the account identity, so an explicit id never
+  // licenses a second entry for an account that is already configured.
+  const sameAccount = byId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
+  const existing = byId ?? sameAccount;
+  if (byId === undefined && explicitId && sameAccount) {
+    console.log(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
+  }
+  const id = byId?.id ?? sameAccount?.id ?? explicitId ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
   const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) ?? existing?.openaiApi : undefined;
   const metadataOptions = resolveMetadataOptions(opts, existing);
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -278,7 +291,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
   console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
   console.log(table(modelRows(models), MODEL_HEADER));
-  printUncatalogedHint(models);
+  printUncatalogedHint(models, catalog, hint);
   console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
 }
 
@@ -339,7 +352,7 @@ async function createProvider(opts: {
   console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
   console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
   console.log(table(modelRows(models), MODEL_HEADER));
-  printUncatalogedHint(models);
+  printUncatalogedHint(models, catalog, hint);
   return provider;
 }
 
@@ -404,8 +417,13 @@ export async function cmdQuickAdd(opts: {
 
   for (const protocol of protocols) {
     const explicitId = opts.id === undefined ? undefined : `${opts.id}${multi ? `-${protocol}` : ""}`;
-    const existing = explicitId === undefined ? findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey }) : store.providers[explicitId];
-    const id = explicitId ?? existing?.id ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
+    const byId = explicitId ? store.providers[explicitId] : undefined;
+    const sameAccount = byId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey });
+    const existing = byId ?? sameAccount;
+    if (byId === undefined && explicitId && sameAccount) {
+      console.log(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
+    }
+    const id = byId?.id ?? sameAccount?.id ?? explicitId ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
     const name = opts.name ?? existing?.name ?? (opts.id === undefined ? providerNameFromBaseUrl(baseUrl, protocol) : multi ? `${opts.id} (${protocol})` : opts.id);
     const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
 
@@ -700,7 +718,7 @@ export async function cmdModels(
     }
     console.log(`${pc.bold(provider.id)} (${provider.protocol}) · ${provider.baseUrl}`);
     console.log(table(modelRows(provider.models), MODEL_HEADER));
-    printUncatalogedHint(provider.models);
+    printUncatalogedHint(provider.models, await loadCatalog(), provider.modelsDevId);
     return;
   }
   const catalog = await loadCatalog({ refresh: opts.refresh });
@@ -736,8 +754,9 @@ export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string
     if (JSON.stringify(provider.models) !== before) updated++;
   }
   saveStore(store);
-  console.log(pc.green(`checked model metadata (${updated} provider(s) changed)`));
-  if (updated > 0) console.log(pc.dim("run `agentsw sync` to push updated metadata into app configs"));
+  console.log(pc.green(t("refresh.checked", { changed: updated })));
+  if (updated > 0) console.log(pc.dim(t("refresh.next")));
+  for (const provider of providers) printUncatalogedHint(provider.models, catalog, provider.modelsDevId);
 }
 
 export async function cmdDiscover(
@@ -774,7 +793,7 @@ export async function cmdDiscover(
       (gone.length ? `\n  removed upstream: ${gone.join(", ")}` : ""),
   );
   console.log(table(modelRows(provider.models), MODEL_HEADER));
-  printUncatalogedHint(provider.models);
+  printUncatalogedHint(provider.models, catalog, provider.modelsDevId);
   if (opts.sync) {
     console.log("");
     await cmdSync({ provider: id, apps: opts.apps });

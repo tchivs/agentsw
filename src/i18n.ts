@@ -197,6 +197,7 @@ const messages = {
   "add.defaultMissing": { en: "default model {model} is not in the model list", "zh-CN": "默认模型 {model} 不在模型列表中" },
   "add.smallMissing": { en: "small model {model} is not in the model list", "zh-CN": "小型模型 {model} 不在模型列表中" },
   "add.added": { en: "added", "zh-CN": "已添加" },
+  "add.alreadyConfigured": { en: "same endpoint and key are already configured as {id}; updating it instead of creating a duplicate", "zh-CN": "相同地址与密钥已配置为 {id};将更新该供应商,不会新建重复项" },
   "add.updated": { en: "updated", "zh-CN": "已更新" },
   "add.saved": { en: "{status} provider {id} ({protocol})", "zh-CN": "{status}供应商 {id} ({protocol})" },
   "add.metadata": { en: "model metadata: {matched}/{total} models have a context limit", "zh-CN": "模型参数：{matched}/{total} 个模型已有上下文上限" },
@@ -252,6 +253,18 @@ const messages = {
   "status.config": { en: "config: {file}", "zh-CN": "配置:{file}" },
   "status.active": { en: "active provider: {id}", "zh-CN": "当前供应商:{id}" },
   "status.none": { en: "(none)", "zh-CN": "(无)" },
+  "meta.gap": { en: "{count} model(s) have no catalog metadata (shown as \"-\")", "zh-CN": "{count} 个模型没有目录元数据(显示为 \"-\")" },
+  "meta.ambiguous": {
+    en: "ambiguous ({count}): {ids} — several creators list these; pin with --gateway-models '{\"{id}\":\"creator/model\"}'",
+    "zh-CN": "存在歧义({count}):{ids} —— 多个厂商都提供;用 --gateway-models '{\"{id}\":\"creator/model\"}' 指定",
+  },
+  "meta.unknown": { en: "not listed by any creator ({count}): {ids}", "zh-CN": "所有厂商均未收录({count}):{ids}" },
+  "meta.noCreatorRow": {
+    en: "no models.dev row for the creator ({count}): {ids} — filled from AI Gateway when available",
+    "zh-CN": "厂商在 models.dev 无对应条目({count}):{ids} —— 有 AI Gateway 数据时会自动补全",
+  },
+  "refresh.checked": { en: "checked model metadata ({changed} provider(s) changed)", "zh-CN": "已检查模型元数据({changed} 个供应商有变化)" },
+  "refresh.next": { en: "run `agentsw sync` to push updated metadata into app configs", "zh-CN": "运行 `agentsw sync` 将更新的元数据写入各智能体配置" },
 } as const;
 
 export type MessageKey = keyof typeof messages;

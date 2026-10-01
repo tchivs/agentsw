@@ -223,6 +223,43 @@ test("ambiguous creator evidence does not match even if Gateway lists only one c
   }
 });
 
+test("reseller listings sharing one creator identity resolve to the creator's own metadata", async () => {
+  const creator = catalog({ name: "Creator", limit: { context: 1000 }, reasoning: true,
+    reasoning_options: [{ type: "effort", values: ["high", "max"] }] });
+  const resellers = ["reseller-a", "reseller-b"].map((id) => ({
+    [id]: { id, models: { model: { id: "model", canonical_model_id: "creator/model",
+      name: "Reseller copy", limit: { context: 200 }, reasoning: false } } },
+  }));
+  const [result] = await enrichProviderModels({ ...creator, ...Object.assign({}, ...resellers) },
+    ["model"], enabled, { gateway: null });
+  assert.equal(result?.contextWindow, 1000);
+  assert.equal(result?.reasoning, true);
+  assert.deepEqual(result?.reasoningEfforts, ["high", "max"]);
+  assert.equal(result?.name, "Creator");
+  assert.equal(result?.metadata?.fields?.contextWindow?.modelId, "creator/model");
+});
+
+test("listings under different creator identities stay ambiguous however many resellers share them", async () => {
+  const primary: Catalog = {
+    creator: { id: "creator", models: { model: { id: "model", canonical_model_id: "creator/model", reasoning: true } } },
+    rival: { id: "rival", models: { model: { id: "model", canonical_model_id: "rival/model", reasoning: false } } },
+    reseller: { id: "reseller", models: { model: { id: "model", canonical_model_id: "rival/model", reasoning: false } } },
+  };
+  assert.deepEqual(await enrichProviderModels(primary, ["model"], enabled, { gateway: null }), [{ id: "model" }]);
+});
+
+test("a Gateway creator id agrees with reseller rows naming a different listing provider", async () => {
+  const primary: Catalog = {
+    creator: { id: "creator", models: { model: { id: "model", canonical_model_id: "creator/model", limit: { context: 1000 } } } },
+    reseller: { id: "reseller", models: { model: { id: "model", canonical_model_id: "creator/model", limit: { context: 200 } } } },
+  };
+  const [result] = await enrichProviderModels(primary, ["model"], enabled,
+    { gateway: gateway({ imageInput: true }, {}, "creator/model") });
+  assert.equal(result?.contextWindow, 1000);
+  assert.equal(result?.imageInput, true);
+  assert.equal(result?.metadata?.gateway?.modelId, "creator/model");
+});
+
 test("Gateway never case-folds, strips prefixes, matches substrings or infers creator from protocol", async () => {
   const ids = ["CREATOR/model", "creator/MODEL", "prefix/creator/model", "MODEL", "model:latest", "mode"];
   const settings = { ...enabled, protocol: "openai" as const };

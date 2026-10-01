@@ -109,12 +109,21 @@ function equalValue(a: ModelMetadataValue | undefined, b: ModelMetadataValue | u
 
 interface CatalogEntry {
   provider: string;
+  /** Listing identity: the models.dev provider row this entry came from. */
   modelId: string;
+  /**
+   * Identity of the underlying model. Reseller rows for one model carry a
+   * distinct `modelId` but share `canonical_model_id`, so grouping by this key
+   * is what tells one model listed twice apart from two different models that
+   * happen to share a basename.
+   */
+  identity: string;
   model: CatalogModel;
 }
 interface CatalogIndex {
   exact: Map<string, CatalogEntry[]>;
   canonical: Map<string, CatalogEntry[]>;
+  identities: Map<string, CatalogEntry[]>;
 }
 interface ExactMatch {
   primary?: CatalogEntry;
@@ -125,21 +134,40 @@ interface ExactMatch {
 function indexCatalog(catalog: Catalog): CatalogIndex {
   const exact = new Map<string, CatalogEntry[]>();
   const canonical = new Map<string, CatalogEntry[]>();
+  const identities = new Map<string, CatalogEntry[]>();
+  const push = (map: Map<string, CatalogEntry[]>, key: string, entry: CatalogEntry): void => {
+    const matches = map.get(key);
+    if (matches) matches.push(entry);
+    else map.set(key, [entry]);
+  };
   for (const provider of Object.values(catalog)) {
     for (const [key, model] of Object.entries(provider.models)) {
       const modelId = model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
-      const entry = { provider: provider.id, modelId, model };
-      for (const id of new Set([key, model.id])) {
-        const matches = exact.get(id);
-        if (matches) matches.push(entry);
-        else exact.set(id, [entry]);
-      }
-      const matches = canonical.get(modelId);
-      if (matches) matches.push(entry);
-      else canonical.set(modelId, [entry]);
+      const entry = { provider: provider.id, modelId, identity: model.canonical_model_id ?? modelId, model };
+      for (const id of new Set([key, model.id])) push(exact, id, entry);
+      push(canonical, modelId, entry);
+      push(identities, entry.identity, entry);
     }
   }
-  return { exact, canonical };
+  return { exact, canonical, identities };
+}
+
+/** Creator identity of a catalog model id, or undefined when its rows disagree. */
+function catalogIdentity(index: CatalogIndex | undefined, modelId: string): string | undefined {
+  const identities = new Set(index?.canonical.get(modelId)?.map((entry) => entry.identity));
+  return identities?.size === 1 ? [...identities][0] : undefined;
+}
+
+/**
+ * The creator's own listing for an identity, when models.dev carries one.
+ * Gateways also key their rows by the canonical id, and those rows carry the
+ * gateway's own limits and prices, so only a row from the creator's own
+ * namespace counts as authoritative.
+ */
+function creatorEntry(index: CatalogIndex | undefined, identity: string): CatalogEntry | undefined {
+  const slash = identity.indexOf("/");
+  if (slash < 1) return undefined;
+  return index?.identities.get(identity)?.find((entry) => entry.modelId === identity && entry.provider === identity.slice(0, slash));
 }
 
 function indexGatewayBareIds(gateway: GatewayCatalog): Map<string, string | null> {
@@ -167,10 +195,15 @@ function selectExact(
       const candidate = gatewayBareIds?.get(id);
       const evidence = index?.exact.get(id);
       const hintedEvidence = hint ? evidence?.filter((entry) => entry.provider === hint) : undefined;
-      const identities = new Set((hintedEvidence?.length ? hintedEvidence : evidence)?.map((entry) => entry.modelId));
+      const identities = new Set((hintedEvidence?.length ? hintedEvidence : evidence)?.map((entry) => entry.identity));
+      // Gateway names the creator while models.dev names the listing provider, so
+      // the two agree only once both are reduced to a creator identity. A gateway
+      // id the catalog has no row for stands for itself.
+      const candidateIdentity = candidate ? catalogIdentity(index, candidate) ?? candidate : undefined;
       // A unique exact basename is safe only with absent or agreeing primary evidence.
       // Explicit provider hints can resolve primary ambiguity, but never Gateway ambiguity.
-      if (candidate && (identities.size === 0 || (identities.size === 1 && identities.has(candidate)))) gatewayId = candidate;
+      if (candidate && candidateIdentity !== undefined
+        && (identities.size === 0 || (identities.size === 1 && identities.has(candidateIdentity)))) gatewayId = candidate;
     }
   }
   const candidates = gatewayId !== undefined
@@ -178,10 +211,10 @@ function selectExact(
     : (bare && hint ? index?.canonical.get(`${hint}/${id}`) : undefined)
       ?? index?.canonical.get(id) ?? index?.exact.get(id);
   const hinted = candidates?.find((entry) => entry.provider === hint);
-  const identities = new Set(candidates?.map((entry) => entry.modelId));
-  const primary = hinted ?? (identities.size === 1
-    ? candidates?.find((entry) => entry.modelId.startsWith(`${entry.provider}/`)) ?? candidates?.[0]
-    : undefined);
+  const identities = new Set(candidates?.map((entry) => entry.identity));
+  // Reseller rows for one model share an identity but disagree on limits and
+  // prices, so only the creator's own row is authoritative.
+  const primary = hinted ?? (identities.size === 1 ? creatorEntry(index, [...identities][0]!) : undefined);
   return { primary, gatewayId, alias };
 }
 
@@ -396,4 +429,32 @@ export async function enrichProviderModels(
   // Never feed the primary pre-pass back into merging: identity and coordinated
   // bounds must be resolved with the supplement against the original values.
   return gateway ? enrich(gateway) : primaryOnly ?? enrich();
+}
+
+/**
+ * Why a model id stayed bare after enrichment, so callers can tell the user
+ * what is worth acting on: "ambiguous" ids are listed under more than one
+ * creator and an explicit mapping resolves them; "unknown" ids no creator
+ * lists at all, so no mapping helps; "noCreatorRow" ids have one unambiguous
+ * creator but models.dev carries no authoritative row for it, so only Gateway
+ * can fill them.
+ */
+export function classifyUnresolved(catalog: Catalog | undefined, ids: string[], hint?: string): {
+  ambiguous: string[];
+  unknown: string[];
+  noCreatorRow: string[];
+} {
+  const ambiguous: string[] = [];
+  const unknown: string[] = [];
+  const noCreatorRow: string[] = [];
+  if (!catalog) return { ambiguous, unknown: [...ids], noCreatorRow };
+  const index = indexCatalog(catalog);
+  for (const id of ids) {
+    const hinted = hint ? index.canonical.get(`${hint}/${id}`) : undefined;
+    const candidates = hinted ?? index.canonical.get(id) ?? index.exact.get(id);
+    if (!candidates?.length) unknown.push(id);
+    else if (new Set(candidates.map((entry) => entry.identity)).size > 1) ambiguous.push(id);
+    else if (!creatorEntry(index, [...new Set(candidates.map((entry) => entry.identity))][0]!)) noCreatorRow.push(id);
+  }
+  return { ambiguous, unknown, noCreatorRow };
 }
