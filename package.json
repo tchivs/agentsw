@@ -37,7 +37,7 @@
     "prepublishOnly": "npm run build",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --import ./test/setup.ts --test test/*.test.ts"
   },
   "dependencies": {
     "commander": "^15.0.0",

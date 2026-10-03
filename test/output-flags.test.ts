@@ -15,7 +15,9 @@ const cli = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const storeFile = path.join(sandbox, ".config/agentsw/config.json");
 const pkg = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { version: string };
 const env: NodeJS.ProcessEnv = { ...process.env, HOME: sandbox, USERPROFILE: sandbox, AGENTSW_HOME: sandbox, AGENTSW_LANG: "en" };
-for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"]) delete env[key];
+// The suite pins NO_COLOR=1 (see test/setup.ts), but this file proves color behavior, so the
+// child's color environment must be decided here and nowhere else.
+for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "NO_COLOR"]) delete env[key];
 
 function put(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });

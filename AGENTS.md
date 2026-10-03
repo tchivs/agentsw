@@ -140,6 +140,7 @@ New adapters also require schema/reference support in `rename.ts` and `remove.ts
 | `test/targets.test.ts` | Largest test file — apply/prune roundtrips for all 9 adapters |
 | `test/filter.test.ts` | Model filter semantics (dedup, include/exclude globs, pinned ids) |
 | `test/{ui,progress,table,report,output-flags}.test.ts` | Output layer: helpers and exit codes, JSON envelope, progress gating, `width: 0` byte-identical tables, and the end-to-end global-flag contract on a spawned CLI |
+| `test/setup.ts` | Preload that pins `NO_COLOR=1` for the suite. picocolors treats `"CI" in env` as color support even through a pipe, so without it every plain-text assertion on dimmed output passes locally and fails on GitHub Actions |
 | `test/app-paths.test.ts` | Config-path resolution across `AGENTSW_HOME` overrides and platform layouts |
 
 ## Runtime/Tooling Preferences
