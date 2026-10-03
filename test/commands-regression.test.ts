@@ -371,6 +371,24 @@ test("target detection and application errors set failure status while other tar
   assert.match(messages.join("\n"), /application failed/);
 });
 
+test("an app already in sync says so instead of printing a bare ok line", async (t) => {
+  seed(provider());
+  const file = path.join(sandbox, "already-synced.json");
+  useTargets(t,
+    fakeTarget("in-sync", async () => ({ app: "in-sync", changed: [], notes: [] })),
+    fakeTarget("writes", async () => {
+      writeFileAtomic(file, "{}\n");
+      return { app: "writes", changed: [file], notes: [] };
+    }),
+  );
+  await cmdSync({ apps: "in-sync,writes" });
+  const lines = messages.filter((line) => line.startsWith("ok "));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /^ok\s+in-sync\s+unchanged$/, "nothing written is reported, not left blank");
+  assert.equal(lines[0]!.endsWith(" "), false, "the padding before an empty change list must not leak trailing spaces");
+  assert.ok(lines[1]!.includes(file), "an app that did write still lists its files");
+});
+
 test("install refuses successful-exit installers whose app remains undetected", async (t) => {
   useApps(t, { id: "fixture", name: "Fixture", installCmd: "exit 0", windowsInstallCmd: "exit 0", localVersion: () => undefined });
   await assert.rejects(cmdInstall("fixture"), /still not detected/);

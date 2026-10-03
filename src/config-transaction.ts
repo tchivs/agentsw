@@ -149,25 +149,30 @@ export function commitFileChanges(
   return withWriteLock(() => {
     // Another writer may have committed between planning and acquiring the lock.
     validateReads();
-    let backupDir: string;
+    // Only a file that already existed has anything to save. When every planned
+    // file is new, no transaction directory is created: an empty one (nothing but
+    // its manifest) would read as a backup that does not exist.
+    let backupDir: string | undefined;
     let currentFile = backupsDir;
     try {
-      fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
-      backupDir = fs.mkdtempSync(path.join(backupsDir, "transaction-"));
-      fs.chmodSync(backupDir, 0o700);
-      for (const [index, change] of plan.entries()) {
-        currentFile = change.file;
-        if (change.before === undefined) continue;
-        const backup = path.join(backupDir, `${index}-${path.basename(change.file)}`);
-        fs.writeFileSync(backup, change.before, { flag: "wx", mode: 0o600 });
-        fs.chmodSync(backup, 0o600);
+      if (plan.some((change) => change.before !== undefined)) {
+        fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
+        backupDir = fs.mkdtempSync(path.join(backupsDir, "transaction-"));
+        fs.chmodSync(backupDir, 0o700);
+        for (const [index, change] of plan.entries()) {
+          currentFile = change.file;
+          if (change.before === undefined) continue;
+          const backup = path.join(backupDir, `${index}-${path.basename(change.file)}`);
+          fs.writeFileSync(backup, change.before, { flag: "wx", mode: 0o600 });
+          fs.chmodSync(backup, 0o600);
+        }
+        fs.writeFileSync(path.join(backupDir, "manifest.json"), JSON.stringify(plan.map((change, index) => ({
+          file: change.file,
+          backup: change.before === undefined ? null : `${index}-${path.basename(change.file)}`,
+          mode: change.original.mode,
+        })), null, 2) + "\n", { flag: "wx", mode: 0o600 });
+        fs.chmodSync(path.join(backupDir, "manifest.json"), 0o600);
       }
-      fs.writeFileSync(path.join(backupDir, "manifest.json"), JSON.stringify(plan.map((change, index) => ({
-        file: change.file,
-        backup: change.before === undefined ? null : `${index}-${path.basename(change.file)}`,
-        mode: change.original.mode,
-      })), null, 2) + "\n", { flag: "wx", mode: 0o600 });
-      fs.chmodSync(path.join(backupDir, "manifest.json"), 0o600);
       validateReads();
     } catch {
       throw new Error(`${currentFile}: backup or pre-write validation failed; configuration files were not changed`);
@@ -212,7 +217,7 @@ export function commitFileChanges(
       for (const dir of createdDirectories.reverse()) {
         try { fs.rmdirSync(dir); } catch { /* Only remove empty directories created by this transaction. */ }
       }
-      throw new Error(`${currentFile}: configuration transaction failed; ${failed.length ? `rollback incomplete for ${failed.join(", ")}` : "previous writes rolled back"}; backups: ${backupDir}`);
+      throw new Error(`${currentFile}: configuration transaction failed; ${failed.length ? `rollback incomplete for ${failed.join(", ")}` : "previous writes rolled back"}${backupDir ? `; backups: ${backupDir}` : "; no files needed backing up"}`);
     }
     return { files, backupDir };
   });

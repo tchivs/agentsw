@@ -147,6 +147,20 @@ test("unchanged target writes report no changes and create no backups", async ()
   assert.equal(fs.existsSync(backupsDir), false);
 });
 
+test("a commit that only creates files backs nothing up and announces no backup", async () => {
+  const created = path.join(sandbox, "fresh", "models.json");
+  const adapter = target(async function () {
+    ensureDir(path.dirname(created));
+    writeFileAtomic(created, '{"value":1}\n');
+    return { app: this.id, changed: [created], notes: ["kept note"] };
+  });
+  const result = await adapter.apply(provider);
+  assert.deepEqual(result.changed, [created]);
+  assert.deepEqual(result.notes, ["kept note"], "a file with no original has no backup to announce");
+  assert.equal(fs.existsSync(backupsDir), false, "an empty transaction directory must not be left behind");
+  assert.equal(fs.readFileSync(created, "utf8"), '{"value":1}\n');
+});
+
 test("normal and staged atomic writes preserve 0600 and default new files to private", async () => {
   const existing = put("existing/secret.json", "old", 0o600);
   const direct = path.join(sandbox, "direct/new.json");

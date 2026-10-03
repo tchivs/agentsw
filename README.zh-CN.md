@@ -17,20 +17,7 @@
 
 </div>
 
-```console
-$ asw use myproxy -m glm-5.3-flash
-switching to myproxy (openai) · default model glm-5.3-flash
-
-skip claude    Claude Code does not support openai-protocol providers
-ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
-               backup: ~/.config/agentsw/backups/transaction-<unique>
-ok   omp       ~/.omp/agent/models.yml
-               select in omp with: omp --model myproxy/glm-5.3-flash
-skip pi        pi not detected (pass --apps pi to force)
-ok   opencode  ~/.config/opencode/opencode.json
-ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
-               select in dsh with the model picker, or run: dsh web
-```
+![asw use myproxy 把一个供应商写进九个编码智能体](https://raw.githubusercontent.com/tchivs/agentsw/main/docs/demo.gif)
 
 `agentsw` 和短名 `asw` 是同一个可执行文件。
 
@@ -53,9 +40,33 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
 - **区分接口形态。** `/v1/chat/completions` 与 `/v1/responses` 是两个不同端点；
   agentsw 记录供应商说的是哪一种，并且绝不把可用的 responses 降级。
 
-想要 GUI、MCP/Skills 同步、用量仪表盘或本地故障转移代理？用
-[cc-switch](https://github.com/farion1231/cc-switch)——那些它做得很好；agentsw 从它导入，
-而不是跟它抢。
+## 它和同类工具的关系
+
+有两件事别人做得比 agentsw 好，而且都值得你去看：
+
+- **[cc-switch](https://github.com/farion1231/cc-switch)**——桌面应用（Tauri），支持十个工具：一键切换、
+  90+ 供应商预设、MCP/Skills/Prompts 管理、本地路由与故障转移（含 API 格式转换）、用量与成本仪表盘、
+  会话管理、WebDAV/S3 同步。
+- **[cc-switch-cli](https://github.com/SaladDay/cc-switch-cli)**——同一思路的社区 CLI 分支：TUI + 可脚本化子命令、
+  七个工具、MCP 与 Skills、带 token 统计的守护进程代理、SQLite 存储。
+
+两者合起来覆盖 Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、Hermes、OpenClaw、Pi、
+Grok Build、MiniMax Code。agentsw 覆盖的是另外九个——Claude Code、Codex、omp、pi、prime-agent、
+opencode、Hermes、WorkBuddy、DeepSeek Harness——**其中四个另外两个工具根本不写。**
+
+| | agentsw | cc-switch | cc-switch-cli |
+|---|---|---|---|
+| 形态 | CLI，`--json` 可脚本化 | 桌面 GUI | TUI + CLI |
+| 从 models.dev + AI Gateway 取元数据，写入各应用自己的字段 | **是** | 无 | 无 |
+| MCP / Skills / Prompts 管理 | — | 有 | 有 |
+| 路由、API 格式转换、故障转移 | — | 有 | 有 |
+| 用量与成本仪表盘 | — | 有 | 有 |
+| 预设、会话、云同步、deep link | — | 有 | 部分 |
+| 读取对方的供应商库 | 有——只读 `import` | — | — |
+
+说实话的结论：**想要 GUI、MCP 管理或故障转移代理，用 cc-switch。** 如果你在用 omp、prime-agent、
+WorkBuddy 或 DeepSeek Harness，或者你希望每个智能体拿到的是真实模型参数而不是一个裸 id，
+那才是 agentsw 的用处。它读 cc-switch 的库，而不是跟它抢。
 
 ## 安装
 
@@ -98,6 +109,31 @@ pi        no     openai+anthropic  -                                       ~/.pi
 opencode  yes    openai+anthropic  myproxy/glm-5.3-flash                   ~/.config/opencode/opencode.json
 dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.dsh/settings.yaml
 ```
+
+而这个工具真正的用处是另一条——一条命令写进所有检测到的智能体
+（也就是本页顶部那段动画里跑的东西，文字版）：
+
+```console
+$ asw use myproxy
+switching to myproxy (openai) · default model glm-5.3-flash
+
+skip claude    Claude Code does not support openai-protocol providers
+ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
+ok   omp       ~/.omp/agent/models.yml
+               select in omp with: omp --model myproxy/glm-5.3-flash
+ok   pi        ~/.pi/agent/models.json, ~/.pi/agent/settings.json
+ok   prime     ~/.prime/agent/models.json, ~/.prime/agent/settings.json
+ok   opencode  ~/.config/opencode/opencode.json
+ok   hermes    ~/.hermes/config.yaml, ~/.hermes/.env
+ok   workbuddy ~/.workbuddy/models.json, ~/.workbuddy/settings.json
+               WorkBuddy watches models.json; models appear in the selector's custom section without restart
+ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
+               select in dsh with the model picker, or run: dsh web
+```
+
+唯一被跳过的是 `claude`：Claude Code 说的是 Anthropic 协议，而 `myproxy` 是 OpenAI 协议的供应商。
+在智能体的配置已经存在的机器上，提交它时还会打印一行 `backup: ~/.config/agentsw/backups/transaction-<unique>`；
+本沙箱从空配置开始，无物可备，因此没有这行。
 
 ## 支持的应用
 

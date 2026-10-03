@@ -17,20 +17,7 @@ without touching the settings you hand-tuned.
 
 </div>
 
-```console
-$ asw use myproxy -m glm-5.3-flash
-switching to myproxy (openai) · default model glm-5.3-flash
-
-skip claude    Claude Code does not support openai-protocol providers
-ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
-               backup: ~/.config/agentsw/backups/transaction-<unique>
-ok   omp       ~/.omp/agent/models.yml
-               select in omp with: omp --model myproxy/glm-5.3-flash
-skip pi        pi not detected (pass --apps pi to force)
-ok   opencode  ~/.config/opencode/opencode.json
-ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
-               select in dsh with the model picker, or run: dsh web
-```
+![asw use myproxy writes one provider into nine coding agents](https://raw.githubusercontent.com/tchivs/agentsw/main/docs/demo.gif)
 
 `agentsw` and the short `asw` are the same binary.
 
@@ -54,9 +41,37 @@ ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
 - **Wire-aware.** `/v1/chat/completions` and `/v1/responses` are different endpoints;
   agentsw tracks which one a provider speaks and never downgrades a working one.
 
-Want a GUI, MCP/Skills sync, a usage dashboard or a local failover proxy? Use
-[cc-switch](https://github.com/farion1231/cc-switch) — it is excellent at that, and agentsw
-imports from it rather than competing with it.
+## How it compares
+
+Two projects do most of this better than agentsw does, and both are worth your time:
+
+- **[cc-switch](https://github.com/farion1231/cc-switch)** — a desktop app (Tauri) for ten tools:
+  one-click switching, 90+ provider presets, MCP/Skills/Prompts management, local routing and
+  failover with API-format conversion, a usage and cost dashboard, a session manager, and
+  WebDAV/S3 sync.
+- **[cc-switch-cli](https://github.com/SaladDay/cc-switch-cli)** — the community CLI fork of the
+  same idea: TUI plus scriptable subcommands, seven tools, MCP and skills, a daemon proxy with
+  token accounting, SQLite-backed state.
+
+Between them they cover Claude Code, Claude Desktop, Codex, Gemini CLI, OpenCode, Hermes,
+OpenClaw, Pi, Grok Build and MiniMax Code. agentsw covers a different nine — Claude Code, Codex,
+omp, pi, prime-agent, opencode, Hermes, WorkBuddy and DeepSeek Harness — **four of which neither
+other tool writes at all.**
+
+| | agentsw | cc-switch | cc-switch-cli |
+|---|---|---|---|
+| Interface | CLI, `--json` for scripts | desktop GUI | TUI + CLI |
+| Model metadata (models.dev + AI Gateway) written into each app's own fields | **yes** | no | no |
+| MCP / Skills / Prompts management | — | yes | yes |
+| Routing, API-format conversion, failover | — | yes | yes |
+| Usage and cost dashboard | — | yes | yes |
+| Presets, sessions, cloud sync, deep links | — | yes | partial |
+| Reads the other tool's provider store | yes — read-only `import` | — | — |
+
+The honest summary: **if you want a GUI, MCP management, or a failover proxy, use cc-switch.** If
+you use omp, prime-agent, WorkBuddy or DeepSeek Harness, or you want each agent to receive real
+model metadata instead of a bare id, that is what agentsw is for. It reads cc-switch's store
+rather than competing with it.
 
 ## Install
 
@@ -103,6 +118,32 @@ pi        no     openai+anthropic  -                                       ~/.pi
 opencode  yes    openai+anthropic  myproxy/glm-5.3-flash                   ~/.config/opencode/opencode.json
 dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.dsh/settings.yaml
 ```
+
+And the point of the whole thing — one command writes every detected agent (this is the run in
+the animation at the top of this page, as text):
+
+```console
+$ asw use myproxy
+switching to myproxy (openai) · default model glm-5.3-flash
+
+skip claude    Claude Code does not support openai-protocol providers
+ok   codex     ~/.codex/config.toml, ~/.codex/auth.json
+ok   omp       ~/.omp/agent/models.yml
+               select in omp with: omp --model myproxy/glm-5.3-flash
+ok   pi        ~/.pi/agent/models.json, ~/.pi/agent/settings.json
+ok   prime     ~/.prime/agent/models.json, ~/.prime/agent/settings.json
+ok   opencode  ~/.config/opencode/opencode.json
+ok   hermes    ~/.hermes/config.yaml, ~/.hermes/.env
+ok   workbuddy ~/.workbuddy/models.json, ~/.workbuddy/settings.json
+               WorkBuddy watches models.json; models appear in the selector's custom section without restart
+ok   dsh       ~/.dsh/settings.yaml, ~/.dsh/.credentials.yaml
+               select in dsh with the model picker, or run: dsh web
+```
+
+`claude` is the only skip: Claude Code speaks the Anthropic protocol, and `myproxy` is an
+OpenAI-protocol provider. On a machine where an agent's config already exists, committing to it
+also prints a `backup: ~/.config/agentsw/backups/transaction-<unique>` line; this sandbox starts
+with empty configs, so there is nothing to back up and none appear.
 
 ## Supported apps
 

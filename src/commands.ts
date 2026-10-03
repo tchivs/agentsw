@@ -573,7 +573,10 @@ function reportResults(results: ApplyResult[]): void {
       out(`${pc.yellow(t("common.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
       continue;
     }
-    out(`${pc.green("ok  ")} ${r.app.padEnd(9)} ${r.changed.join(", ")}`);
+    // An empty change list means the app was already in sync: say so rather than
+    // printing a bare "ok" with nothing after it.
+    const detail = r.changed.length ? r.changed.join(", ") : pc.dim(t("preview.unchanged"));
+    out(`${pc.green("ok  ")} ${r.app.padEnd(9)} ${detail}`);
     for (const note of r.notes) out(`     ${" ".repeat(9)} ${pc.dim(note)}`);
   }
 }

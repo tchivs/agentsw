@@ -348,6 +348,20 @@ test("dsh migrates a pre-release flat credentials document", async () => {
   await dsh.prune({ ...provider, id: "flat" });
 });
 
+test("codex states the Responses requirement only when the provider does not declare it", async () => {
+  const codex = targets.find((t) => t.id === "codex")!;
+  const declares = (notes: string[]) => notes.some((n) => n.includes("Responses-compatible"));
+
+  const responses = await codex.apply({ ...provider, id: "wire-responses", openaiApi: "responses" });
+  assert.equal(declares(responses.notes), false, "a provider that already declares responses needs no caveat");
+
+  const completions = await codex.apply({ ...provider, id: "wire-completions", openaiApi: "completions" });
+  assert.ok(declares(completions.notes), "a chat-completions-only endpoint must still be flagged");
+
+  const undeclared = await codex.apply({ ...provider, id: "wire-unknown" });
+  assert.ok(declares(undeclared.notes), "an unknown flavor is written as responses, so it is flagged too");
+});
+
 test("claude and codex resolve their config directories per call from the env vars they honor", async () => {
   const claude = targets.find((t) => t.id === "claude")!;
   const codex = targets.find((t) => t.id === "codex")!;

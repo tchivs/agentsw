@@ -83,7 +83,11 @@ export const codex: TargetApp = transactionalTarget({
       wire_api: "responses",
       requires_openai_auth: true,
     };
-    notes.push("codex requires an OpenAI Responses-compatible endpoint (/v1/responses); chat-completions-only endpoints will not work");
+    // Only worth saying when the endpoint has not declared itself Responses-compatible:
+    // a provider the user already marked `responses` needs no caveat.
+    if (provider.openaiApi !== "responses") {
+      notes.push("codex requires an OpenAI Responses-compatible endpoint (/v1/responses); chat-completions-only endpoints will not work");
+    }
     config.model_providers = providers;
 
     const configBackup = backupFile(configFile);

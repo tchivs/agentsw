@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-10-04
+
+### Fixed
+
+- `use`, `sync` and `prune` no longer print a bare `ok <app>` line for an app that was already
+  in sync. An empty change list was rendered as nothing at all, leaving a row of trailing
+  whitespace that read as a truncated or failed result; it now says `unchanged`, which is what
+  a repeated `sync` actually did.
+- Codex states the Responses requirement only when the endpoint has not declared itself
+  Responses-compatible. The caveat was printed unconditionally, so a provider the user had
+  already marked `responses` — where there is nothing to warn about — warned anyway, and a
+  fully successful sync looked like it had a problem.
+- Syncing to a machine whose agent configs do not exist yet no longer prints a `backup: …` line
+  when nothing was backed up. A transaction directory was created for every commit even when
+  every planned file was new, so on a first run the output announced eight backups that held
+  nothing but a manifest.
+
 ## [0.10.1] - 2026-10-03
 
 ### Fixed
@@ -454,7 +471,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/tchivs/agentsw/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tchivs/agentsw/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tchivs/agentsw/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/tchivs/agentsw/compare/v0.9.1...v0.9.2
