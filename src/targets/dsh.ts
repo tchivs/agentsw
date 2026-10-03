@@ -15,7 +15,7 @@ const CREDENTIALS_VERSION = 1;
 /** Thinking levels a `reasoningEfforts` entry may offer (llm-pi-ai THINKING_LEVEL_GATE). */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-/** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
+/** Per-model keys this adapter writes; one a metadata-bearing entry stops emitting is cleared, not inherited. */
 const OWNED_MODEL_KEYS = ["id", "name", "contextWindow", "maxTokens", "input", "reasoningEfforts"] as const;
 
 /** models.dev efforts -> `{ level: wire spelling }`; an unoffered level is omitted, not nulled. */

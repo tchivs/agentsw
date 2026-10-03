@@ -4,7 +4,29 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.1] - 2026-10-03
+
+### Fixed
+
+- A models.dev row that omits `canonical_model_id` no longer counts as a second creator identity.
+  models.dev leaves the field unset on the creator's own rows and on some reseller rows too, so a
+  single silent row made an id every other row agreed on report as ambiguous and kept it — and
+  every model sharing its basename — without metadata. Those rows now make no claim; a group where
+  nothing declares an identity is still held to its listing ids, and ids listed under genuinely
+  different declared identities still stay unresolved.
+- A sync no longer deletes the limits an agent config already has for a model the store knows
+  nothing about. Clearing an owned key the entry omits is only meaningful when the entry carries
+  metadata at all — an id no catalog row matched arrives as a bare `{ id }`, so the absence said
+  nothing and the deletion threw away what an earlier lookup filled in (or a person typed) on
+  every miss.
+- A failed AI Gateway request is retried once before falling back to the cache. The endpoint is
+  reached over whatever route the machine has, where a cold handshake measures an order of
+  magnitude slower than a warm one, so a stall or a reset is far likelier than a bad answer — and
+  a single stall used to leave the run on stale metadata until the next successful fetch. Only
+  the request is retried: a status, an oversize body or an unparseable catalog is the endpoint's
+  answer, and a second request would only repeat it. `AGENTSW_DEBUG=1` reports why an attempt
+  failed (the user-facing warning stays generic), and `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the
+  15-second whole-request budget.
 
 ## [0.10.0] - 2026-10-03
 
@@ -432,7 +454,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/tchivs/agentsw/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tchivs/agentsw/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/tchivs/agentsw/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/tchivs/agentsw/compare/v0.9.0...v0.9.1

@@ -537,6 +537,40 @@ test("a re-sync clears owned per-model keys it no longer writes", async () => {
   await pi.prune({ ...provider, id: "stale" });
 });
 
+test("a re-sync keeps what an entry carries when the store knows nothing about the model", async () => {
+  const omp = targets.find((t) => t.id === "omp")!;
+  const file = path.join(sandbox, ".omp", "agent", "models.yml");
+  const read = (): Record<string, unknown> =>
+    (YAML.parse(fs.readFileSync(file, "utf8")).providers.unknown.models as Array<Record<string, unknown>>)
+      .find((m) => m.id === "model-a")!;
+
+  await omp.apply({ ...provider, id: "unknown" });
+  assert.equal(read().contextWindow, 100000);
+
+  // Enrichment passes an id no catalog row matched through as a bare { id }, so
+  // the adapter can only write the derived capability for it. That is silence
+  // about the model, not a statement that it has no size — clearing here deleted
+  // a previous lookup (or a hand-typed limit) on every miss.
+  await omp.apply({ ...provider, id: "unknown", models: [{ id: "model-a" }, { id: "model-b" }] });
+  const kept = read();
+  assert.equal(kept.contextWindow, 100000);
+  assert.equal(kept.maxTokens, 8192);
+  assert.equal(kept.reasoning, true);
+  assert.equal(kept.name, "Model A", "the stored name survives alongside the limits");
+
+  // An entry that does carry metadata still clears what it omits: dropping
+  // maxTokens while keeping a size is a deliberate statement about model-a.
+  await omp.apply({ ...provider, id: "unknown", models: [
+    { id: "model-a", name: "Model A", reasoning: false, contextWindow: 64000 },
+    { id: "model-b" },
+  ] });
+  const narrowed = read();
+  assert.equal(narrowed.reasoning, false);
+  assert.equal(narrowed.contextWindow, 64000);
+  assert.equal(narrowed.maxTokens, undefined);
+  await omp.prune({ ...provider, id: "unknown" });
+});
+
 test("omp drops anthropic-only and stale per-model overrides when the wire changes", async () => {
   const omp = targets.find((t) => t.id === "omp")!;
   const file = path.join(sandbox, ".omp", "agent", "models.yml");

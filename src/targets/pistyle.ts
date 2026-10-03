@@ -10,7 +10,7 @@ import { transactionalTarget } from "../target-transaction.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflictingOverrides } from "./wire.js";
 
-/** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
+/** Per-model keys this adapter writes; one a metadata-bearing entry stops emitting is cleared, not inherited. */
 const OWNED_MODEL_KEYS = [
   "id",
   "name",

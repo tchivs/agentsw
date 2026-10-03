@@ -320,6 +320,72 @@ test("uses a bounded timeout signal and degrades on abort", async (t) => {
   assert.doesNotMatch(warnings.join(""), /PRIVATE/);
 });
 
+test("a transient failure is retried once and the retry's answer replaces the stale cache", async (t) => {
+  const timestamp = new Date(now - 2 * day).toISOString();
+  writeCache(body, timestamp);
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    if (++calls === 1) throw new Error("PRIVATE cold handshake");
+    return Response.json(body);
+  });
+  const loaded = await loadGatewayCatalog();
+  assert.equal(calls, 2);
+  assert.equal(loaded?.fetchedAt, fetchedAt);
+  assert.equal(JSON.parse(fs.readFileSync(cacheFile, "utf8")).fetchedAt, fetchedAt);
+  assert.deepEqual(warnings, [], "an attempt that recovers on its own is not worth a warning");
+});
+
+test("a definitive answer is not retried, because the retry would repeat it", async (t) => {
+  const timestamp = new Date(now - 2 * day).toISOString();
+  writeCache(body, timestamp);
+  let calls = 0;
+  for (const [label, answer] of [
+    ["HTTP error", () => new Response("PRIVATE provider body", { status: 500 })],
+    ["unparseable body", () => new Response("PRIVATE invalid JSON")],
+    ["empty body", () => new Response(null, { status: 204 })],
+  ] as const) {
+    calls = 0;
+    t.mock.method(globalThis, "fetch", async () => { calls++; return answer(); });
+    assert.equal((await loadGatewayCatalog())?.fetchedAt, timestamp, label);
+    assert.equal(calls, 1, label);
+  }
+  assert.match(warnings.join(""), /using cached metadata/);
+});
+
+test("AGENTSW_DEBUG adds the reason without replacing the warning", async (t) => {
+  const timestamp = new Date(now - 2 * day).toISOString();
+  writeCache(body, timestamp);
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("PRIVATE upstream failure"); });
+  process.env.AGENTSW_DEBUG = "1";
+  try {
+    assert.equal((await loadGatewayCatalog())?.fetchedAt, timestamp);
+  } finally {
+    delete process.env.AGENTSW_DEBUG;
+  }
+  const text = warnings.join("");
+  assert.match(text, /PRIVATE upstream failure/, "the reason is what the flag is for");
+  assert.match(text, /using cached metadata/, "the user-facing warning is unchanged beside it");
+});
+
+test("the whole-request timeout is overridable, and an unusable value keeps the default", async (t) => {
+  const seen: number[] = [];
+  t.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    seen.push(milliseconds);
+    return AbortSignal.abort(new DOMException("PRIVATE", "TimeoutError"));
+  });
+  t.mock.method(globalThis, "fetch", async () => Response.json(body));
+  for (const [value, expected] of [["20000", 20_000], ["0", 15_000], ["nonsense", 15_000]] as const) {
+    seen.length = 0;
+    process.env.AGENTSW_GATEWAY_TIMEOUT_MS = value;
+    try {
+      assert.equal((await loadGatewayCatalog({ refresh: true }))?.fetchedAt, fetchedAt);
+    } finally {
+      delete process.env.AGENTSW_GATEWAY_TIMEOUT_MS;
+    }
+    assert.deepEqual(seen, [expected], `AGENTSW_GATEWAY_TIMEOUT_MS=${value}`);
+  }
+});
+
 test("dry-run returns fetched metadata without creating cache, backups or directories", async (t) => {
   setDryRun(true);
   t.mock.method(globalThis, "fetch", async () => Response.json(body));

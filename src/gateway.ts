@@ -9,6 +9,12 @@ const API_URL = "https://ai-gateway.vercel.sh/v1/models";
 const CACHE_FILE = path.join(configDir, "ai-gateway.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+/** Whole-request budget. A cold handshake through a tunnel measures ~3s here, so this is generous. */
+const DEFAULT_TIMEOUT_MS = 15_000;
+const MAX_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 300;
+/** The endpoint answered — a status, an oversize body, a missing one. A retry repeats the answer. */
+class DefinitiveFailure extends Error {}
 const REASONING_EFFORTS: Record<string, true> = {
   none: true, minimal: true, low: true, medium: true, high: true, xhigh: true, max: true,
 };
@@ -163,9 +169,9 @@ async function readResponseBody(response: Response): Promise<string> {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null && Number(contentLength) > MAX_BODY_BYTES) {
     await response.body?.cancel().catch(() => {});
-    throw new Error("AI Gateway catalog exceeds size limit");
+    throw new DefinitiveFailure("AI Gateway catalog exceeds size limit");
   }
-  if (!response.body) throw new Error("Missing AI Gateway catalog body");
+  if (!response.body) throw new DefinitiveFailure("Missing AI Gateway catalog body");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -175,7 +181,7 @@ async function readResponseBody(response: Response): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_BODY_BYTES) throw new Error("AI Gateway catalog exceeds size limit");
+      if (size > MAX_BODY_BYTES) throw new DefinitiveFailure("AI Gateway catalog exceeds size limit");
       chunks.push(decoder.decode(value, { stream: true }));
     }
     chunks.push(decoder.decode());
@@ -188,6 +194,65 @@ async function readResponseBody(response: Response): Promise<string> {
   }
 }
 
+/** Diagnostics for a failure the user cannot otherwise see; opt in with AGENTSW_DEBUG=1. */
+function debug(message: string): void {
+  if (process.env.AGENTSW_DEBUG !== "1") return;
+  warn(message);
+}
+
+/** One-line reason for a failed attempt, for `AGENTSW_DEBUG` only — never part of the warning. */
+function describeFailure(error: unknown, timeoutMs: number): string {
+  if (error instanceof Error && error.name === "TimeoutError") return `no response within ${timeoutMs}ms`;
+  const cause = error instanceof Error ? error.cause : undefined;
+  const code = cause && typeof cause === "object" && "code" in cause ? ` (${String(cause.code)})` : "";
+  return `${error instanceof Error ? error.message : String(error)}${code}`;
+}
+
+/**
+ * Whole-request budget, overridable with `AGENTSW_GATEWAY_TIMEOUT_MS`. An unusable value is
+ * ignored rather than fatal: this is an escape hatch for a slow route, not configuration.
+ */
+function timeoutMs(): number {
+  const raw = process.env.AGENTSW_GATEWAY_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_TIMEOUT_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_TIMEOUT_MS;
+}
+
+async function requestOnce(budget: number): Promise<string> {
+  const response = await fetch(API_URL, {
+    signal: AbortSignal.timeout(budget),
+    credentials: "omit",
+    redirect: "error",
+  });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new DefinitiveFailure(`HTTP ${response.status}`);
+  }
+  return readResponseBody(response);
+}
+
+/**
+ * Read the catalog text, retrying once when the attempt failed before the endpoint could
+ * answer. The likeliest failure by far is a transient one: a cold TLS handshake over whatever
+ * route this machine has measures an order of magnitude slower than a warm one, so a stall or a
+ * reset is far more common than a bad answer. A `DefinitiveFailure` is not retried — the second
+ * request would only repeat it — and neither is a body that arrived but would not parse, which
+ * is why parsing stays outside this call.
+ */
+async function requestCatalogText(): Promise<string> {
+  const budget = timeoutMs();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requestOnce(budget);
+    } catch (error) {
+      if (error instanceof DefinitiveFailure || attempt >= MAX_ATTEMPTS) throw error;
+      debug(`AI Gateway attempt ${attempt} failed (${describeFailure(error, budget)}); retrying`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+  }
+}
+
 /** Optional supplement: offline never fetches, and every failure leaves discovery usable. */
 export async function loadGatewayCatalog(
   opts: { refresh?: boolean; offline?: boolean } = {},
@@ -197,16 +262,7 @@ export async function loadGatewayCatalog(
   if (!opts.refresh && cached && Date.now() - Date.parse(cached.fetchedAt) < CACHE_TTL_MS) return cached;
 
   try {
-    const response = await fetch(API_URL, {
-      signal: AbortSignal.timeout(15_000),
-      credentials: "omit",
-      redirect: "error",
-    });
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      throw new Error("AI Gateway catalog request failed");
-    }
-    const body: unknown = JSON.parse(await readResponseBody(response));
+    const body: unknown = JSON.parse(await requestCatalogText());
     const catalog = parseGatewayCatalog(body, new Date().toISOString());
     try {
       writeFileAtomic(CACHE_FILE, JSON.stringify({ version: 1, fetchedAt: catalog.fetchedAt, body }) + "\n", 0o600);
@@ -214,7 +270,8 @@ export async function loadGatewayCatalog(
       warn("could not cache AI Gateway metadata");
     }
     return catalog;
-  } catch {
+  } catch (error) {
+    debug(`AI Gateway metadata unavailable: ${describeFailure(error, timeoutMs())}`);
     warn(cached
       ? "could not refresh AI Gateway metadata; using cached metadata"
       : "could not load AI Gateway metadata");

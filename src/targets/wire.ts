@@ -70,15 +70,27 @@ export function entryApi(entry: { api?: unknown; models?: unknown }): unknown {
 /**
  * Merge the model entries agentsw owns over the ones already in an app
  * config: per-model keys the adapter does not model (`compat`, per-model wire
- * overrides, ...) survive a re-sync, while an `owned` key the new entry no
- * longer carries is cleared instead of lingering as last sync's value — a
- * stale `thinkingLevelMap` beside `reasoning: false` is a state no fresh write
+ * overrides, ...) survive a re-sync, and an `owned` key the entry omits is
+ * cleared rather than lingering as last sync's value — a stale
+ * `thinkingLevelMap` beside `reasoning: false` is a state no fresh write
  * produces.
+ *
+ * That clearing is only meaningful for an entry that carries metadata at all.
+ * A model the store knows nothing about arrives as a bare `{ id }` — that is
+ * exactly what enrichment does with an id no catalog row matched — and every
+ * adapter still adds the derived capability in `derived`. Absence in such a
+ * stub says nothing about the model, so the config's existing values are kept:
+ * deleting them would throw away limits an earlier lookup filled in, or that a
+ * person typed by hand, every time a catalog lookup misses. Once an entry
+ * carries any owned metadata of its own, the same absence is a statement about
+ * the model and is applied as before.
  */
 export function mergeModels(
   previous: unknown,
   written: Array<Record<string, unknown>>,
   owned: readonly string[],
+  /** Owned keys every adapter derives instead of reading them from the model. */
+  derived: readonly string[] = ["input"],
 ): Array<Record<string, unknown>> {
   const prev = new Map<string, Record<string, unknown>>();
   if (Array.isArray(previous)) {
@@ -86,11 +98,13 @@ export function mergeModels(
       if (m && typeof m.id === "string") prev.set(m.id, m);
     }
   }
+  const informative = owned.filter((key) => key !== "id" && !derived.includes(key));
   return written.map((m) => {
     const old = prev.get(m.id as string);
     if (!old) return m;
     const kept: Record<string, unknown> = { ...old };
-    for (const key of owned) if (!(key in m)) delete kept[key];
+    const known = informative.some((key) => key in m);
+    if (known) for (const key of owned) if (!(key in m)) delete kept[key];
     return { ...kept, ...m };
   });
 }

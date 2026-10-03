@@ -242,7 +242,9 @@ Import still skips already configured accounts.
   `refresh --provider <id> --metadata-mode on` to request fresh reference prices.
 - **Auditable and optional:** `metadata.fields` records origins, value snapshots and timestamps;
   `metadata.conflicts` records disagreements with retained values. This audit stays in agentsw, never runtime agent configs.
-  Gateway has a separate 24-hour cache; failures use stale cached data or skip supplementation.
+  Gateway has a separate 24-hour cache; a failed request is retried once before falling back to stale cached data
+  (or skipping supplementation when there is none). `AGENTSW_DEBUG=1` reports why an attempt failed, and
+  `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the 15-second whole-request budget.
 - **Automatic lookup is not automatic sync:** enrichment updates saved metadata during add/quick/discover/import/refresh.
   It does not add an automatic push to agents. Sync behavior is unchanged: ordinary `sync` only writes saved settings
   and fetches neither model lists nor metadata catalogs.
@@ -352,7 +354,10 @@ are unaffected.
 - A sync overwrites only the fields agentsw owns. Unmodeled provider-level keys and per-model
   extras survive; an owned field that stops applying is cleared rather than left stale, and a
   per-model `api`/`baseUrl` override that contradicts the route is dropped (it would silently
-  win over the entry) and reported.
+  win over the entry) and reported. Clearing needs the entry to say something in the first
+  place: a model the store knows nothing about — an id no catalog row matched — is written as
+  an id and its capabilities alone, and the limits already in the file are kept rather than
+  deleted.
 - YAML configs (omp, Hermes, dsh) keep their comments. `~/.codex/config.toml` does not —
   TOML round-trip drops them, which is why the backup happens first.
 - OpenAI endpoints come in two wires: `/v1/chat/completions` and `/v1/responses`. Imported

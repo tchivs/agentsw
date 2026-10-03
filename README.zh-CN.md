@@ -227,7 +227,9 @@ asw sync --provider myproxy
   自动模式不会仅为刷新参考价格而查询：可查看 `metadata.gateway.fetchedAt` 判断快照时间，
   需要重新查询参考价格时使用 `refresh --provider <id> --metadata-mode on`。
 - **可追溯、可降级：** `metadata.fields` 记录来源、原值快照和时间，`metadata.conflicts` 记录保留值与冲突。
-  审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败可使用旧缓存，无缓存时只跳过补充。
+  审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败会先重试一次，
+  仍失败才使用旧缓存，无缓存时只跳过补充。`AGENTSW_DEBUG=1` 会说明该次尝试失败的原因，
+  `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
 - **自动查询不等于自动同步：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，并不新增自动推送。
   同步行为不变：普通 `sync` 仅写入已保存的设置，既不获取模型列表，也不请求元数据目录。
 
@@ -330,6 +332,8 @@ JSON 载荷一律不含凭据；`--json --dry-run` 只报告将要改动的文�
 - 同步只覆盖 agentsw 自己管理的字段：未建模的供应商级键与模型级扩展字段保留；
   自己管理但本次不再写出的字段会被清除而非留成陈旧值；与新路由矛盾的模型级
   `api`/`baseUrl` 覆盖会被删除（否则它会静默盖过供应商条目）并在输出中点名。
+  但"清除"要求这一条本身说了点什么：store 完全不认识的模型（没有任何目录行匹配到的 id）
+  只带 id 和能力写入，文件里已有的上下文长度等参数会保留而不是被删掉。
 - YAML 配置（omp、Hermes、dsh）保留注释；`~/.codex/config.toml` 不行——TOML 往返会丢注释，
   所以才先备份。
 - OpenAI 端点有两种接口形态：`/v1/chat/completions` 与 `/v1/responses`。导入时沿用配置里

@@ -118,6 +118,14 @@ interface CatalogEntry {
    * happen to share a basename.
    */
   identity: string;
+  /**
+   * Whether `identity` is what the catalog declares. A row without
+   * `canonical_model_id` still has to be filed under something, and its own
+   * listing id is the best guess — but it is a guess, not a claim: models.dev
+   * omits the field on the creator's own rows (where the guess happens to be
+   * right) as well as on some reseller rows (where it is not).
+   */
+  claimed: boolean;
   model: CatalogModel;
 }
 interface CatalogIndex {
@@ -143,7 +151,10 @@ function indexCatalog(catalog: Catalog): CatalogIndex {
   for (const provider of Object.values(catalog)) {
     for (const [key, model] of Object.entries(provider.models)) {
       const modelId = model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
-      const entry = { provider: provider.id, modelId, identity: model.canonical_model_id ?? modelId, model };
+      const entry = {
+        provider: provider.id, modelId, identity: model.canonical_model_id ?? modelId,
+        claimed: model.canonical_model_id !== undefined, model,
+      };
       for (const id of new Set([key, model.id])) push(exact, id, entry);
       push(canonical, modelId, entry);
       push(identities, entry.identity, entry);
@@ -152,10 +163,29 @@ function indexCatalog(catalog: Catalog): CatalogIndex {
   return { exact, canonical, identities };
 }
 
+/**
+ * The identities a group of catalog rows stands for.
+ *
+ * Only `canonical_model_id` is evidence. Counting the fallback guess of a row
+ * that declares nothing would let one sloppy reseller row invent a second
+ * creator and block an otherwise unique match — the id then reports as
+ * ambiguous even though every row that does carry the field names one model.
+ * A group where *nothing* declares an identity is a different situation: there
+ * is no primary evidence to weigh, so the listings' own ids are all the group
+ * can be held to, which is exactly the conservative answer. An empty group
+ * stays empty — that is "no evidence at all", not "one guess".
+ */
+function claimIdentities(entries: CatalogEntry[] | undefined): Set<string> {
+  const list = entries ?? [];
+  const claimed = new Set(list.filter((entry) => entry.claimed).map((entry) => entry.identity));
+  if (claimed.size) return claimed;
+  return new Set(list.map((entry) => entry.identity));
+}
+
 /** Creator identity of a catalog model id, or undefined when its rows disagree. */
 function catalogIdentity(index: CatalogIndex | undefined, modelId: string): string | undefined {
-  const identities = new Set(index?.canonical.get(modelId)?.map((entry) => entry.identity));
-  return identities?.size === 1 ? [...identities][0] : undefined;
+  const identities = claimIdentities(index?.canonical.get(modelId));
+  return identities.size === 1 ? [...identities][0] : undefined;
 }
 
 /**
@@ -195,7 +225,7 @@ function selectExact(
       const candidate = gatewayBareIds?.get(id);
       const evidence = index?.exact.get(id);
       const hintedEvidence = hint ? evidence?.filter((entry) => entry.provider === hint) : undefined;
-      const identities = new Set((hintedEvidence?.length ? hintedEvidence : evidence)?.map((entry) => entry.identity));
+      const identities = claimIdentities(hintedEvidence?.length ? hintedEvidence : evidence);
       // Gateway names the creator while models.dev names the listing provider, so
       // the two agree only once both are reduced to a creator identity. A gateway
       // id the catalog has no row for stands for itself.
@@ -211,7 +241,7 @@ function selectExact(
     : (bare && hint ? index?.canonical.get(`${hint}/${id}`) : undefined)
       ?? index?.canonical.get(id) ?? index?.exact.get(id);
   const hinted = candidates?.find((entry) => entry.provider === hint);
-  const identities = new Set(candidates?.map((entry) => entry.identity));
+  const identities = claimIdentities(candidates);
   // Reseller rows for one model share an identity but disagree on limits and
   // prices, so only the creator's own row is authoritative.
   const primary = hinted ?? (identities.size === 1 ? creatorEntry(index, [...identities][0]!) : undefined);
@@ -453,8 +483,11 @@ export function classifyUnresolved(catalog: Catalog | undefined, ids: string[], 
     const hinted = hint ? index.canonical.get(`${hint}/${id}`) : undefined;
     const candidates = hinted ?? index.canonical.get(id) ?? index.exact.get(id);
     if (!candidates?.length) unknown.push(id);
-    else if (new Set(candidates.map((entry) => entry.identity)).size > 1) ambiguous.push(id);
-    else if (!creatorEntry(index, [...new Set(candidates.map((entry) => entry.identity))][0]!)) noCreatorRow.push(id);
+    else {
+      const identities = claimIdentities(candidates);
+      if (identities.size > 1) ambiguous.push(id);
+      else if (!creatorEntry(index, [...identities][0]!)) noCreatorRow.push(id);
+    }
   }
   return { ambiguous, unknown, noCreatorRow };
 }

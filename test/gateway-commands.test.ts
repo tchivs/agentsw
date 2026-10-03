@@ -316,10 +316,12 @@ test("complete manual parameters avoid supplemental queries despite gaps in prim
 });
 
 test("automatic multi-provider refresh shares one failed Gateway load and retains primary metadata", async () => {
-  seed(provider(), provider({ id: "second", apiKey: "second-fixture-key" }));
+  seed(provider(), provider({ id: "second", apiKey: "second-fixture-key" }), provider({ id: "third", apiKey: "third-fixture-key" }));
   gatewayDown = true;
   await cmdRefreshMeta();
-  assert.equal(requests.filter((url) => url.includes("ai-gateway")).length, 1);
+  // One load for the batch — its attempt plus the single retry a transient failure earns — and
+  // not one per provider, which three providers would make 3 requests (or 6) instead of 2.
+  assert.equal(requests.filter((url) => url.includes("ai-gateway")).length, 2);
   for (const saved of Object.values(loadStore().providers)) {
     assert.equal(saved.models[0]?.contextWindow, 8192);
     assert.equal(saved.models[0]?.maxOutput, undefined);
@@ -403,7 +405,9 @@ for (const down of [false, true]) {
     const saved = Object.values(loadStore().providers);
     assert.equal(saved.length, 2);
     assert.deepEqual(new Set(saved.map((p) => p.protocol)), new Set(["openai", "anthropic"]));
-    assert.equal(requests.filter((url) => url.includes("ai-gateway")).length, 1);
+    // One load shared by both protocols — plus, when the endpoint is down, the single retry a
+    // transient failure earns. Two providers must never mean two requests.
+    assert.equal(requests.filter((url) => url.includes("ai-gateway")).length, down ? 2 : 1);
     for (const p of saved) {
       assert.equal(p.gatewayMetadata, undefined);
       assert.equal(p.models[0]?.contextWindow, 8192);

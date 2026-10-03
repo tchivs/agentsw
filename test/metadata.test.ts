@@ -248,6 +248,38 @@ test("listings under different creator identities stay ambiguous however many re
   assert.deepEqual(await enrichProviderModels(primary, ["model"], enabled, { gateway: null }), [{ id: "model" }]);
 });
 
+test("a reseller row that declares no identity cannot make a unique model look ambiguous", async () => {
+  // models.dev leaves canonical_model_id unset on the creator's own row, and on
+  // a few reseller rows too. Reading that gap as "a different creator" turned
+  // one sloppy row into a conflict and dropped the whole id, so a bare id every
+  // other row agrees on has to resolve off the creator's row regardless.
+  const primary: Catalog = {
+    creator: { id: "creator", models: { model: { id: "model", name: "Creator", limit: { context: 1000 }, reasoning: true } } },
+    reseller: { id: "reseller", models: { model: { id: "model", canonical_model_id: "creator/model", limit: { context: 200 } } } },
+    sloppy: { id: "sloppy", models: { model: { id: "model", limit: { context: 9 } } } },
+  };
+  const [result] = await enrichProviderModels(primary, ["model"], enabled, { gateway: null });
+  assert.equal(result?.name, "Creator");
+  assert.equal(result?.contextWindow, 1000);
+  assert.equal(result?.reasoning, true);
+  assert.equal(result?.metadata?.fields?.contextWindow?.modelId, "creator/model");
+
+  // The declared identity still has to be unique: a rival claim is a conflict
+  // whether or not a silent row sits beside it.
+  const rival: Catalog = {
+    ...primary,
+    rival: { id: "rival", models: { model: { id: "model", canonical_model_id: "rival/model", reasoning: false } } },
+  };
+  assert.deepEqual(await enrichProviderModels(rival, ["model"], enabled, { gateway: null }), [{ id: "model" }]);
+});
+
+test("a group where no row declares an identity is still held to its listing ids", async () => {
+  // No canonical evidence anywhere means no primary evidence to weigh, so the
+  // listings' own ids remain the answer — the conservative one.
+  const primary = { ...catalog({ name: "First" }), ...catalog({ name: "Second" }, "other") };
+  assert.deepEqual(await enrichProviderModels(primary, ["model"], enabled, { gateway: null }), [{ id: "model" }]);
+});
+
 test("a Gateway creator id agrees with reseller rows naming a different listing provider", async () => {
   const primary: Catalog = {
     creator: { id: "creator", models: { model: { id: "model", canonical_model_id: "creator/model", limit: { context: 1000 } } } },

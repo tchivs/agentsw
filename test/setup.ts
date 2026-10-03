@@ -7,3 +7,10 @@
 // need to prove color still works (`test/output-flags.test.ts`) spawn the CLI with an env they
 // control explicitly.
 process.env.NO_COLOR ??= "1";
+
+// Escape hatches that change what the suite observes: `AGENTSW_DEBUG` puts an upstream failure's
+// private reason into stderr, where the warnings assertions live, and the timeout override is
+// read by the test that pins the default budget. Drop both so the run cannot depend on a
+// developer's shell; the test that proves debug output works sets the variable itself.
+delete process.env.AGENTSW_DEBUG;
+delete process.env.AGENTSW_GATEWAY_TIMEOUT_MS;
