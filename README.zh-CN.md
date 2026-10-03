@@ -110,7 +110,7 @@ dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.d
 | [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) | `~/.prime/agent/models.json` + `settings.json` | 双协议 |
 | [opencode](https://opencode.ai) | `~/.config/opencode/` 下已存在的 `opencode.json`、`.jsonc` 或 `config.json`（保留注释） | 双协议 |
 | [Hermes](https://pypi.org/project/hermes-agent/) | `~/.hermes/config.yaml` + `.env`（保留注释） | 双协议 |
-| WorkBuddy | `~/.workbuddy/models.json` + `settings.json` | openai |
+| WorkBuddy | `~/.workbuddy/models.json` + `settings.json`(Windows 下为 `%APPDATA%\workbuddy`) | openai |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) | `~/.dsh/settings.yaml` + `.credentials.yaml` | 双协议 |
 
 未安装的应用会被跳过，而不是瞎猜。`--apps codex,omp` 只跑指定应用；

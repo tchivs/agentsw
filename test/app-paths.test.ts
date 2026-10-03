@@ -39,6 +39,13 @@ beforeEach(() => {
   process.env.HOME = sandbox;
 });
 
+// WorkBuddy is the one app whose native config lives in the platform data directory rather than a
+// dot-directory, so its default differs on Windows. Under AGENTSW_HOME (the sandbox) appDataDir
+// resolves to <home>/.config, which is what a sandboxed run can assert on either platform.
+const defaultWorkbuddyDir = process.platform === "win32"
+  ? path.join(sandbox, ".config", "workbuddy")
+  : path.join(sandbox, ".workbuddy");
+
 test("defaults keep the documented per-app layout", () => {
   assert.equal(claudeDir(), path.join(sandbox, ".claude"));
   assert.equal(claudeSettingsFile(), path.join(sandbox, ".claude", "settings.json"));
@@ -63,9 +70,9 @@ test("defaults keep the documented per-app layout", () => {
   assert.equal(hermesEnvFile(), path.join(sandbox, ".hermes", ".env"));
   assert.equal(dshDir(), path.join(sandbox, ".dsh"));
   assert.equal(dshCredentialsFile(), path.join(sandbox, ".dsh", ".credentials.yaml"));
-  assert.equal(workbuddyDir(), path.join(sandbox, ".workbuddy"));
-  assert.equal(workbuddyModelsFile(), path.join(sandbox, ".workbuddy", "models.json"));
-  assert.equal(workbuddySettingsFile(), path.join(sandbox, ".workbuddy", "settings.json"));
+  assert.equal(workbuddyDir(), defaultWorkbuddyDir);
+  assert.equal(workbuddyModelsFile(), path.join(defaultWorkbuddyDir, "models.json"));
+  assert.equal(workbuddySettingsFile(), path.join(defaultWorkbuddyDir, "settings.json"));
 });
 
 test("the apps' own config-directory variables are honored, and empty values are ignored", () => {
@@ -99,7 +106,7 @@ test("the apps' own config-directory variables are honored, and empty values are
   assert.equal(codexDir(), path.join(sandbox, ".codex"));
   assert.equal(hermesDir(), path.join(sandbox, ".hermes"));
   assert.equal(dshDir(), path.join(sandbox, ".dsh"));
-  assert.equal(workbuddyDir(), path.join(sandbox, ".workbuddy"));
+  assert.equal(workbuddyDir(), defaultWorkbuddyDir, "a whitespace-only override is ignored");
   assert.equal(piDir("pi"), path.join(sandbox, ".pi", "agent"));
 });
 

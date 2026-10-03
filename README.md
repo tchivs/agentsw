@@ -115,7 +115,7 @@ dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.d
 | [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) | `~/.prime/agent/models.json` + `settings.json` | both |
 | [opencode](https://opencode.ai) | `~/.config/opencode/opencode.json`, `.jsonc` or `config.json` (the one that exists; comments preserved) | both |
 | [Hermes](https://pypi.org/project/hermes-agent/) | `~/.hermes/config.yaml` + `.env` (comments preserved) | both |
-| WorkBuddy | `~/.workbuddy/models.json` + `settings.json` | openai |
+| WorkBuddy | `~/.workbuddy/models.json` + `settings.json` (`%APPDATA%\workbuddy` on Windows) | openai |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) | `~/.dsh/settings.yaml` + `.credentials.yaml` | both |
 
 An agent that is not installed is skipped, not guessed at. `--apps codex,omp` narrows a run;
