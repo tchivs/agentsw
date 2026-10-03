@@ -11,6 +11,8 @@ import type { ProviderCandidate } from "../src/targets/types.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ssw-import-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CODEX_HOME;
 delete process.env.HERMES_HOME;
 delete process.env.WORKBUDDY_CONFIG_DIR;
 delete process.env.CODEBUDDY_CONFIG_DIR;

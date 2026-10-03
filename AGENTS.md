@@ -30,6 +30,8 @@ provider instead of duplicating it.
 
 **Management flow**: `provider-actions.ts` handles CLI/menu output; `rename.ts` and `remove.ts` plan changes; `config-transaction.ts` preflights snapshots, creates private backups, writes atomically per file, and rolls back earlier writes on failure. Never implement rename by applying a fresh provider then pruning the old one: that loses unmodeled config.
 
+**Output & machine mode**: `index.ts` registers the global `--json`, `-q/--quiet` and `--no-color` options and applies them in the Commander `preAction` hook through `configureOutput()`. `src/ui.ts` owns the output state (JSON/quiet flags, command name, in-menu flag) and every user-visible line; `src/progress.ts` owns the TTY-gated progress line; `src/report.ts` owns the pure, credential-free `--json` payload builders. Under `--json` stdout carries exactly one document (`{ok,command,version,data}`, or `{ok:false,…,"error":{"message":…}}` with exit status 1), prompts and progress are disabled, and no payload may contain a credential; `--dry-run --json` reports file paths only, never the staged configuration. Progress renders only for a TTY outside the test runner, `--json`/`--quiet` and `AGENTSW_NO_PROGRESS=1`; everywhere else it falls back to the single static `note()` line the CLI printed before. Standalone cancellation prints `cancelled` and exits 130, while inside the menu it throws `ActionCancelled` so the session survives.
+
 **Adapter writes**: Wrap each TargetApp with `transactionalTarget()`. `fsutil` stages reads/writes in scoped async context; commit only after all input validation and serialization succeeds. Preserve file permissions, use private new files, and reuse shared identity/YAML/JSONC helpers. Multi-target sync remains best-effort per target, not globally atomic.
 
 **Metadata flow**: `metadata.ts` merges tracked models.dev fields and `gateway.ts` public catalog data. `getMetadataMode(provider)` resolves `gatewayMetadata` as `undefined`/`'auto'` → auto, `true` → on, `false` → off. Auto is the default: models.dev first, then lazily load Gateway only for missing core fields (`contextWindow`, `maxOutput`, `reasoning`, `imageInput`), unchanged Gateway-owned fields needing refresh that the primary source has not replaced, or an identity conflict between tracked automatic values and an explicit canonical model ID. Name/prices/optional input limits/efforts alone never trigger auto lookup. On always consults Gateway for nonempty IDs; off never does and retains legacy models.dev lookup. Auto/on use conservative exact identities: a bare case-sensitive ID may map to a unique Gateway creator/model when primary evidence is absent or agrees; ambiguity rejects, qualified IDs never lose prefixes, and custom/ambiguous names require explicit aliases. Preserve manual/untracked values, custom model fields, discovered IDs and routing; auto values refresh only while they match their provenance snapshot. Gateway pricing stays reference-only in `ModelSpec.metadata`, never effective `cost` or routing; audit data never enters runtime agent configs. `--metadata-mode <auto|on|off>` is supported by add/quick/discover/import/refresh; legacy boolean flags remain explicit on/off, omitted options preserve saved settings, and invalid/conflicting options fail before fetch or mutation. `refresh --provider` updates saved metadata/settings without fetching a model list or writing agents; `models --provider --metadata` shows effective mode and audit. Automatic metadata lookup does not change sync behavior: ordinary sync does not fetch model lists or catalogs.
@@ -44,10 +46,10 @@ user which of those an explicit `--gateway-models` mapping can still fix.
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/` | All TypeScript source — entry point, commands, store, i18n, discovery, models.dev, filesystem utils |
+| `src/` | All TypeScript source — entry point, commands, output/progress layer, store, i18n, discovery, models.dev, filesystem utils |
 | `src/targets/` | Per-app adapters: `claudecode.ts`, `codex.ts`, `omp.ts`, `pistyle.ts` (pi/prime), `opencode.ts`, `hermes.ts`, `workbuddy.ts`, `dsh.ts`, `wire.ts`, `types.ts` |
 | `src/sources/` | External config importers: `ccswitch.ts` (cc-switch SQLite reader) |
-| `test/` | Node.js test runner: adapter roundtrips, YAML aliases, JSONC, naming/import identity, rename/removal transactions, CLI/menu workflows, and filters |
+| `test/` | Node.js test runner: adapter roundtrips, YAML aliases, JSONC, naming/import identity, rename/removal transactions, CLI/menu workflows, output flags, progress, tables, and filters |
 | `dist/` | Compiled output (gitignored) |
 | `.github/workflows/` | `ci.yml` (matrix test + smoke), `release.yml` (npm OIDC publish on tag) |
 
@@ -66,7 +68,8 @@ No linting or formatting tools are configured. No external test framework — us
 ## Code Conventions & Common Patterns
 
 ### Error Handling
-- `fail(message): never` — universal fatal error helper in `commands.ts`: writes `pc.red('error: ...')` to stderr, calls `process.exit(1)`.
+- `fail(message): never` — thin wrapper over `error()` from `src/ui.ts`: writes `pc.red('error: ...')` to stderr and exits 1, or emits the stdout error envelope under `--json`. A parse or validation error must name the file or provider id, never echo the config body.
+- Output goes through `src/ui.ts`, not `console.log` directly: `out()` is the primary result channel and is suppressed under `--json`; `note()` carries dimmed guidance on stderr and is dropped by `--quiet`; `warn()` keeps the literal `warning: ` prefix. `out()` must stay on `console.log`, and `error()`/`cancelInteractive()` on `process.exit` — tests capture output and exit codes by mocking those.
 - `runShell(command)` — `execSync` with `stdio: 'inherit'` for install/upgrade commands; throws on nonzero exit.
 - Target adapters wrapped in try/catch per-target in `runTargets()` — errors set `process.exitCode=1` but don't abort remaining targets.
 - `scanCandidates()` silently skips unparseable configs (reported elsewhere by `status`/`apply`).
@@ -112,7 +115,11 @@ New adapters also require schema/reference support in `rename.ts` and `remove.ts
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | CLI entry point (`#!/usr/bin/env node`); Commander program, locale init, command registration |
-| `src/commands.ts` | Provider creation/discovery/sync commands + shared helpers (`fail`, `table`, `createProvider`, `runTargets`) |
+| `src/commands.ts` | Provider creation/discovery/sync commands + shared helpers (`fail`, `createProvider`, `runTargets`, dry-run planning) |
+| `src/ui.ts` | Output state and rendering: JSON/quiet flags, `out`/`note`/`warn`/`error`, `ActionCancelled`, width-aware `table()` with ANSI-safe truncation |
+| `src/progress.ts` | TTY-gated progress line (`withProgress`); when disabled it writes the same single `note()` line as before |
+| `src/report.ts` | Pure, credential-free builders for every `--json` payload |
+| `src/app-paths.ts` | Single resolver for every config path (`AGENTSW_HOME`, `HOME`, `APPDATA`, `LOCALAPPDATA`) |
 | `src/provider-actions.ts` | Localized CLI/menu wrappers for rename, scoped removal, and local provider listing |
 | `src/rename.ts`, `src/remove.ts` | Schema-aware provider ID/reference migration and scoped deletion plans |
 | `src/config-transaction.ts` | Preflight, private unique backups, atomic writes, and rollback |
@@ -132,6 +139,8 @@ New adapters also require schema/reference support in `rename.ts` and `remove.ts
 | `src/sources/ccswitch.ts` | cc-switch SQLite importer (read-only, 3 shape parsers) |
 | `test/targets.test.ts` | Largest test file — apply/prune roundtrips for all 9 adapters |
 | `test/filter.test.ts` | Model filter semantics (dedup, include/exclude globs, pinned ids) |
+| `test/{ui,progress,table,report,output-flags}.test.ts` | Output layer: helpers and exit codes, JSON envelope, progress gating, `width: 0` byte-identical tables, and the end-to-end global-flag contract on a spawned CLI |
+| `test/app-paths.test.ts` | Config-path resolution across `AGENTSW_HOME` overrides and platform layouts |
 
 ## Runtime/Tooling Preferences
 
@@ -139,7 +148,7 @@ New adapters also require schema/reference support in `rename.ts` and `remove.ts
 - **Package manager**: npm (no pnpm/yarn.lock committed). `npm ci` in CI.
 - **TypeScript**: ESM (`"type": "module"`), target ES2022, `NodeNext` module resolution, `strict: true`, `noUncheckedIndexedAccess: true`.
 - **No linting/formatting tools** — no eslint, prettier, or editorconfig.
-- **Publishing**: OIDC trusted publishing (no `NPM_TOKEN`). Tag `v*` triggers `release.yml` → `npm publish --access public` + GitHub Release with CHANGELOG body.
+- **Publishing**: OIDC trusted publishing (no `NPM_TOKEN`). Tag `v*` triggers `release.yml` → `npm publish --access public` + GitHub Release with CHANGELOG body. The workflow rejects a tag that differs from `v$(package.json version)`, and it slices the release body from the `## [<version>]` CHANGELOG heading — so bump `package.json` and turn `[Unreleased]` into the dated version heading before tagging.
 - **Binary names**: `agentsw` and `asw` both point to `dist/index.js`.
 
 ## Testing & QA

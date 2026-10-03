@@ -8,7 +8,7 @@ import type { Catalog } from "../src/modelsdev.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-modelsdev-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const name of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
 const { findModelMeta, enrichModels } = await import("../src/modelsdev.js");
 after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 beforeEach((t) => {
@@ -58,4 +58,36 @@ test("dry-run catalog refresh retains fetched metadata without requiring a cache
   assert.deepEqual(loaded, catalog);
   assert.ok(getCatalogFetchedAt(loaded!));
   assert.equal(fs.existsSync(configDir), false);
+});
+
+test("a malformed cache degrades gracefully instead of failing the command", async (t) => {
+  const { loadCatalog } = await import("../src/modelsdev.js");
+  const { configDir } = await import("../src/store.js");
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "models-dev.json"), "{not json");
+  // offline: no fetch is attempted at all
+  assert.equal(await loadCatalog({ offline: true }), undefined);
+  // offline fetch failure: the same unreadable cache must not turn the fallback into a throw
+  assert.equal(await loadCatalog(), undefined);
+});
+
+test("a 200 response that is not a catalog is rejected and never cached", async (t) => {
+  const { loadCatalog } = await import("../src/modelsdev.js");
+  const { configDir } = await import("../src/store.js");
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
+  fs.rmSync(configDir, { recursive: true, force: true });
+  t.mock.method(globalThis, "fetch", async () => Response.json({ error: "rate limited" }));
+  assert.equal(await loadCatalog({ refresh: true }), undefined);
+  assert.equal(fs.existsSync(path.join(configDir, "models-dev.json")), false);
+});
+
+test("a shape-broken cache is ignored and replaced by a successful refetch", async (t) => {
+  const { loadCatalog } = await import("../src/modelsdev.js");
+  const { configDir } = await import("../src/store.js");
+  t.after(() => fs.rmSync(configDir, { recursive: true, force: true }));
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "models-dev.json"), JSON.stringify({ broken: "shape" }));
+  t.mock.method(globalThis, "fetch", async () => Response.json(catalog));
+  assert.deepEqual(await loadCatalog(), catalog);
 });

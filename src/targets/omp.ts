@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
 import YAML from "yaml";
-import { backupFile, home, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { ompAgentDir, ompModelsFiles } from "../app-paths.js";
 import { looksLikeEnvName } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
@@ -12,9 +12,11 @@ import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl, stripConflict
 /** Per-model keys this adapter writes; one that stops being emitted is cleared, not inherited. */
 const OWNED_MODEL_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
 
-const agentDir = path.join(home, ".omp", "agent");
-const modelsYml = path.join(agentDir, "models.yml");
-const modelsYaml = path.join(agentDir, "models.yaml");
+/** omp has no directory override; the file set is shared with remove/rename. */
+function modelFiles(): [string, string] {
+  const [yml, yaml] = ompModelsFiles();
+  return [yml!, yaml!];
+}
 
 function parseModelsDocument(file: string, text: string | undefined): YAML.Document {
   const doc = parseYamlMapping(file, text);
@@ -32,13 +34,16 @@ export const omp: TargetApp = transactionalTarget({
   id: "omp",
   name: "Oh My Pi",
   protocols: ["openai", "anthropic"],
-  configPaths: [modelsYml],
+  get configPaths() {
+    return [modelFiles()[0]];
+  },
 
-  detect: () => fs.existsSync(path.join(home, ".omp")),
+  detect: () => fs.existsSync(ompAgentDir()),
 
   async apply(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
     // Respect an existing models.yaml if models.yml is absent (omp precedence: yml then yaml).
+    const [modelsYml, modelsYaml] = modelFiles();
     const file = !fs.existsSync(modelsYml) && fs.existsSync(modelsYaml) ? modelsYaml : modelsYml;
     const text = readTextIfExists(file);
     const doc = parseModelsDocument(file, text);
@@ -104,6 +109,7 @@ export const omp: TargetApp = transactionalTarget({
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
+    const [modelsYml, modelsYaml] = modelFiles();
     const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
     if (!file) return { app: this.id, changed: [], notes: [], skipped: "no models.yml" };
     const doc = parseModelsDocument(file, readTextIfExists(file));
@@ -120,6 +126,7 @@ export const omp: TargetApp = transactionalTarget({
   },
 
   current(): string | undefined {
+    const [modelsYml, modelsYaml] = modelFiles();
     const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
     if (!file) return undefined;
     try {
@@ -132,6 +139,7 @@ export const omp: TargetApp = transactionalTarget({
   },
 
   candidates(): ProviderCandidate[] {
+    const [modelsYml, modelsYaml] = modelFiles();
     const file = fs.existsSync(modelsYml) ? modelsYml : fs.existsSync(modelsYaml) ? modelsYaml : undefined;
     if (!file) return [];
     type OmpConfig = { providers?: Record<string, Record<string, unknown>> };

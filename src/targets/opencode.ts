@@ -1,33 +1,40 @@
 import fs from "node:fs";
-import path from "node:path";
-import { appDataDir, backupFile, expandHome, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
-import { isJsonObject } from "../jsonc.js";
+import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { isJsonObject, readJsoncObject, editJsoncObject } from "../jsonc.js";
+import { opencodeConfigDirs, opencodeConfigFiles, opencodePrimaryConfigFile } from "../app-paths.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
-const customDir = process.env.OPENCODE_CONFIG_DIR?.trim();
-const configFile = customDir
-  ? path.join(expandHome(customDir), "opencode.json")
-  : path.join(appDataDir("opencode"), "opencode.json");
-
 /**
- * opencode: custom providers in ~/.config/opencode/opencode.json "provider" map,
- * backed by @ai-sdk/openai-compatible or @ai-sdk/anthropic npm loaders.
+ * opencode: custom providers in the "provider" map of its config document
+ * (opencode.json / opencode.jsonc / config.json under $OPENCODE_CONFIG_DIR or the
+ * default directory; $OPENCODE_CONFIG names one file explicitly), backed by
+ * @ai-sdk/openai-compatible or @ai-sdk/anthropic npm loaders. A JSONC round-trip
+ * keeps comments and every key agentsw does not own.
  */
 export const opencode: TargetApp = transactionalTarget({
   id: "opencode",
   name: "opencode",
   protocols: ["openai", "anthropic"],
-  configPaths: [configFile],
+  get configPaths() {
+    return [opencodePrimaryConfigFile()];
+  },
 
-  detect: () => fs.existsSync(path.dirname(configFile)),
+  detect: () =>
+    opencodeConfigFiles().some((file) => fs.existsSync(file)) ||
+    opencodeConfigDirs().some((dir) => fs.existsSync(dir)),
 
   async apply(provider: Provider): Promise<ApplyResult> {
+    const configFile = opencodePrimaryConfigFile();
     const notes: string[] = [];
-    const configValue = readJsonIfExists<Record<string, unknown>>(configFile);
-    const config = configValue === undefined ? { $schema: "https://opencode.ai/config.json" } : configValue;
-    if (!isJsonObject(config) || (config.provider !== undefined && !isJsonObject(config.provider))) {
+    const existed = readTextIfExists(configFile) !== undefined;
+    const document = readJsoncObject(configFile);
+    // Only a missing file is initialized with the schema hint; an existing {} stays as-is.
+    const config: Record<string, unknown> = existed
+      ? { ...document.value }
+      : { $schema: "https://opencode.ai/config.json" };
+    if (config.provider !== undefined && !isJsonObject(config.provider)) {
       throw new Error(`${configFile}: expected config and provider to be JSON objects`);
     }
 
@@ -95,25 +102,34 @@ export const opencode: TargetApp = transactionalTarget({
     };
     config.provider = providerMap;
     config.model = `${provider.id}/${provider.defaultModel}`;
-    if (provider.smallModel) config.small_model = `${provider.id}/${provider.smallModel}`;
+    if (provider.smallModel) {
+      config.small_model = `${provider.id}/${provider.smallModel}`;
+    } else if (typeof config.small_model === "string" && config.small_model.startsWith(`${provider.id}/`)) {
+      // This provider's own previous small model is obsolete; another provider's
+      // entry stays untouched, exactly as prune scopes its cleanup.
+      delete config.small_model;
+    }
 
     const backup = backupFile(configFile);
     if (backup) notes.push(`backup: ${backup}`);
-    writeFileAtomic(configFile, JSON.stringify(config, null, 2) + "\n");
+    writeFileAtomic(configFile, editJsoncObject(document, config));
     return { app: this.id, changed: [configFile], notes };
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
-    const config = readJsonIfExists<Record<string, unknown>>(configFile);
-    if (config !== undefined && (!isJsonObject(config) || (config.provider !== undefined && !isJsonObject(config.provider)))) {
+    const configFile = opencodePrimaryConfigFile();
+    const document = readJsoncObject(configFile);
+    const config: Record<string, unknown> = { ...document.value };
+    if (config.provider !== undefined && !isJsonObject(config.provider)) {
       throw new Error(`${configFile}: expected config and provider to be JSON objects`);
     }
-    const providerMap = config?.provider as Record<string, unknown> | undefined;
-    if (!config || !providerMap?.[provider.id]) {
+    const providerMap = { ...(config.provider as Record<string, unknown> | undefined) };
+    if (!providerMap[provider.id]) {
       return { app: this.id, changed: [], notes: [], skipped: `no provider.${provider.id} entry` };
     }
     delete providerMap[provider.id];
     if (Object.keys(providerMap).length === 0) delete config.provider;
+    else config.provider = providerMap;
     const notes: string[] = [];
     if (typeof config.model === "string" && config.model.startsWith(`${provider.id}/`)) {
       delete config.model;
@@ -124,21 +140,21 @@ export const opencode: TargetApp = transactionalTarget({
     }
     const backup = backupFile(configFile);
     if (backup) notes.push(`backup: ${backup}`);
-    writeFileAtomic(configFile, JSON.stringify(config, null, 2) + "\n");
+    writeFileAtomic(configFile, editJsoncObject(document, config));
     return { app: this.id, changed: [configFile], notes };
   },
 
   current(): string | undefined {
-    const config = readJsonIfExists<{ model?: string }>(configFile);
-    return config?.model;
+    const config = readJsoncObject(opencodePrimaryConfigFile()).value;
+    return typeof config.model === "string" ? config.model : undefined;
   },
 
   candidates(): ProviderCandidate[] {
-    const config = readJsonIfExists<{
+    const config = readJsoncObject(opencodePrimaryConfigFile()).value as {
       provider?: Record<string, { npm?: string; name?: string; options?: { baseURL?: string; apiKey?: string }; models?: Record<string, unknown> }>;
       model?: string;
-    }>(configFile);
-    if (!config?.provider) return [];
+    };
+    if (!config.provider) return [];
     const activeProvider = config.model?.includes("/") ? config.model.split("/")[0] : undefined;
     const activeModel =
       activeProvider && config.model && config.model.includes("/") ? config.model.split("/").slice(1).join("/") : undefined;

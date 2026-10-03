@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readJsonIfExists, writeFileAtomic } from "./fsutil.js";
 import { configDir } from "./store.js";
+import { warn } from "./ui.js";
 import type { ModelSpec } from "./types.js";
 
 const API_URL = "https://ai-gateway.vercel.sh/v1/models";
@@ -210,13 +211,13 @@ export async function loadGatewayCatalog(
     try {
       writeFileAtomic(CACHE_FILE, JSON.stringify({ version: 1, fetchedAt: catalog.fetchedAt, body }) + "\n", 0o600);
     } catch {
-      process.stderr.write("warning: could not cache AI Gateway metadata\n");
+      warn("could not cache AI Gateway metadata");
     }
     return catalog;
   } catch {
-    process.stderr.write(cached
-      ? "warning: could not refresh AI Gateway metadata; using cached metadata\n"
-      : "warning: could not load AI Gateway metadata\n");
+    warn(cached
+      ? "could not refresh AI Gateway metadata; using cached metadata"
+      : "could not load AI Gateway metadata");
     return cached;
   }
 }

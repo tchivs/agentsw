@@ -8,7 +8,7 @@ import type { Provider } from "../src/types.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-gateway-commands-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const key of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[key];
+for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[key];
 const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdRefreshMeta, cmdModels, cmdImport, cmdUse, cmdSync } = await import("../src/commands.js");
 const { loadStore, saveStore, configDir } = await import("../src/store.js");
 const { targets } = await import("../src/targets/index.js");

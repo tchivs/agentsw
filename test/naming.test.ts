@@ -12,7 +12,7 @@ import type { Protocol, Provider } from "../src/types.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-naming-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const name of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
 const { cmdAdd, cmdQuickAdd, cmdImport } = await import("../src/commands.js");
 const { configDir, loadStore, saveStore } = await import("../src/store.js");
 const { targets } = await import("../src/targets/index.js");

@@ -2,7 +2,9 @@ import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import semver from "semver";
-import { appDataDir, home, readJsonIfExists } from "./fsutil.js";
+import { home, readJsonIfExists } from "./fsutil.js";
+import { dshDir, workbuddyDir } from "./app-paths.js";
+import { isJson } from "./ui.js";
 
 export interface AppPackage {
   id: string;
@@ -89,7 +91,7 @@ export const appPackages: AppPackage[] = [
     name: "WorkBuddy",
     // Electron desktop app: version from its data dir; managed by its own updater.
     localVersion: () => {
-      const dir = workbuddyDataDir();
+      const dir = workbuddyDir();
       const j = readJsonIfExists<Record<string, unknown>>(path.join(dir, "last-launch.json"));
       const v = (j?.version ?? j?.appVersion) as string | undefined;
       if (v) return v;
@@ -112,13 +114,6 @@ export const appPackages: AppPackage[] = [
     localVersion: () => dshLocalVersion(),
   },
 ];
-
-// dsh config dir; respects $DSH_HOME.
-function dshHome(): string {
-  const env = process.env.DSH_HOME?.trim();
-  return env ? (env.startsWith("~") ? path.join(home, env.slice(1)) : env) :
-    process.platform === "win32" ? path.join(home, "AppData", "Local", "dsh") : path.join(home, ".dsh");
-}
 
 /** dsh version: search npx cache for @deepseek-ai/dsh, fall back to "?" if config dir exists. */
 function dshLocalVersion(): string | undefined {
@@ -146,13 +141,8 @@ function dshLocalVersion(): string | undefined {
     }
   }
   // 3. Config dir exists -> used via npx, version unknown
-  if (fs.existsSync(dshHome())) return "?";
+  if (fs.existsSync(dshDir())) return "?";
   return undefined;
-}
-
-function workbuddyDataDir(): string {
-  return process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim() ||
-    (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
 }
 
 const SEMVERISH = /\d+\.\d+(\.\d+)?([-.+][\w.-]+)?/;
@@ -246,10 +236,14 @@ export function isNewer(installed: string, latest: string): boolean {
 
 /** Run an install/upgrade command with live output. Throws on nonzero exit. */
 export function runShell(command: string): void {
+  // --json owns stdout, so the child's output moves to stderr to keep the document parseable.
+  const stdio: "inherit" | Array<"inherit" | number> = isJson()
+    ? ["inherit", process.stderr.fd, "inherit"]
+    : "inherit";
   if (process.platform === "win32") {
-    execSync(command, { stdio: "inherit", env: process.env });
+    execSync(command, { stdio, env: process.env });
   } else {
-    execFileSync("bash", ["-o", "pipefail", "-c", command], { stdio: "inherit", env: process.env });
+    execFileSync("bash", ["-o", "pipefail", "-c", command], { stdio, env: process.env });
   }
 }
 

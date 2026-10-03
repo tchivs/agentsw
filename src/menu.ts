@@ -23,9 +23,10 @@ import { cmdRemoveProvider, cmdRename } from "./provider-actions.js";
 import { listRemovableProviders } from "./remove.js";
 import { providerIdFromBaseUrl } from "./slug.js";
 import { targets } from "./targets/index.js";
+import { ActionCancelled, out, setInMenu } from "./ui.js";
 
 function bye(): never {
-  console.log(pc.dim(`\n${t("menu.bye")}`));
+  out(pc.dim(`\n${t("menu.bye")}`));
   process.exit(0);
 }
 
@@ -58,7 +59,7 @@ async function chooseLanguage(): Promise<void> {
   const store = loadStore();
   store.language = language as Locale;
   saveStore(store);
-  console.log(pc.green(t("language.saved")));
+  out(pc.green(t("language.saved")));
 }
 
 /** select an existing provider; prints a hint and returns undefined when none configured */
@@ -66,7 +67,7 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
   const store = loadStore();
   const ids = Object.keys(store.providers);
   if (ids.length === 0) {
-    console.log(pc.yellow(t("menu.noProvidersHint")));
+    out(pc.yellow(t("menu.noProvidersHint")));
     return undefined;
   }
   const { id } = await prompts(
@@ -75,17 +76,20 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
       name: "id",
       message,
       hint: t("menu.selectInstructions"),
-      choices: ids.map((pid) => {
-        const p = store.providers[pid]!;
-        return {
-          title: `${pid} · ${p.protocol} · ${t("menu.defaultModel")} ${p.defaultModel}${store.active === pid ? `  (${t("menu.active")})` : ""}`,
-          value: pid,
-        };
-      }),
+      choices: [
+        { title: t("menu.back"), value: "__back__" },
+        ...ids.map((pid) => {
+          const p = store.providers[pid]!;
+          return {
+            title: `${pid} · ${p.protocol} · ${t("menu.defaultModel")} ${p.defaultModel}${store.active === pid ? `  (${t("menu.active")})` : ""}`,
+            value: pid,
+          };
+        }),
+      ],
     },
     cancel,
   );
-  if (!id) return undefined;
+  if (!id || id === "__back__") return undefined;
   const p = store.providers[id]!;
   return { id, defaultModel: p.defaultModel, models: p.models.map((m) => m.id) };
 }
@@ -178,7 +182,7 @@ async function removeFromMenu(): Promise<void> {
     ? listRemovableProviders(app)
     : Object.values(loadStore().providers).map((provider) => ({ id: provider.id, name: provider.name }));
   if (!entries.length) {
-    console.log(pc.dim(t("menu.noRemovable")));
+    out(pc.dim(t("menu.noRemovable")));
     return;
   }
   const { selected } = await prompts({
@@ -186,10 +190,13 @@ async function removeFromMenu(): Promise<void> {
     name: "selected",
     message: t("menu.removeProvider"),
     hint: t("menu.selectInstructions"),
-    choices: entries.map((entry, index) => ({
-      title: `${entry.id} · ${entry.app ?? "agentsw"}${entry.name && entry.name !== entry.id ? ` · ${entry.name}` : ""}`,
-      value: index,
-    })),
+    choices: [
+      { title: t("menu.back"), value: "__back__" },
+      ...entries.map((entry, index) => ({
+        title: `${entry.id} · ${entry.app ?? "agentsw"}${entry.name && entry.name !== entry.id ? ` · ${entry.name}` : ""}`,
+        value: index,
+      })),
+    ],
   }, cancel);
   const picked = entries[selected];
   if (!picked) return;
@@ -206,14 +213,18 @@ async function removeFromMenu(): Promise<void> {
 }
 
 export async function cmdMenu(): Promise<void> {
-  if (!loadStore().language) await chooseLanguage();
-  console.log(pc.bold("agentsw") + pc.dim(t("menu.title")));
-  if (Object.keys(loadStore().providers).length === 0) {
-    console.log(pc.yellow(t("menu.noProviders")));
+  let store = loadStore();
+  if (!store.language) {
+    await chooseLanguage();
+    store = loadStore(); // chooseLanguage persists the preference, so re-read before trusting the rest
+  }
+  out(pc.bold("agentsw") + pc.dim(t("menu.title")));
+  if (Object.keys(store.providers).length === 0) {
+    out(pc.yellow(t("menu.noProviders")));
     if (await askToggle(t("menu.firstScan"), true)) await cmdImport({});
   }
   for (;;) {
-    console.log("");
+    out("");
     const { action } = await prompts(
       {
         type: "select",
@@ -242,103 +253,110 @@ export async function cmdMenu(): Promise<void> {
     );
     if (action === undefined || action === "quit") return;
 
-    if (action === "quickAdd") {
-      await cmdQuickAdd({});
-    } else if (action === "add") {
-      const { src } = await prompts(
-        {
+    // One guard for every action: a cancelled prompt unwinds to here, and any other failure reports itself
+    // and returns to the menu instead of ending the session.
+    setInMenu(true);
+    try {
+      if (action === "quickAdd") {
+        await cmdQuickAdd({});
+      } else if (action === "add") {
+        const { src } = await prompts(
+          {
+            type: "select",
+            name: "src",
+            message: t("menu.modelSource"),
+            hint: t("menu.selectInstructions"),
+            choices: [
+              { title: t("menu.modelDiscover"), value: "discover" },
+              { title: t("menu.modelManual"), value: "manual" },
+            ],
+          },
+          cancel,
+        );
+        await cmdAdd({ discover: src === "discover" });
+      } else if (action === "import") {
+        await cmdImport({});
+      } else if (action === "use") {
+        const picked = await pickProvider(t("menu.pickProvider"));
+        if (!picked) continue;
+        const apps = await pickApps(t("menu.pickApps"));
+        const { model } = await prompts(
+          {
+            type: picked.models.length > 1 ? "select" : null,
+            name: "model",
+            message: t("menu.defaultModel"),
+            hint: t("menu.selectInstructions"),
+            choices: [
+              { title: t("menu.keepDefault", { model: picked.defaultModel }), value: "" },
+              ...picked.models.filter((m) => m !== picked.defaultModel).map((m) => ({ title: m, value: m })),
+            ],
+          },
+          cancel,
+        );
+        await cmdUse(picked.id, { model: model || undefined, apps });
+      } else if (action === "status") {
+        cmdStatus();
+      } else if (action === "list") {
+        cmdList();
+      } else if (action === "sync") {
+        await cmdSync({ apps: await pickApps(t("menu.pickApps")) });
+      } else if (action === "discover") {
+        const picked = await pickProvider(t("menu.discoverFor"));
+        if (!picked) continue;
+        const sync = await askToggle(t("menu.pushRefresh"));
+        await cmdDiscover(picked.id, { sync, apps: sync ? await pickApps(t("menu.pickApps")) : undefined });
+      } else if (action === "metadata") {
+        const picked = await pickProvider(t("menu.metadataProvider"));
+        if (!picked) continue;
+        const current = loadStore().providers[picked.id]!;
+        const { metadataMode } = await prompts({
           type: "select",
-          name: "src",
-          message: t("menu.modelSource"),
+          name: "metadataMode",
+          message: t("menu.metadataMode"),
           hint: t("menu.selectInstructions"),
+          initial: ["auto", "on", "off"].indexOf(getMetadataMode(current)),
           choices: [
-            { title: t("menu.modelDiscover"), value: "discover" },
-            { title: t("menu.modelManual"), value: "manual" },
+            { title: t("menu.metadataAuto"), description: t("menu.metadataAutoHelp"), value: "auto" },
+            { title: t("menu.metadataOn"), description: t("menu.metadataOnHelp"), value: "on" },
+            { title: t("menu.metadataOff"), description: t("menu.metadataOffHelp"), value: "off" },
           ],
-        },
-        cancel,
-      );
-      await cmdAdd({ discover: src === "discover" });
-    } else if (action === "import") {
-      await cmdImport({});
-    } else if (action === "use") {
-      const picked = await pickProvider(t("menu.pickProvider"));
-      if (!picked) continue;
-      const apps = await pickApps(t("menu.pickApps"));
-      const { model } = await prompts(
-        {
-          type: picked.models.length > 1 ? "select" : null,
-          name: "model",
-          message: t("menu.defaultModel"),
-          hint: t("menu.selectInstructions"),
-          choices: [
-            { title: t("menu.keepDefault", { model: picked.defaultModel }), value: "" },
-            ...picked.models.filter((m) => m !== picked.defaultModel).map((m) => ({ title: m, value: m })),
-          ],
-        },
-        cancel,
-      );
-      await cmdUse(picked.id, { model: model || undefined, apps });
-    } else if (action === "status") {
-      cmdStatus();
-    } else if (action === "list") {
-      cmdList();
-    } else if (action === "sync") {
-      await cmdSync({ apps: await pickApps(t("menu.pickApps")) });
-    } else if (action === "discover") {
-      const picked = await pickProvider(t("menu.discoverFor"));
-      if (!picked) continue;
-      const sync = await askToggle(t("menu.pushRefresh"));
-      await cmdDiscover(picked.id, { sync, apps: sync ? await pickApps(t("menu.pickApps")) : undefined });
-    } else if (action === "metadata") {
-      const picked = await pickProvider(t("menu.metadataProvider"));
-      if (!picked) continue;
-      const current = loadStore().providers[picked.id]!;
-      const { metadataMode } = await prompts({
-        type: "select",
-        name: "metadataMode",
-        message: t("menu.metadataMode"),
-        hint: t("menu.selectInstructions"),
-        initial: ["auto", "on", "off"].indexOf(getMetadataMode(current)),
-        choices: [
-          { title: t("menu.metadataAuto"), description: t("menu.metadataAutoHelp"), value: "auto" },
-          { title: t("menu.metadataOn"), description: t("menu.metadataOnHelp"), value: "on" },
-          { title: t("menu.metadataOff"), description: t("menu.metadataOffHelp"), value: "off" },
-        ],
-      }, cancel);
-      await cmdRefreshMeta({ provider: picked.id, metadataMode });
-    } else if (action === "rename" || action === "remove") {
-      try {
+        }, cancel);
+        await cmdRefreshMeta({ provider: picked.id, metadataMode });
+      } else if (action === "rename" || action === "remove") {
         if (action === "rename") await renameFromMenu();
         else await removeFromMenu();
-      } catch (error) {
-        console.error(pc.red(error instanceof Error ? error.message : String(error)));
+      } else if (action === "apps") {
+        await cmdApps();
+        if (await askToggle(t("menu.upgrade"))) await cmdUpgrade([]);
+      } else if (action === "install") {
+        const installable = appPackages
+          .filter((a) => !installedVersion(a) && appCommand(a, "install"))
+          .map((a) => ({ title: `${a.id} · ${a.name}`, value: a.id }));
+        if (installable.length === 0) {
+          out(pc.dim(t("menu.allInstalled")));
+          continue;
+        }
+        const { appId } = await prompts(
+          {
+            type: "select",
+            name: "appId",
+            message: t("menu.pickApp"),
+            hint: t("menu.selectInstructions"),
+            choices: installable,
+          },
+          cancel,
+        );
+        if (!appId) continue;
+        await cmdInstall(appId);
+      } else if (action === "language") {
+        await chooseLanguage();
       }
-    } else if (action === "apps") {
-      await cmdApps();
-      if (await askToggle(t("menu.upgrade"))) await cmdUpgrade([]);
-    } else if (action === "install") {
-      const installable = appPackages
-        .filter((a) => !installedVersion(a) && appCommand(a, "install"))
-        .map((a) => ({ title: `${a.id} · ${a.name}`, value: a.id }));
-      if (installable.length === 0) {
-        console.log(pc.dim(t("menu.allInstalled")));
-        continue;
-      }
-      const { appId } = await prompts(
-        {
-          type: "select",
-          name: "appId",
-          message: t("menu.pickApp"),
-          hint: t("menu.selectInstructions"),
-          choices: installable,
-        },
-        cancel,
-      );
-      if (!appId) continue;
-      await cmdInstall(appId);
-    } else if (action === "language") {
-      await chooseLanguage();
+    } catch (error) {
+      // Ctrl-C inside a sub-prompt means "abandon this action", not "quit the app".
+      if (error instanceof ActionCancelled) out(pc.dim(t("menu.cancelledAction")));
+      else console.error(pc.red(error instanceof Error ? error.message : String(error)));
+    } finally {
+      setInMenu(false);
     }
   }
 }

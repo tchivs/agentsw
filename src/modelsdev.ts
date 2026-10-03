@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { configDir } from "./store.js";
 import { readJsonIfExists, writeFileAtomic } from "./fsutil.js";
+import { warn } from "./ui.js";
 import type { ModelSpec } from "./types.js";
 
 const API_URL = "https://models.dev/api.json";
@@ -41,42 +42,68 @@ export function getCatalogFetchedAt(catalog: Catalog): string | undefined {
   return catalogFetchedAt.get(catalog);
 }
 
+/**
+ * models.dev maps provider ids to providers, each carrying a model dictionary.
+ * A 200 response that is not shaped like a catalog (an error document from a proxy
+ * or mirror, say) must never be cached: later runs would then re-read the broken
+ * file on every load, long after the network recovered.
+ */
+function isCatalog(value: unknown): value is Catalog {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value as Record<string, unknown>).every((provider) => {
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+    const models = (provider as { models?: unknown }).models;
+    return !!models && typeof models === "object" && !Array.isArray(models);
+  });
+}
+
+/** A cache file that is missing, unreadable or malformed is simply not a catalog. */
 function readCachedCatalog(): Catalog | undefined {
-  const catalog = readJsonIfExists<Catalog>(CACHE_FILE);
-  if (catalog) {
-    try {
-      catalogFetchedAt.set(catalog, fs.statSync(CACHE_FILE).mtime.toISOString());
-    } catch {
-      // A concurrently removed cache still supplies useful metadata without a fetch time.
-    }
+  let parsed: unknown;
+  try {
+    parsed = readJsonIfExists<unknown>(CACHE_FILE);
+  } catch {
+    return undefined;
+  }
+  if (!isCatalog(parsed)) return undefined;
+  const catalog = parsed;
+  try {
+    catalogFetchedAt.set(catalog, fs.statSync(CACHE_FILE).mtime.toISOString());
+  } catch {
+    // A concurrently removed cache still supplies useful metadata without a fetch time.
   }
   return catalog;
 }
 
+function cacheIsFresh(): boolean {
+  try {
+    return Date.now() - fs.statSync(CACHE_FILE).mtimeMs < CACHE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
 export async function loadCatalog(opts: { refresh?: boolean; offline?: boolean } = {}): Promise<Catalog | undefined> {
   if (!opts.refresh) {
-    try {
-      const stat = fs.statSync(CACHE_FILE);
-      const fresh = Date.now() - stat.mtimeMs < CACHE_TTL_MS;
-      if (fresh || opts.offline) return readCachedCatalog();
-    } catch {
-      /* no cache */
-    }
+    const cached = readCachedCatalog();
+    // A malformed cache falls through to a fetch rather than failing the command.
+    if (cached && (opts.offline || cacheIsFresh())) return cached;
   }
   if (opts.offline) return readCachedCatalog();
   try {
     const res = await fetch(API_URL, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`models.dev responded ${res.status}`);
     const text = await res.text();
-    const catalog = JSON.parse(text) as Catalog; // validate before caching
+    const parsed: unknown = JSON.parse(text);
+    if (!isCatalog(parsed)) throw new Error("models.dev returned an unexpected catalog shape");
     writeFileAtomic(CACHE_FILE, text);
-    catalogFetchedAt.set(catalog, new Date().toISOString());
-    return catalog;
+    catalogFetchedAt.set(parsed, new Date().toISOString());
+    return parsed;
   } catch (err) {
     // network failure: fall back to stale cache if present
     const cached = readCachedCatalog();
     if (cached) return cached;
-    process.stderr.write(`warning: could not fetch models.dev catalog: ${(err as Error).message}\n`);
+    warn(`could not fetch models.dev catalog: ${(err as Error).message}`);
     return undefined;
   }
 }

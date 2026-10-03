@@ -7,8 +7,8 @@ import path from "node:path";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-discovery-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const name of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
-const { discoverProviderModels, probeProtocols } = await import("../src/discover.js");
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
+const { discoverProviderModels, probeProtocols, MAX_MODEL_PAGES } = await import("../src/discover.js");
 after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 beforeEach((t) => {
   t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network request"); });
@@ -44,6 +44,8 @@ test("operation URLs use pathname for roots, versioned paths, queries, and fragm
     ["https://fixture.example/Tenant/v1/?tenant=a&route=%2Fv2#fragment", "/Tenant/v1/models"],
     ["https://fixture.example/Tenant/v2?tenant=a&route=%2Fv2#fragment", "/Tenant/v2/models"],
     ["https://fixture.example/Tenant/v2beta1?tenant=a&route=%2Fv2#fragment", "/Tenant/v2beta1/models"],
+    ["https://fixture.example/Tenant/models?tenant=a&route=%2Fv2#fragment", "/Tenant/models"],
+    ["https://fixture.example/models?tenant=a&route=%2Fv2#fragment", "/models"],
   ];
   for (const [baseUrl, expectedPath] of cases) {
     const requests: URL[] = [];
@@ -74,6 +76,16 @@ test("pagination rejects missing cursors, repeated cursors and longer cursor cyc
   }
 });
 
+test("endless fresh cursors stop at the page cap instead of looping forever", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    return Response.json({ data: [{ id: `model-${calls}` }], has_more: true, last_id: `cursor-${calls}` });
+  });
+  await assert.rejects(discoverProviderModels(provider), /pagination exceeded 100 pages/);
+  assert.equal(calls, MAX_MODEL_PAGES, "the cap bounds the number of requests");
+});
+
 test("a later HTTP or malformed page rejects the entire discovery instead of returning partial models", async (t) => {
   for (const failedPage of [new Response("unavailable", { status: 503 }), Response.json({ data: "not an array" }), Response.json({ data: [], has_more: "yes" })]) {
     let calls = 0;
@@ -94,4 +106,29 @@ test("OpenAI models aliases and protocol-specific authentication remain supporte
   });
   assert.deepEqual(await discoverProviderModels({ ...provider, protocol: "openai" }), ["a", "b"]);
   assert.deepEqual(await probeProtocols(provider), ["openai"]);
+});
+
+test("pagination hooks report every page and leave the result untouched", async (t) => {
+  const pages = [
+    { data: [{ id: "b" }, { id: "a" }], has_more: true, last_id: "cursor-1" },
+    { data: [{ id: "a" }, { id: "c" }], has_more: false },
+  ];
+  let call = 0;
+  t.mock.method(globalThis, "fetch", async () => Response.json(pages[call++]));
+  const seen: Array<{ page: number; count: number }> = [];
+  assert.deepEqual(await discoverProviderModels(provider, { onPage: (info) => seen.push(info) }), ["a", "b", "c"]);
+  // count is the running deduplicated total, which is what the progress line shows.
+  assert.deepEqual(seen, [{ page: 1, count: 2 }, { page: 2, count: 3 }]);
+  call = 0;
+  assert.deepEqual(await discoverProviderModels(provider), ["a", "b", "c"], "hooks are optional");
+});
+
+test("probe hooks fire once per attempt, in probe order, before the request", async (t) => {
+  const attempts: string[] = [];
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id: "m" }] }));
+  assert.deepEqual(await probeProtocols(provider, { onAttempt: (protocol) => attempts.push(protocol) }), ["openai", "anthropic"]);
+  assert.deepEqual(attempts, ["openai", "anthropic"]);
+  attempts.length = 0;
+  assert.deepEqual(await probeProtocols(provider), ["openai", "anthropic"], "hooks are optional");
+  assert.deepEqual(attempts, []);
 });

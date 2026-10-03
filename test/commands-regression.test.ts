@@ -12,13 +12,14 @@ import type { TargetApp } from "../src/targets/types.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-commands-regression-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const name of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
-const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdUse, cmdSync, cmdApps, cmdInstall, cmdUpgrade } = await import("../src/commands.js");
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
+const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdModels, cmdUse, cmdSync, cmdApps, cmdInstall, cmdUpgrade } = await import("../src/commands.js");
 const { saveStore, loadStore, configDir } = await import("../src/store.js");
 const { targets } = await import("../src/targets/index.js");
 const { appPackages } = await import("../src/apps.js");
 const { writeFileAtomic, backupFile, setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
 const { transactionalTarget } = await import("../src/target-transaction.js");
+const { setLocale } = await import("../src/i18n.js");
 
 let messages: string[] = [];
 const originalExitCode = process.exitCode;
@@ -28,6 +29,8 @@ afterEach(() => {
   setDryRun(false);
 });
 beforeEach((t) => {
+  // Pin the locale: the assertions below match English message text.
+  setLocale("en");
   fs.rmSync(sandbox, { recursive: true, force: true });
   fs.mkdirSync(sandbox);
   saveStore({ version: 1, providers: {} });
@@ -196,6 +199,29 @@ test("discovery persists complete paginated results and retains old store on any
   failSecond = false;
   await cmdDiscover(original.id, {});
   assert.deepEqual(loadStore().providers[original.id]!.models.map((m) => m.id), ["first", "last", "m-small", "z-default"]);
+});
+
+test("discover keeps a pinned model out of the removed-upstream count", async (t) => {
+  const original = provider();
+  seed(original);
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id: "keep-base" }] }));
+  await cmdDiscover(original.id, {});
+  const output = messages.join("\n");
+  assert.equal(output.includes("removed upstream"), false, "a retained pinned model is not removed upstream");
+  assert.match(output, /\+0 \/ -0/);
+  assert.match(output, /no longer listed; keeping it anyway/);
+  assert.deepEqual(
+    loadStore().providers[original.id]!.models.map((m) => m.id).sort(),
+    ["keep-base", "m-small", "z-default"],
+  );
+});
+
+test("models rejects a non-positive or non-numeric --limit instead of dumping the catalog", async () => {
+  for (const limit of ["abc", "0", "-3", "1.5"]) {
+    await assert.rejects(cmdModels("keep", { limit }), /process\.exit\(1\)/, limit);
+  }
+  await cmdModels("keep", { limit: "1" });
+  assert.equal(messages.join("\n").split("keep-base").length - 1, 1);
 });
 
 test("a second protocol's failed later page prevents partial quick-add store updates", async (t) => {

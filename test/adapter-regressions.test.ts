@@ -10,6 +10,7 @@ import type { Provider } from "../src/types.js";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-adapter-regressions-"));
 const envNames = [
   "HOME", "AGENTSW_HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+  "CLAUDE_CONFIG_DIR", "CODEX_HOME",
   "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "HERMES_HOME", "DSH_HOME",
   "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG",
   "AGENTSW_ADAPTER_FIXTURE_ENV", "AGENTSW_ADAPTER_MISSING_ENV",
@@ -22,12 +23,14 @@ process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
 
 // All path-capturing modules load only after portable HOME and overrides are sandboxed.
 const { targets } = await import("../src/targets/index.js");
-const { piStyleTarget } = await import("../src/targets/pistyle.js");
 const { setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
+const { readJsoncObject } = await import("../src/jsonc.js");
+const readJsonc = (file: string): Record<string, unknown> => readJsoncObject(file).value as Record<string, unknown>;
 const { localProviderId } = await import("../src/provider-identity.js");
 const codex = targets.find((target) => target.id === "codex")!;
 const opencode = targets.find((target) => target.id === "opencode")!;
 const workbuddy = targets.find((target) => target.id === "workbuddy")!;
+const dsh = targets.find((target) => target.id === "dsh")!;
 
 const provider: Provider = {
   id: "fixture-provider",
@@ -303,9 +306,8 @@ test("WorkBuddy local selectors stay stable, account-qualified, opaque and separ
   }
 });
 
-test("every exported target and Pi factory stages apply and prune previews without filesystem changes", async () => {
-  const factory = piStyleTarget({ id: "factory-fixture", name: "Factory Fixture", configDirName: ".factory/agent", dirEnvVar: "AGENTSW_ADAPTER_MISSING_ENV" });
-  for (const target of [...targets, factory]) {
+test("every exported target stages apply and prune previews without filesystem changes", async () => {
+  for (const target of targets) {
     const supported = { ...provider, protocol: target.protocols[0]! };
     setDryRun(true);
     const absent = fileTree();
@@ -356,4 +358,103 @@ test("removing mixed-wire overrides preserves the explicit provider Responses de
     assert.equal(result.providers[provider.id].api, "openai-responses", id);
     assert.deepEqual(result.providers[provider.id].models.map((model: { id: string }) => model.id), ["keep"]);
   }
+});
+
+test("Codex never inherits the previous provider's reasoning effort", async () => {
+  const file = put(".codex/config.toml", stringifyToml({
+    model_provider: "previous-provider",
+    model: "previous-model",
+    model_reasoning_effort: "high",
+    model_providers: { [provider.id]: { base_url: "https://previous.example/v1" } },
+  }));
+  const read = (): Record<string, any> => parseToml(fs.readFileSync(file, "utf8")) as Record<string, any>;
+
+  await codex.apply(provider); // this provider pins no effort
+  assert.equal(read().model_reasoning_effort, undefined);
+
+  await codex.apply({ ...provider, reasoningEffort: "low" });
+  assert.equal(read().model_reasoning_effort, "low");
+
+  // a reasoning-disabled default model cannot carry an effort level either
+  await codex.apply({ ...provider, reasoningEffort: "high", models: [{ id: "model-a", reasoning: false }, { id: "model-b" }] });
+  assert.equal(read().model_reasoning_effort, undefined);
+});
+
+test("OpenCode clears its own stale small model but not another provider's", async () => {
+  const file = put(".config/opencode/opencode.json", { provider: {} });
+
+  await opencode.apply({ ...provider, smallModel: "model-b" });
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).small_model, `${provider.id}/model-b`);
+
+  await opencode.apply(provider); // this provider stops defining a small model
+  const cleared = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(cleared.small_model, undefined);
+  assert.equal(cleared.model, `${provider.id}/model-a`);
+
+  // a small model owned by a different provider is left for its owner
+  fs.writeFileSync(file, JSON.stringify({
+    provider: { other: { name: "Other", npm: "@ai-sdk/openai", options: { baseURL: "https://other.example/v1" }, models: { "model-b": {} } } },
+    model: "other/model-b",
+    small_model: "other/model-b",
+  }));
+  await opencode.apply(provider);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).small_model, "other/model-b");
+});
+
+test("OpenCode apply and prune preserve comments and unmodeled per-model keys", async () => {
+  const file = put(".config/opencode/opencode.json", [
+    "{",
+    "  // provider list owned by the user",
+    '  "provider": {',
+    `    "${provider.id}": {`,
+    '      "npm": "@ai-sdk/openai-compatible",',
+    '      "options": { "headers": { "X-Team": "platform" } },',
+    '      "models": { "model-a": { "tool_call": false, "note": "keep" } }',
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n"));
+
+  await opencode.apply(provider);
+  const applied = fs.readFileSync(file, "utf8");
+  assert.match(applied, /\/\/ provider list owned by the user/);
+  const entry = (readJsonc(file).provider as Record<string, { models: Record<string, { tool_call?: boolean; note?: string }> }>)[provider.id]!;
+  assert.equal(entry.models["model-a"]!.tool_call, false, "an unmodeled per-model key survives apply");
+  assert.equal(entry.models["model-a"]!.note, "keep");
+
+  await opencode.prune(provider);
+  const pruned = fs.readFileSync(file, "utf8");
+  assert.match(pruned, /\/\/ provider list owned by the user/, "the comment survives prune too");
+  assert.equal((readJsonc(file).provider as Record<string, unknown> | undefined)?.[provider.id], undefined);
+});
+
+test("dsh reads a wire declared only on agreeing models", async () => {
+  const file = put(".dsh/settings.yaml", [
+    "llm-pi-ai:",
+    "  providers:",
+    "    model-level:",
+    "      baseURL: https://model-level.example/v1",
+    "      apiKeyEnv: MODEL_LEVEL_KEY",
+    "      models:",
+    "        - id: m-one",
+    "          api: openai-responses",
+    "        - id: m-two",
+    "          api: openai-responses",
+    `    ${provider.id}:`,
+    "      baseURL: https://previous.example/v1",
+    "      apiKeyEnv: PREVIOUS_KEY",
+    "      models:",
+    "        - id: model-a",
+    "          api: openai-responses",
+    "",
+  ].join("\n"));
+  const candidate = dsh.candidates!().find((entry) => entry.id === "model-level");
+  assert.equal(candidate?.protocol, "openai");
+  assert.equal(candidate?.openaiApi, "responses");
+
+  // a sync keeps the wire the entry declared on its models instead of downgrading to completions
+  await dsh.apply(provider);
+  const settings = YAML.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(settings["llm-pi-ai"].providers[provider.id].api, "openai-responses");
 });

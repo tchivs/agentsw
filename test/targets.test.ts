@@ -11,6 +11,8 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "ssw-test-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 process.env.WORKBUDDY_CONFIG_DIR = path.join(sandbox, ".workbuddy");
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CODEX_HOME;
 delete process.env.CODEBUDDY_CONFIG_DIR;
 delete process.env.HERMES_HOME;
 delete process.env.DSH_HOME;
@@ -23,6 +25,8 @@ delete process.env.OPENCODE_CONFIG;
 // so the sandbox HOME above must be exported before the adapters load.
 const { targets, supportsProtocol } = await import("../src/targets/index.js");
 const { managedCredentialRef } = await import("../src/provider-identity.js");
+const { readJsoncObject } = await import("../src/jsonc.js");
+const readJsonc = (file: string): Record<string, unknown> => readJsoncObject(file).value as Record<string, unknown>;
 
 import type { Provider } from "../src/types.js";
 
@@ -342,6 +346,99 @@ test("dsh migrates a pre-release flat credentials document", async () => {
   assert.equal(creds.refs.DEEPSEEK_API_KEY, "sk-legacy");
   assert.equal(creds.refs[managedCredentialRef("flat")], provider.apiKey);
   await dsh.prune({ ...provider, id: "flat" });
+});
+
+test("claude and codex resolve their config directories per call from the env vars they honor", async () => {
+  const claude = targets.find((t) => t.id === "claude")!;
+  const codex = targets.find((t) => t.id === "codex")!;
+  const claudeDir = path.join(sandbox, "claude-env");
+  const codexDir = path.join(sandbox, "codex-env");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.mkdirSync(codexDir, { recursive: true });
+  process.env.CLAUDE_CONFIG_DIR = claudeDir;
+  process.env.CODEX_HOME = codexDir;
+  const defaultClaudePath = path.join(sandbox, ".claude", "settings.json");
+  const defaultBefore = fs.existsSync(defaultClaudePath) ? fs.readFileSync(defaultClaudePath, "utf8") : undefined;
+  try {
+    assert.deepEqual(claude.configPaths, [path.join(claudeDir, "settings.json")], "configPaths is resolved on access");
+    assert.deepEqual(codex.configPaths, [path.join(codexDir, "config.toml"), path.join(codexDir, "auth.json")]);
+    assert.equal(claude.detect(), true);
+    assert.equal(codex.detect(), true);
+
+    await claude.apply(provider);
+    await codex.apply(provider);
+    assert.ok(fs.existsSync(path.join(claudeDir, "settings.json")));
+    assert.ok(fs.existsSync(path.join(codexDir, "config.toml")));
+    const defaultClaude = defaultClaudePath;
+    const defaultNow = fs.existsSync(defaultClaude) ? fs.readFileSync(defaultClaude, "utf8") : undefined;
+    assert.equal(defaultNow, defaultBefore, "the default directory stays untouched");
+    assert.match(codex.current() ?? "", /testprov/);
+
+    await claude.prune(provider);
+    await codex.prune(provider);
+    const settings = JSON.parse(fs.readFileSync(path.join(claudeDir, "settings.json"), "utf8")) as { env?: Record<string, string> };
+    assert.equal(settings.env?.ANTHROPIC_BASE_URL, undefined, "prune removes the env path it wrote");
+  } finally {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CODEX_HOME;
+  }
+  assert.deepEqual(claude.configPaths, [path.join(sandbox, ".claude", "settings.json")], "dropping the variable restores the default");
+});
+
+test("opencode keeps comments, follows its file names and honors an explicit file", async () => {
+  const opencode = targets.find((t) => t.id === "opencode")!;
+  const dir = path.join(sandbox, "opencode-env");
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    // 1. comment-preserving edits in the primary opencode.json
+    const jsonFile = path.join(dir, "opencode.json");
+    fs.writeFileSync(jsonFile, '{\n  // keep this comment\n  "theme": "dark"\n}\n');
+    process.env.OPENCODE_CONFIG_DIR = dir;
+    assert.deepEqual(opencode.configPaths, [jsonFile], "the existing file is the primary target");
+    await opencode.apply(provider);
+    const afterApply = fs.readFileSync(jsonFile, "utf8");
+    assert.match(afterApply, /\/\/ keep this comment/);
+    assert.match(afterApply, /"theme": "dark"/);
+    assert.equal(((readJsonc(jsonFile).provider as Record<string, { options: { baseURL: string } }>).testprov).options.baseURL, provider.baseUrl);
+    await opencode.prune(provider);
+    const afterPrune = fs.readFileSync(jsonFile, "utf8");
+    assert.match(afterPrune, /\/\/ keep this comment/);
+    assert.equal(readJsonc(jsonFile).provider, undefined);
+
+    // 2. opencode.jsonc is discovered and edited in place
+    fs.rmSync(jsonFile);
+    const jsoncFile = path.join(dir, "opencode.jsonc");
+    fs.writeFileSync(jsoncFile, '{\n  // jsonc comment\n  "theme": "light"\n}\n');
+    assert.deepEqual(opencode.configPaths, [jsoncFile]);
+    await opencode.apply(provider);
+    const jsoncText = fs.readFileSync(jsoncFile, "utf8");
+    assert.match(jsoncText, /\/\/ jsonc comment/);
+    assert.equal(((readJsonc(jsoncFile).provider as Record<string, { options: { apiKey: string } }>).testprov).options.apiKey, provider.apiKey);
+    assert.equal(fs.existsSync(jsonFile), false, "apply writes the discovered file instead of creating a new one");
+    await opencode.prune(provider);
+
+    // 3. config.json is the last supported name in the same directory
+    fs.rmSync(jsoncFile);
+    const configJson = path.join(dir, "config.json");
+    fs.writeFileSync(configJson, '{\n  "theme": "system"\n}\n');
+    assert.deepEqual(opencode.configPaths, [configJson]);
+    await opencode.apply(provider);
+    assert.ok(readJsonc(configJson).provider);
+    await opencode.prune(provider);
+
+    // 4. OPENCODE_CONFIG pins an explicit file, even outside the search directories
+    fs.rmSync(configJson);
+    const explicit = path.join(sandbox, "explicit-config.json");
+    fs.writeFileSync(explicit, "{}\n");
+    process.env.OPENCODE_CONFIG = explicit;
+    assert.deepEqual(opencode.configPaths, [explicit]);
+    await opencode.apply(provider);
+    assert.ok(readJsonc(explicit).provider);
+    await opencode.prune(provider);
+  } finally {
+    delete process.env.OPENCODE_CONFIG_DIR;
+    delete process.env.OPENCODE_CONFIG;
+  }
 });
 
 test("opencode and hermes keep keys agentsw does not model", async () => {

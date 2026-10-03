@@ -11,7 +11,7 @@ const cli = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const storeFile = path.join(sandbox, ".config/agentsw/config.json");
 const piFile = path.join(sandbox, ".pi/agent/models.json");
 const env: NodeJS.ProcessEnv = { ...process.env, HOME: sandbox, USERPROFILE: sandbox, AGENTSW_HOME: sandbox };
-for (const key of ["AGENTSW_LANG", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"]) delete env[key];
+for (const key of ["AGENTSW_LANG", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"]) delete env[key];
 function put(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
@@ -40,6 +40,22 @@ for (const flag of ["--help", "--version"]) {
     assert.equal(fs.readFileSync(storeFile, "utf8"), "malformed fixture store");
   });
 }
+
+const pkgVersion = (JSON.parse(fs.readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { version: string }).version;
+
+test("root help advertises the global output flags", () => {
+  const result = run("--help");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--json/);
+  assert.match(result.stdout, /-q, --quiet/);
+  assert.match(result.stdout, /--no-color/);
+});
+
+test("--version still reports the packaged version verbatim", () => {
+  const result = run("--version");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), pkgVersion);
+});
 
 test("agent-only list and removal ignore malformed central configuration", () => {
   const listed = run("list", "--apps", "pi");

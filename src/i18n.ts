@@ -8,6 +8,7 @@ const messages = {
   "help.language": { en: "UI language: en | zh-CN (also AGENTSW_LANG)", "zh-CN": "界面语言: en | zh-CN (也可用 AGENTSW_LANG)" },
   "error.language": { en: "unsupported language \"{value}\"; use en or zh-CN", "zh-CN": "不支持语言 \"{value}\";请使用 en 或 zh-CN" },
   "error.unknownCommand": { en: "unknown command '{value}', see --help", "zh-CN": "未知命令 '{value}',请查看 --help" },
+  "error.limit": { en: "--limit must be a positive integer", "zh-CN": "--limit 必须是正整数" },
 
   "cmd.add": { en: "add or update a provider (interactive when flags are omitted)", "zh-CN": "添加或更新供应商(省略参数时进入交互流程)" },
   "cmd.quick": { en: "quick add — auto-detect protocol(s) and models from just base URL + API key", "zh-CN": "快速添加 — 只需 base URL + API key,自动探测协议和模型" },
@@ -135,8 +136,6 @@ const messages = {
   "menu.discoverFor": { en: "which provider's model list should be updated?", "zh-CN": "选择要更新模型列表的供应商" },
   "menu.pushRefresh": { en: "also sync this provider to agent configs after updating its model list?", "zh-CN": "更新模型列表后，是否同时将该供应商同步到智能体配置？" },
   "menu.removeProvider": { en: "which provider configuration should be deleted?", "zh-CN": "选择要删除配置的供应商" },
-  "menu.reallyRemove": { en: "really remove {id}?", "zh-CN": "确认删除 {id}?" },
-  "menu.pruneConfigs": { en: "also remove its entries from app configs?", "zh-CN": "同时从应用配置中移除其条目?" },
   "menu.upgrade": { en: "upgrade all installed agents that have updates?", "zh-CN": "是否升级所有有新版本的已安装智能体？" },
   "menu.installApp": { en: "Install a new coding agent", "zh-CN": "安装新的智能体" },
   "menu.pickApp": { en: "which agent to install?", "zh-CN": "安装哪个智能体?" },
@@ -155,7 +154,6 @@ const messages = {
   "add.baseUrlInvalid": { en: "must start with http(s)://", "zh-CN": "必须以 http(s):// 开头" },
   "add.apiKey": { en: "API key", "zh-CN": "API 密钥（API key）" },
   "add.models": { en: "model ids (comma separated, or leave blank to auto-discover)", "zh-CN": "模型 id(逗号分隔，留空则自动发现)" },
-  "add.cancelled": { en: "cancelled", "zh-CN": "已取消" },
 
   "import.already": { en: "already configured as {id}", "zh-CN": "已配置为 {id}" },
   "import.noneNew": { en: "nothing new to import (every discovered provider is already configured)", "zh-CN": "没有可导入的新供应商(发现项均已配置)" },
@@ -265,6 +263,162 @@ const messages = {
   },
   "refresh.checked": { en: "checked model metadata ({changed} provider(s) changed)", "zh-CN": "已检查模型元数据({changed} 个供应商有变化)" },
   "refresh.next": { en: "run `agentsw sync` to push updated metadata into app configs", "zh-CN": "运行 `agentsw sync` 将更新的元数据写入各智能体配置" },
+
+  "opt.json": {
+    en: "machine-readable JSON on stdout; disables prompts and progress",
+    "zh-CN": "stdout 输出机器可读 JSON(同时关闭交互提问与进度)",
+  },
+  "opt.quiet": {
+    en: "suppress progress, hints and warnings (keep results and errors)",
+    "zh-CN": "抑制进度、提示与警告(保留结果与错误)",
+  },
+  "opt.noColor": { en: "disable colored output (NO_COLOR also works)", "zh-CN": "关闭彩色输出(也支持 NO_COLOR)" },
+  "error.jsonRequiresCommand": {
+    en: "--json requires an explicit command (for example: agentsw status --json)",
+    "zh-CN": "--json 需要指定命令(例如 agentsw status --json)",
+  },
+
+  "common.cancelled": { en: "cancelled", "zh-CN": "已取消" },
+  "menu.cancelledAction": { en: "cancelled — back to menu", "zh-CN": "已取消 —— 返回菜单" },
+  "menu.back": { en: "← Back to main menu", "zh-CN": "← 返回主菜单" },
+
+  "progress.probe": { en: "probing {url} ({protocol}) …", "zh-CN": "正在探测 {url}({protocol})…" },
+  "progress.discoverPage": {
+    en: "listing models from {url} — page {page}, {count} models",
+    "zh-CN": "正在从 {url} 获取模型列表 —— 第 {page} 页,{count} 个模型",
+  },
+  "progress.catalog": { en: "loading models.dev catalog …", "zh-CN": "正在加载 models.dev 目录…" },
+  "progress.gateway": { en: "loading AI Gateway catalog …", "zh-CN": "正在加载 AI Gateway 目录…" },
+  "progress.metadata": { en: "supplementing model metadata …", "zh-CN": "正在补全模型元数据…" },
+  "progress.apps": {
+    en: "checking installed and latest versions … ({done}/{total})",
+    "zh-CN": "正在检查已安装版本与最新版本…({done}/{total})",
+  },
+  "progress.refresh": { en: "refreshing model metadata …", "zh-CN": "正在刷新模型元数据…" },
+
+  "add.retryDiscovery": {
+    en: "model discovery failed: {error}. Try again with the same endpoint?",
+    "zh-CN": "模型发现失败:{error}。用同一端点重试吗?",
+  },
+  "quick.retryProbe": {
+    en: "no protocol detected at {url}. Re-enter the base URL and API key?",
+    "zh-CN": "{url} 未探测到可用协议。重新输入 base URL 与 API key?",
+  },
+  "import.retryDiscovery": {
+    en: "discovery failed for {id}: {error}. Retry discovery for this provider?",
+    "zh-CN": "{id} 的模型发现失败:{error}。为该供应商重试?",
+  },
+  "import.skippedAfterFailure": {
+    en: "skipped {id}: discovery failed; add it later with agentsw add",
+    "zh-CN": "已跳过 {id}:发现失败;之后可用 agentsw add 补上",
+  },
+
+  "models.catalogUnavailable": {
+    en: "models.dev catalog unavailable (offline and no cache)\nrun: agentsw models --refresh (or check your network)",
+    "zh-CN": "models.dev 目录不可用(离线且无缓存)\n请运行 agentsw models --refresh(或检查网络)",
+  },
+  "models.usage": {
+    en: "usage: agentsw models <query> | agentsw models --provider <id>",
+    "zh-CN": "用法: agentsw models <查询> | agentsw models --provider <id>",
+  },
+  "models.noMatch": {
+    en: "no models.dev entries match \"{query}\"\nrun: agentsw models --refresh to update the catalog",
+    "zh-CN": "models.dev 中没有匹配 \"{query}\" 的条目\n请运行 agentsw models --refresh 更新目录",
+  },
+  "models.metadataRequiresProvider": {
+    en: "--metadata requires --provider (run: agentsw models --provider <id> --metadata)",
+    "zh-CN": "--metadata 需要配合 --provider(请运行 agentsw models --provider <id> --metadata)",
+  },
+  "status.noProviders": {
+    en: "no providers saved yet\nrun: agentsw add — or agentsw import to pull providers from your agents",
+    "zh-CN": "尚未保存任何供应商\n请运行 agentsw add,或用 agentsw import 从各智能体导入",
+  },
+
+  "apps.checking": { en: "checking installed and latest versions ...", "zh-CN": "正在检查已安装版本与最新版本..." },
+  "apps.notInstalled": { en: "not installed", "zh-CN": "未安装" },
+  "apps.installable": { en: "installable", "zh-CN": "可安装" },
+  "apps.upToDate": { en: "up to date", "zh-CN": "已是最新" },
+  "apps.upgradeAvailable": { en: "upgrade available", "zh-CN": "可升级" },
+  "apps.unknown": { en: "unknown", "zh-CN": "未知" },
+  "apps.checkFailedProbe": { en: "installed version check failed", "zh-CN": "已安装版本检查失败" },
+  "apps.checkFailedUnknown": { en: "installed version unknown", "zh-CN": "已安装版本未知" },
+  "apps.checkFailedLatest": { en: "latest version unavailable", "zh-CN": "无法获取最新版本" },
+  "apps.upgradeWith": { en: "upgrade with: agentsw upgrade {ids}", "zh-CN": "升级命令: agentsw upgrade {ids}" },
+
+  "install.unknownApp": { en: "unknown app \"{value}\" (supported: {apps})", "zh-CN": "未知应用 \"{value}\"(支持:{apps})" },
+  "install.notInstallable": {
+    en: "{name} is not installable on {platform} (or is managed by its desktop app)",
+    "zh-CN": "{name} 无法在 {platform} 上安装(或由桌面应用自行管理)",
+  },
+  "install.already": {
+    en: "{name} already installed ({version}); use `agentsw upgrade {id}`",
+    "zh-CN": "{name} 已安装({version});可用 `agentsw upgrade {id}`",
+  },
+  "install.installing": { en: "installing {name}: {command}", "zh-CN": "正在安装 {name}:{command}" },
+  "install.notDetected": {
+    en: "{name}: installer completed but the app is still not detected; check the installation and PATH",
+    "zh-CN": "{name}:安装命令已结束但仍未检测到该应用;请检查安装与 PATH",
+  },
+  "install.versionUnknown": {
+    en: "{name}: installer completed; app detected but version unknown",
+    "zh-CN": "{name}:安装命令已结束;检测到应用但版本未知",
+  },
+  "install.installed": { en: "{name} installed: {version}", "zh-CN": "{name} 已安装:{version}" },
+
+  "upgrade.unknownApps": { en: "unknown app(s): {ids}", "zh-CN": "未知应用:{ids}" },
+  "upgrade.checking": { en: "checking versions ...", "zh-CN": "正在检查版本..." },
+  "upgrade.statusUnknown": { en: "{id}: {reason}; update status unknown", "zh-CN": "{id}:{reason};升级状态未知" },
+  "upgrade.cannotDetermine": {
+    en: "could not determine update status for every installed app",
+    "zh-CN": "无法确定所有已安装应用的升级状态",
+  },
+  "upgrade.allCurrent": { en: "all checked apps are up to date", "zh-CN": "已检查的应用均为最新" },
+  "upgrade.none": { en: "no installed CLI-managed apps to upgrade", "zh-CN": "没有可升级的、由 CLI 管理的应用" },
+  "upgrade.notCli": { en: "{id}: not CLI-upgradable", "zh-CN": "{id}:不支持通过 CLI 升级" },
+  "upgrade.notInstalled": {
+    en: "{id}: not installed (use `agentsw install {id}`)",
+    "zh-CN": "{id}:未安装(请使用 `agentsw install {id}`)",
+  },
+  "upgrade.upgrading": { en: "upgrading {name}: {command}", "zh-CN": "正在升级 {name}:{command}" },
+  "upgrade.unknownVersion": {
+    en: "upgrade command completed but installed version is unknown or app is not detected",
+    "zh-CN": "升级命令已结束,但已安装版本未知或未检测到应用",
+  },
+  "upgrade.olderThanAvailable": {
+    en: "upgrade command completed but {version} is older than available {expected}",
+    "zh-CN": "升级命令已结束,但 {version} 低于可用的 {expected}",
+  },
+  "upgrade.done": { en: "{id} -> {version}", "zh-CN": "{id} -> {version}" },
+  "upgrade.failed": { en: "{id} upgrade failed: {message}", "zh-CN": "{id} 升级失败:{message}" },
+
+  "discover.defaultMissing": {
+    en: "default model {model} no longer listed; keeping it anyway",
+    "zh-CN": "默认模型 {model} 已不在列表中;仍然保留",
+  },
+  "discover.next": {
+    en: "run `agentsw sync` to push into app configs",
+    "zh-CN": "运行 `agentsw sync` 写入各智能体配置",
+  },
+
+  "dryRun.skip": { en: "skip", "zh-CN": "跳过" },
+  "dryRun.wouldWrite": {
+    en: "dry run — {count} file(s) would be written:",
+    "zh-CN": "预演 — 将写入 {count} 个文件:",
+  },
+  "preview.unchanged": { en: "unchanged", "zh-CN": "未变化" },
+  "preview.header": { en: "--- {file} (redacted configuration)", "zh-CN": "--- {file}(已脱敏配置)" },
+  "preview.contentWithheld": {
+    en: "[content withheld: unsupported or malformed configuration]",
+    "zh-CN": "[内容已隐去:配置格式不支持或无法解析]",
+  },
+  "preview.onlyRedacted": {
+    en: "[only redacted values or formatting changed]",
+    "zh-CN": "[仅脱敏值或格式发生变化]",
+  },
+  "preview.failedSafely": {
+    en: "configuration could not be previewed safely",
+    "zh-CN": "无法安全预览配置",
+  },
 } as const;
 
 export type MessageKey = keyof typeof messages;

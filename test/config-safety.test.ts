@@ -12,6 +12,7 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-config-safety-"))
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 for (const name of [
+  "CLAUDE_CONFIG_DIR", "CODEX_HOME",
   "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG",
   "HERMES_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR",
 ]) delete process.env[name];
@@ -222,8 +223,52 @@ for (const invalid of ["null", "[]", '{"providers":null}', '{"providers":[]}', "
   });
 }
 
-test("stale loaded stores reject after asynchronous waits; initial and repeated object saves succeed", async () => {
-  const initial: Store = { version: 1, providers: { fixture: provider } };
+test("store load rejects crash-causing shapes without echoing values or touching the file", () => {
+  const planted = "fake-config-safety-secret";
+  const cases: Array<[string, RegExp]> = [
+    ['{"version":2,"providers":{}}', /unsupported provider store version 2/],
+    ['{"version":"1","providers":{}}', /unsupported provider store version/],
+    ['{"version":null,"providers":{}}', /unsupported provider store version/],
+    ['{"version":1,"providers":{"fixture":null}}', /provider "fixture" is not an object/],
+    ['{"version":1,"providers":{"fixture":[]}}', /provider "fixture" is not an object/],
+    [`{"version":1,"providers":{"fixture":"${planted}"}}`, /provider "fixture" is not an object/],
+    [`{"version":1,"providers":{"fixture":{"apiKey":"${planted}"}}}`, /provider "fixture" has no models array/],
+    [`{"version":1,"providers":{"fixture":{"apiKey":"${planted}","models":{}}}}`, /provider "fixture" has no models array/],
+    [`{"version":1,"providers":{"fixture":{"apiKey":"${planted}","models":[null]}}}`, /model that is not an object/],
+    ['{"version":1,"providers":{"fixture":{"models":["fixture-model"]}}}', /model that is not an object/],
+  ];
+  const storePath = path.relative(sandbox, configFile);
+  for (const [text, expected] of cases) {
+    put(storePath, text);
+    assert.throws(() => loadStore(), (error: unknown) => {
+      assert.match((error as Error).message, expected);
+      assert.doesNotMatch((error as Error).message, new RegExp(planted), "the error must not echo a stored value");
+      return true;
+    });
+    assert.equal(fs.readFileSync(configFile, "utf8"), text, "a rejected store is left byte-identical");
+  }
+});
+
+test("store load still accepts tolerated shapes and preserves unknown fields", () => {
+  const storePath = path.relative(sandbox, configFile);
+  put(storePath, '{"providers":{"fixture":{"apiKey":"fixture-key","models":[]}}}');
+  assert.deepEqual(loadStore().providers.fixture!.models, [], "a missing version and an empty model list are fine");
+
+  put(storePath, JSON.stringify({
+    version: 1,
+    active: "fixture",
+    customTop: { kept: true },
+    providers: { fixture: { ...provider, vendorExtra: { nested: 1 } } },
+  }));
+  const store = loadStore();
+  assert.equal((store as unknown as Record<string, unknown>).customTop !== undefined, true, "unknown top-level fields survive");
+  assert.deepEqual((store.providers.fixture as unknown as Record<string, unknown>).vendorExtra, { nested: 1 });
+
+  put(storePath, '{"version":1,"providers":{}}\n');
+  assert.deepEqual(loadStore().providers, {});
+});
+
+test("stale loaded stores reject after asynchronous waits; initial and repeated object saves succeed", async () => {  const initial: Store = { version: 1, providers: { fixture: provider } };
   saveStore(initial);
   initial.active = provider.id;
   saveStore(initial);

@@ -6,7 +6,20 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import YAML from "yaml";
 import { commitFileChanges } from "./config-transaction.js";
 import type { FileChange } from "./config-transaction.js";
-import { appDataDir, drainPendingWrites, expandHome, home, localAppDataDir, setDryRun } from "./fsutil.js";
+import { drainPendingWrites, setDryRun } from "./fsutil.js";
+import {
+  dshCredentialsFile,
+  dshSettingsFiles,
+  hermesConfigFile,
+  hermesEnvFile,
+  ompConfigFiles,
+  ompModelsFiles,
+  opencodeConfigFiles,
+  piModelsFile,
+  piSettingsFile,
+  workbuddyDir,
+  workbuddyModelsFile,
+} from "./app-paths.js";
 import { editJsoncObject, isJsonObject, readJsoncObject } from "./jsonc.js";
 import { configFile } from "./store.js";
 import { endpointKey } from "./import.js";
@@ -170,46 +183,34 @@ function targetFiles(target: TargetApp, listing = false): TargetFiles {
   };
   switch (target.id) {
     case "omp": {
-      const dir = path.join(home, ".omp", "agent");
-      for (const name of ["models.yml", "models.yaml"]) add(path.join(dir, name), ["providers"]);
-      for (const name of ["config.yml", "config.yaml"]) refs(path.join(dir, name));
+      for (const file of ompModelsFiles()) add(file, ["providers"]);
+      for (const file of ompConfigFiles()) refs(file);
       break;
     }
     case "pi":
     case "prime": {
-      const env = process.env[target.id === "pi" ? "PI_CODING_AGENT_DIR" : "PRIME_AGENT_CODING_AGENT_DIR"];
-      const dir = env ? expandHome(env) : path.join(home, target.id === "pi" ? ".pi/agent" : ".prime/agent");
-      add(path.join(dir, "models.json"), ["providers"]);
-      refs(path.join(dir, "settings.json"));
+      add(piModelsFile(target.id), ["providers"]);
+      refs(piSettingsFile(target.id));
       break;
     }
     case "opencode": {
-      const dirs = new Set([appDataDir("opencode")]);
-      if (process.env.OPENCODE_CONFIG_DIR?.trim()) dirs.add(expandHome(process.env.OPENCODE_CONFIG_DIR.trim()));
-      const files = new Set<string>();
-      for (const dir of dirs) {
-        for (const name of ["config.json", "opencode.json", "opencode.jsonc"]) files.add(path.join(dir, name));
-      }
-      if (process.env.OPENCODE_CONFIG?.trim()) files.add(expandHome(process.env.OPENCODE_CONFIG.trim()));
-      for (const file of files) add(file, ["provider"]);
+      for (const file of opencodeConfigFiles()) add(file, ["provider"]);
       break;
     }
     case "codex":
       add(target.configPaths[0]!, ["model_providers"]);
       break;
     case "hermes": {
-      const dir = process.env.HERMES_HOME?.trim() || localAppDataDir("hermes");
-      add(path.join(dir, "config.yaml"), ["providers"]);
-      const file = path.resolve(dir, ".env");
+      add(hermesConfigFile(), ["providers"]);
+      const file = path.resolve(hermesEnvFile());
       if (!listing) result.extras.set(file, readText(file));
       break;
     }
     case "dsh": {
-      const dir = process.env.DSH_HOME?.trim() ? expandHome(process.env.DSH_HOME.trim()) : localAppDataDir("dsh");
-      const file = ["settings.yaml", "settings.yml", "settings.json"].map((name) => path.join(dir, name)).find((file) => fs.existsSync(file));
+      const file = dshSettingsFiles().find((candidate) => fs.existsSync(candidate));
       if (file) add(file, ["llm-pi-ai", "providers"]);
       if (!listing) {
-        const credentials = add(path.join(dir, ".credentials.yaml"));
+        const credentials = add(dshCredentialsFile());
         if (credentials) {
           const { version, refs } = credentials.value;
           const flat = version === undefined && refs === undefined && Object.values(credentials.value).every((value) => typeof value === "string");
@@ -543,9 +544,8 @@ async function planTargetRemoval(target: TargetApp, id: string, plans: Map<strin
 }
 
 function planWorkbuddyRemoval(target: TargetApp, id: string, plans: Map<string, FileChange>, stored?: Provider): boolean {
-  const override = process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim();
-  const dir = override ? expandHome(override) : (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
-  const file = path.join(dir, "models.json");
+  const dir = workbuddyDir();
+  const file = workbuddyModelsFile();
   const before = readText(file);
   if (before === undefined) return false;
   let raw: unknown;

@@ -113,13 +113,22 @@ dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.d
 | [Oh My Pi](https://omp.sh) (omp) | `~/.omp/agent/models.yml` (comments preserved) | both |
 | [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) | `~/.pi/agent/models.json` + `settings.json` | both |
 | [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) | `~/.prime/agent/models.json` + `settings.json` | both |
-| [opencode](https://opencode.ai) | `~/.config/opencode/opencode.json` | both |
+| [opencode](https://opencode.ai) | `~/.config/opencode/opencode.json`, `.jsonc` or `config.json` (the one that exists; comments preserved) | both |
 | [Hermes](https://pypi.org/project/hermes-agent/) | `~/.hermes/config.yaml` + `.env` (comments preserved) | both |
 | WorkBuddy | `~/.workbuddy/models.json` + `settings.json` | openai |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) | `~/.dsh/settings.yaml` + `.credentials.yaml` | both |
 
 An agent that is not installed is skipped, not guessed at. `--apps codex,omp` narrows a run;
 `--apps` with an uninstalled agent forces it.
+
+Every adapter honors the configuration-directory variable its app defines, and resolves it on
+each command, so `use`, `sync`, `status`, `rename` and `remove` always agree on the same files:
+`CLAUDE_CONFIG_DIR` (Claude Code), `CODEX_HOME` (Codex), `PI_CODING_AGENT_DIR` /
+`PRIME_AGENT_CODING_AGENT_DIR` (pi / prime-agent), `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG`
+(opencode), `HERMES_HOME` (Hermes), `DSH_HOME` (dsh), `WORKBUDDY_CONFIG_DIR` (WorkBuddy, with
+the legacy `CODEBUDDY_CONFIG_DIR` as fallback). An empty value is ignored, a leading `~` is
+expanded, and opencode is edited in place whichever of `opencode.json`, `opencode.jsonc` or
+`config.json` exists.
 
 The interactive menu asks the same question before writing: a multi-select where the first row
 is **all detected apps**, detected agents are listed first and undetected ones are marked. The
@@ -293,6 +302,38 @@ asw remove unused-provider --apps omp
 Do not combine `--apps` and `--prune`. Renames and removals preflight changes and create
 private backups before writes. App-only removal leaves the store intact, so a later explicit
 sync of a managed provider can add it back to that app.
+
+### Global options
+
+These work with every command, written before or after the subcommand:
+
+| Option | Effect |
+|---|---|
+| `--json` | write exactly one JSON document to stdout and nothing else; interactive prompts and progress are disabled, so a scripted run never blocks on input |
+| `-q, --quiet` | suppress progress, hints and warnings; results and errors are kept |
+| `--no-color` | disable colored output (`NO_COLOR=1` does the same; `FORCE_COLOR=1` forces color, `--no-color` wins) |
+| `--lang en\|zh-CN` | interface language |
+
+```bash
+asw status --json | jq '.data.apps[] | select(.current != .id)'
+asw use myproxy -a codex --dry-run --json   # file paths only, never config bodies
+asw list --quiet
+```
+
+Success is `{"ok":true,"command":"status","version":"…","data":{…}}`; a failure is
+`{"ok":false,…,"error":{"message":"…"}}` on stdout with exit code 1. `--json` overrides
+`--quiet`. Credentials never appear in a JSON payload, and `--json --dry-run` reports the file
+paths a run would touch — never the staged configuration. `install` and `upgrade` hand their
+stdio to the package manager, whose own output still reaches the terminal (under `--json` its
+stdout is routed to stderr so the JSON document stays parseable).
+
+Results go to stdout; progress, warnings and the dimmed next-step hints go to stderr. So
+`agentsw status > out.txt` captures only the table, and a script can read stderr for what
+happened without parsing it out of the result.
+
+Exit codes: `0` success, `1` error, `130` cancelled at a prompt. Without `--json`,
+`models --provider <id> --metadata` keeps printing its bare JSON object, so existing scripts
+are unaffected.
 
 ## How your configs are treated
 

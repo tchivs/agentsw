@@ -17,41 +17,27 @@ import { SafeConfigError, drainPendingWrites, readTextIfExists, setDryRun } from
 import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
+import { cancelInteractive, emitJson, error, isJson, note, out, table, warn, type TableOptions } from "./ui.js";
+import { startProgress, withProgress } from "./progress.js";
+import {
+  appsReport,
+  listReport,
+  modelsQueryReport,
+  providerMetadataReport,
+  providerModelsReport,
+  statusReport,
+  type AppReportRow,
+} from "./report.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
 
 /** Share successes and failures without fetching until a model actually needs the supplement. */
 function sharedGatewayLoader(refresh = false): () => Promise<GatewayCatalog | null> {
   let pending: Promise<GatewayCatalog | null> | undefined;
-  return () => pending ??= loadGatewayCatalog({ refresh }).then((catalog) => catalog ?? null);
+  return () => pending ??= withProgress(t("progress.gateway"), () => loadGatewayCatalog({ refresh }).then((catalog) => catalog ?? null));
 }
 
 function fail(message: string): never {
-  process.stderr.write(pc.red(`error: ${message}\n`));
-  process.exit(1);
-}
-
-function table(rows: string[][], header?: string[]): string {
-  const all = header ? [header, ...rows] : rows;
-  if (all.length === 0) return "";
-  const widths: number[] = [];
-  for (const row of all) {
-    row.forEach((cell, i) => {
-      // eslint-disable-next-line no-control-regex
-      const len = cell.replace(/\u001b\[[0-9;]*m/g, "").length;
-      widths[i] = Math.max(widths[i] ?? 0, len);
-    });
-  }
-  const render = (row: string[]) =>
-    row
-      .map((cell, i) => {
-        const len = cell.replace(/\u001b\[[0-9;]*m/g, "").length;
-        return cell + " ".repeat((widths[i] ?? 0) - len);
-      })
-      .join("  ")
-      .trimEnd();
-  const lines = all.map(render);
-  if (header) lines.splice(1, 0, widths.map((w) => "-".repeat(w)).join("  "));
-  return lines.join("\n");
+  error(message);
 }
 
 function fmtTokens(n?: number): string {
@@ -74,6 +60,13 @@ function modelRows(models: ModelSpec[]): string[][] {
 
 const MODEL_HEADER = ["MODEL", "CTX", "IN", "OUT", "REASONING", "$IN/$OUT per M"];
 
+/** Numbers right-align; the free-text columns shrink before ids on narrow terminals. */
+const MODEL_TABLE_OPTIONS: TableOptions = { align: ["left", "right", "right", "right", "left", "right"], truncate: [4, 0] };
+const MODEL_QUERY_OPTIONS: TableOptions = {
+  align: ["left", "left", "right", "right", "right", "left", "right"],
+  truncate: [5, 1, 0],
+};
+
 /**
  * Explain why some models stayed bare: only ambiguous ids are worth the user's
  * attention, so those are named separately from ids nothing can resolve.
@@ -81,10 +74,10 @@ const MODEL_HEADER = ["MODEL", "CTX", "IN", "OUT", "REASONING", "$IN/$OUT per M"
 function printUncatalogedHint(models: ModelSpec[], catalog?: Catalog, hint?: string): void {
   const bare = models.filter((m) => m.contextWindow === undefined && !m.cost);
   if (bare.length === 0) return;
-  console.log(pc.dim(t("meta.gap", { count: bare.length })));
+  out(pc.dim(t("meta.gap", { count: bare.length })));
   const { ambiguous, unknown, noCreatorRow } = classifyUnresolved(catalog, bare.map((m) => m.id), hint);
   for (const [key, ids] of [["meta.ambiguous", ambiguous], ["meta.noCreatorRow", noCreatorRow], ["meta.unknown", unknown]] as const) {
-    if (ids.length) console.log(pc.dim(`  ${t(key, { count: ids.length, ids: ids.join(", "), id: ids[0]! })}`));
+    if (ids.length) out(pc.dim(`  ${t(key, { count: ids.length, ids: ids.join(", "), id: ids[0]! })}`));
   }
 }
 
@@ -139,14 +132,14 @@ function parseFilterOpts(opts: { include?: string; exclude?: string; dedup?: boo
 
 function reportDropped(dropped: Array<{ id: string; reason: string }>): void {
   if (!dropped.length) return;
-  console.log(pc.dim(`filtered out ${dropped.length} model(s):`));
-  for (const d of dropped) console.log(pc.dim(`  - ${d.id} (${d.reason})`));
+  out(pc.dim(`filtered out ${dropped.length} model(s):`));
+  for (const d of dropped) out(pc.dim(`  - ${d.id} (${d.reason})`));
 }
 
 export async function cmdAdd(opts: AddOptions): Promise<void> {
   const store = loadStore();
   resolveMetadataOptions(opts);
-  const interactive = process.stdin.isTTY && !opts.yes;
+  const interactive = process.stdin.isTTY === true && !opts.yes && !isJson();
 
   let answers: Record<string, string> = {};
   if (interactive) {
@@ -198,7 +191,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
           message: t("add.models"),
         },
       ],
-      { onCancel: () => fail(t("add.cancelled")) },
+      { onCancel: () => cancelInteractive() },
     );
   } else {
     const required = opts.discover
@@ -230,7 +223,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const sameAccount = byId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey: answers.apiKey });
   const existing = byId ?? sameAccount;
   if (byId === undefined && explicitId && sameAccount) {
-    console.log(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
+    out(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
   }
   const id = byId?.id ?? sameAccount?.id ?? explicitId ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
   const openaiApi = protocol === "openai" ? (wire as OpenAIApi | undefined) ?? existing?.openaiApi : undefined;
@@ -241,11 +234,30 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const shouldDiscover = opts.discover || manualIds.length === 0;
   if (shouldDiscover) {
     if (!opts.discover) {
-      process.stderr.write(pc.dim(t("add.autoDiscover") + "\n"));
+      note(t("add.autoDiscover"));
     }
-    process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })}\n`));
-    const discovered = await discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol });
-    console.log(t("add.providerLists", { count: discovered.length }));
+    const discover = (): Promise<string[]> =>
+      withProgress(t("add.discovering", { url: baseUrl }), (progress) =>
+        discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol }, {
+          onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: baseUrl, page, count })),
+        }));
+    let discovered: string[] = [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        discovered = await discover();
+        break;
+      } catch (err) {
+        // Unattended runs keep failing fast; a person at the terminal gets a bounded retry, then manual ids.
+        if (!interactive) throw err;
+        if (attempt >= 2) break;
+        const { retry } = await prompts(
+          { type: "toggle", name: "retry", message: t("add.retryDiscovery", { error: (err as Error).message }), initial: true },
+          { onCancel: () => cancelInteractive() },
+        );
+        if (!retry) break;
+      }
+    }
+    if (discovered.length) out(t("add.providerLists", { count: discovered.length }));
     modelIds = [...new Set([...manualIds, ...discovered])];
   }
   const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
@@ -256,9 +268,10 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   modelIds = outcome.kept;
   if (modelIds.length === 0) fail(t("add.atLeastOne"));
 
-  const catalog = await loadCatalog();
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   const hint = opts.modelsDev ?? existing?.modelsDevId ?? guessProviderHint(catalog, answers.baseUrl!);
-  const models = await enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: existing?.models });
+  const models = await withProgress(t("progress.metadata"), () =>
+    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: existing?.models }));
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
 
   const defaultModel = opts.defaultModel ?? existing?.defaultModel ?? modelIds[0]!;
@@ -288,11 +301,15 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   saveStore(store);
 
   const savedStatus = t(existed ? "add.updated" : "add.added");
-  console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
-  console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
-  console.log(table(modelRows(models), MODEL_HEADER));
+  if (isJson()) {
+    emitJson({ ...providerModelsReport(provider, false), created: !existed, matched });
+    return;
+  }
+  out(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
+  out(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
+  out(table(modelRows(models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
   printUncatalogedHint(models, catalog, hint);
-  console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
+  note(`\n${t("add.next", { id: provider.id })}`);
 }
 
 /** Shared logic to create and save a single provider from discovered models. */
@@ -318,9 +335,10 @@ async function createProvider(opts: {
 }): Promise<Provider> {
   const { store, id, name, protocol, openaiApi, baseUrl, apiKey, modelIds, modelFilter } = opts;
   const metadataOptions = resolveMetadataOptions(opts, opts.existing);
-  const catalog = await loadCatalog();
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   const hint = opts.modelsDev ?? opts.existing?.modelsDevId ?? guessProviderHint(catalog, baseUrl);
-  const models = await enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: opts.existing?.models }, { gatewayLoader: opts.gatewayLoader });
+  const models = await withProgress(t("progress.metadata"), () =>
+    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: opts.existing?.models }, { gatewayLoader: opts.gatewayLoader }));
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
   const defaultModel = opts.defaultModel ?? opts.existing?.defaultModel ?? modelIds[0]!;
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
@@ -349,9 +367,9 @@ async function createProvider(opts: {
   if (!store.active) store.active = provider.id;
 
   const savedStatus = t(existed ? "add.updated" : "add.added");
-  console.log(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
-  console.log(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
-  console.log(table(modelRows(models), MODEL_HEADER));
+  out(pc.green(t("add.saved", { status: savedStatus, id: pc.bold(provider.id), protocol })));
+  out(t("add.metadata", { matched, total: models.length }) + (hint ? t("add.providerHint", { hint }) : ""));
+  out(table(modelRows(models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
   printUncatalogedHint(models, catalog, hint);
   return provider;
 }
@@ -381,7 +399,7 @@ export async function cmdQuickAdd(opts: {
 }): Promise<void> {
   const store = loadStore();
   resolveMetadataOptions(opts);
-  const interactive = process.stdin.isTTY && !opts.yes;
+  const interactive = process.stdin.isTTY === true && !opts.yes && !isJson();
 
   let baseUrl: string;
   let apiKey: string;
@@ -392,7 +410,7 @@ export async function cmdQuickAdd(opts: {
         { type: "text", name: "baseUrl", message: t("add.baseUrl"), validate: (v: string) => (/^https?:\/\//.test(v) ? true : t("add.baseUrlInvalid")) },
         { type: "password", name: "apiKey", message: t("add.apiKey") },
       ],
-      { onCancel: () => fail(t("add.cancelled")) },
+      { onCancel: () => cancelInteractive() },
     );
     baseUrl = normalizeUrl(answers.baseUrl);
     apiKey = answers.apiKey;
@@ -403,8 +421,33 @@ export async function cmdQuickAdd(opts: {
     apiKey = opts.apiKey;
   }
 
-  process.stderr.write(pc.dim(t("quick.probing", { url: baseUrl }) + "\n"));
-  const protocols = await probeProtocols({ baseUrl, apiKey });
+  const probe = (): Promise<Protocol[]> =>
+    withProgress(t("quick.probing", { url: baseUrl }), (progress) =>
+      probeProtocols({ baseUrl, apiKey }, {
+        onAttempt: (protocol) => progress.update(t("progress.probe", { url: baseUrl, protocol })),
+      }));
+
+  let protocols = await probe();
+
+  // A typo in the endpoint is the common cause of "nothing answered"; let the user correct it instead of exiting.
+  for (let attempt = 0; interactive && protocols.length === 0 && attempt < 2; attempt++) {
+    const { retry } = await prompts(
+      { type: "toggle", name: "retry", message: t("quick.retryProbe", { url: baseUrl }), initial: true },
+      { onCancel: () => cancelInteractive() },
+    );
+    if (!retry) break;
+    const again = await prompts(
+      [
+        { type: "text", name: "baseUrl", message: t("add.baseUrl"), initial: baseUrl, validate: (v: string) => (/^https?:\/\//.test(v) ? true : t("add.baseUrlInvalid")) },
+        { type: "password", name: "apiKey", message: t("add.apiKey") },
+      ],
+      { onCancel: () => cancelInteractive() },
+    );
+    if (!again.baseUrl || !again.apiKey) break;
+    baseUrl = normalizeUrl(again.baseUrl);
+    apiKey = again.apiKey;
+    protocols = await probe();
+  }
 
   if (protocols.length === 0) {
     fail(t("quick.noProtocol"));
@@ -421,15 +464,17 @@ export async function cmdQuickAdd(opts: {
     const sameAccount = byId ? undefined : findMatchingProvider(Object.values(store.providers), { protocol, baseUrl, apiKey });
     const existing = byId ?? sameAccount;
     if (byId === undefined && explicitId && sameAccount) {
-      console.log(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
+      out(pc.yellow(t("add.alreadyConfigured", { id: pc.bold(sameAccount.id) })));
     }
     const id = byId?.id ?? sameAccount?.id ?? explicitId ?? availableProviderId(providerIdFromBaseUrl(baseUrl, protocol), store.providers);
     const name = opts.name ?? existing?.name ?? (opts.id === undefined ? providerNameFromBaseUrl(baseUrl, protocol) : multi ? `${opts.id} (${protocol})` : opts.id);
     const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
 
-    process.stderr.write(pc.dim(`${t("add.discovering", { url: baseUrl })} [${protocol}]\n`));
-    const discovered = await discoverProviderModels({ baseUrl, apiKey, protocol });
-    console.log(t("add.providerLists", { count: discovered.length }));
+    const discovered = await withProgress(`${t("add.discovering", { url: baseUrl })} [${protocol}]`, (progress) =>
+      discoverProviderModels({ baseUrl, apiKey, protocol }, {
+        onPage: ({ page, count }) => progress.update(`${t("progress.discoverPage", { url: baseUrl, page, count })} [${protocol}]`),
+      }));
+    out(t("add.providerLists", { count: discovered.length }));
 
     const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
     let modelIds = [...new Set([...discovered, ...retained])];
@@ -438,7 +483,7 @@ export async function cmdQuickAdd(opts: {
     reportDropped(outcome.dropped);
     modelIds = outcome.kept;
     if (modelIds.length === 0) {
-      console.log(pc.yellow(t("quick.noModelsAfterFilter", { id })));
+      out(pc.yellow(t("quick.noModelsAfterFilter", { id })));
       continue;
     }
 
@@ -463,20 +508,28 @@ export async function cmdQuickAdd(opts: {
       gatewayLoader,
     });
     createdIds.push(provider.id);
-    console.log(pc.dim(`\n${t("add.next", { id: provider.id })}`));
+    note(`\n${t("add.next", { id: provider.id })}`);
   }
 
   saveStore(store);
+  if (isJson()) {
+    emitJson({ providers: createdIds });
+    return;
+  }
   if (createdIds.length > 0) {
-    console.log(pc.green(t("quick.summary", { count: createdIds.length, ids: createdIds.join(", ") })));
+    out(pc.green(t("quick.summary", { count: createdIds.length, ids: createdIds.join(", ") })));
   }
 }
 
 export function cmdList(): void {
   const store = loadStore();
+  if (isJson()) {
+    emitJson(listReport(store));
+    return;
+  }
   const ids = Object.keys(store.providers);
   if (ids.length === 0) {
-    console.log(t("list.none", { file: configFile }));
+    out(t("list.none", { file: configFile }));
     return;
   }
   const rows = ids.map((id) => {
@@ -490,24 +543,38 @@ export function cmdList(): void {
       String(p.models.length),
     ];
   });
-  console.log(table(rows, [" ", "ID", t("table.protocol"), "BASE URL", t("table.defaultModel"), t("table.models")]));
+  out(table(rows, [" ", "ID", t("table.protocol"), "BASE URL", t("table.defaultModel"), t("table.models")], {
+    truncate: [3, 1, 4],
+    align: ["left", "left", "left", "left", "left", "right"],
+  }));
 }
 
 export async function cmdPrune(id: string, opts: { apps?: string }): Promise<void> {
   const store = loadStore();
   const provider = getProvider(store, id);
-  console.log(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
-  reportResults(await runTargets("prune", provider, opts.apps));
+  out(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
+  const results = await runTargets("prune", provider, opts.apps);
+  if (isJson()) {
+    emitJson({
+      provider: id,
+      op: "prune",
+      apps: results.filter((r) => !r.skipped).map((r) => r.app),
+      files: results.flatMap((r) => (r.skipped ? [] : r.changed)),
+      skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
+    });
+    return;
+  }
+  reportResults(results);
 }
 
 function reportResults(results: ApplyResult[]): void {
   for (const r of results) {
     if (r.skipped) {
-      console.log(`${pc.yellow(t("common.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
+      out(`${pc.yellow(t("common.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
       continue;
     }
-    console.log(`${pc.green("ok  ")} ${r.app.padEnd(9)} ${r.changed.join(", ")}`);
-    for (const note of r.notes) console.log(`     ${" ".repeat(9)} ${pc.dim(note)}`);
+    out(`${pc.green("ok  ")} ${r.app.padEnd(9)} ${r.changed.join(", ")}`);
+    for (const note of r.notes) out(`     ${" ".repeat(9)} ${pc.dim(note)}`);
   }
 }
 
@@ -533,7 +600,7 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       results.push(await target[op](provider));
     } catch (err) {
       const safe = redactErrors && !(err instanceof SafeConfigError);
-      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${safe ? "configuration could not be previewed safely" : (err as Error).message}`) });
+      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${safe ? t("preview.failedSafely") : (err as Error).message}`) });
       process.exitCode = 1;
     }
   }
@@ -569,10 +636,10 @@ function previewDocument(file: string, text: string): unknown {
 function printFileDiff(file: string, next: string, apiKey: string): void {
   const before = readTextIfExists(file) ?? "";
   if (before === next) {
-    console.log(`${pc.dim("unchanged")} ${file}`);
+    out(`${pc.dim(t("preview.unchanged"))} ${file}`);
     return;
   }
-  console.log(pc.bold(`--- ${file} (redacted configuration)`));
+  out(pc.bold(t("preview.header", { file })));
   let oldText: string;
   let newText: string;
   try {
@@ -610,7 +677,7 @@ function printFileDiff(file: string, next: string, apiKey: string): void {
     oldText = JSON.stringify(oldDocument, redact, 2) ?? "";
     newText = JSON.stringify(newDocument, redact, 2) ?? "";
   } catch {
-    console.log(pc.dim("[content withheld: unsupported or malformed configuration]"));
+    out(pc.dim(t("preview.contentWithheld")));
     return;
   }
   const oldLines = oldText.split("\n");
@@ -622,14 +689,20 @@ function printFileDiff(file: string, next: string, apiKey: string): void {
   for (const line of oldLines) {
     const count = newSeen.get(line) ?? 0;
     if (count > 0) newSeen.set(line, count - 1);
-    else console.log(pc.red(`- ${line}`));
+    else out(pc.red(`- ${line}`));
   }
   for (const line of newLines) {
     const count = oldSeen.get(line) ?? 0;
     if (count > 0) oldSeen.set(line, count - 1);
-    else console.log(pc.green(`+ ${line}`));
+    else out(pc.green(`+ ${line}`));
   }
-  if (oldText === newText) console.log(pc.dim("[only redacted values or formatting changed]"));
+  if (oldText === newText) out(pc.dim(t("preview.onlyRedacted")));
+}
+
+interface SyncOutcome {
+  apps: string[];
+  files: string[];
+  skipped: Array<{ app: string; reason: string }>;
 }
 
 async function runWithOptionalDryRun(
@@ -637,20 +710,28 @@ async function runWithOptionalDryRun(
   provider: Provider,
   apps: string | undefined,
   dryRun: boolean | undefined,
-): Promise<void> {
+): Promise<SyncOutcome> {
+  const summarize = (results: ApplyResult[], files: string[]): SyncOutcome => ({
+    apps: results.map((r) => r.app),
+    files,
+    skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
+  });
   if (!dryRun) {
-    reportResults(await runTargets(op, provider, apps));
-    return;
+    const results = await runTargets(op, provider, apps);
+    reportResults(results);
+    return summarize(results, results.flatMap((r) => (r.skipped ? [] : r.changed)));
   }
   setDryRun(true);
   try {
     const results = await runTargets(op, provider, apps, true);
     const writes = drainPendingWrites();
     for (const r of results) {
-      if (r.skipped) console.log(`${pc.yellow("skip")} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
+      if (r.skipped) out(`${pc.yellow(t("dryRun.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
     }
-    console.log(pc.bold(`\ndry run — ${writes.length} file(s) would be written:\n`));
+    out(pc.bold(`\n${t("dryRun.wouldWrite", { count: writes.length })}\n`));
     for (const w of writes) printFileDiff(w.file, w.content, provider.apiKey);
+    // Only paths: the staged content is redacted for humans but still configuration, not a machine interface.
+    return summarize(results, writes.map((w) => w.file));
   } finally {
     setDryRun(false);
   }
@@ -670,8 +751,11 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
     store.active = id;
     saveStore(store);
   }
-  console.log(`${t("use.switching", { id: pc.bold(id), protocol: provider.protocol, model: provider.defaultModel })}\n`);
-  await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
+  out(`${t("use.switching", { id: pc.bold(id), protocol: provider.protocol, model: provider.defaultModel })}\n`);
+  const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
+  if (isJson()) {
+    emitJson({ provider: id, model: provider.defaultModel, dryRun: opts.dryRun === true, ...outcome });
+  }
 }
 
 export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean }): Promise<void> {
@@ -680,61 +764,87 @@ export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?:
   const id = opts.provider ?? store.active;
   if (!id) fail(t("sync.noActive"));
   const provider = getProvider(store, id);
-  console.log(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
-  await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
+  out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
+  const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
+  if (isJson()) {
+    emitJson({ provider: id, model: provider.defaultModel, dryRun: opts.dryRun === true, ...outcome });
+  }
 }
 
 export function cmdStatus(): void {
   const store = loadStore();
-  console.log(t("status.config", { file: configFile }));
-  console.log(`${t("status.active", { id: store.active ? pc.bold(store.active) : pc.dim(t("status.none")) })}\n`);
-  const rows = targets.map((target) => [
-    target.id,
-    target.detect() ? pc.green(t("common.yes")) : pc.dim(t("common.no")),
-    target.protocols.join("+"),
-    target.current() ?? pc.dim("-"),
-    pc.dim(target.configPaths[0] ?? ""),
+  const apps = targets.map((target) => ({
+    id: target.id,
+    detected: target.detect(),
+    protocols: [...target.protocols],
+    current: target.current() ?? null,
+    configPath: target.configPaths[0] ?? "",
+  }));
+  if (isJson()) {
+    emitJson(statusReport(configFile, store, apps));
+    return;
+  }
+  out(t("status.config", { file: configFile }));
+  out(`${t("status.active", { id: store.active ? pc.bold(store.active) : pc.dim(t("status.none")) })}\n`);
+  const rows = apps.map((app) => [
+    app.id,
+    app.detected ? pc.green(t("common.yes")) : pc.dim(t("common.no")),
+    app.protocols.join("+"),
+    app.current ?? pc.dim("-"),
+    pc.dim(app.configPath),
   ]);
-  console.log(table(rows, ["APP", t("table.found"), t("table.protocols"), t("table.current"), t("table.config")]));
+  out(table(rows, ["APP", t("table.found"), t("table.protocols"), t("table.current"), t("table.config")], {
+    truncate: [4, 3],
+  }));
+}
+
+/** `--limit` is user input: a non-numeric or non-positive value must fail, not silently list everything. */
+function parseLimit(value: string | undefined): number {
+  const limit = value === undefined ? 30 : Number(value);
+  if (!Number.isInteger(limit) || limit < 1) fail(t("error.limit"));
+  return limit;
 }
 
 export async function cmdModels(
   query: string | undefined,
   opts: { provider?: string; refresh?: boolean; limit?: string; metadata?: boolean },
 ): Promise<void> {
-  if (opts.metadata && !opts.provider) fail("--metadata requires --provider");
+  if (opts.metadata && !opts.provider) fail(t("models.metadataRequiresProvider"));
   if (opts.provider) {
     const store = loadStore();
     const provider = getProvider(store, opts.provider);
-    if (opts.metadata) {
-      console.log(JSON.stringify({
-        provider: provider.id,
-        gatewayMetadata: provider.gatewayMetadata ?? "auto",
-        metadataMode: getMetadataMode(provider),
-        gatewayModelAliases: provider.gatewayModelAliases ?? {},
-        models: provider.models.map(({ id, metadata }) => ({ id, metadata })),
-      }, null, 2));
+    if (isJson()) {
+      emitJson(providerModelsReport(provider, opts.metadata === true));
       return;
     }
-    console.log(`${pc.bold(provider.id)} (${provider.protocol}) · ${provider.baseUrl}`);
-    console.log(table(modelRows(provider.models), MODEL_HEADER));
-    printUncatalogedHint(provider.models, await loadCatalog(), provider.modelsDevId);
+    // Kept as a bare document without --json: existing scripts parse it directly.
+    if (opts.metadata) {
+      out(JSON.stringify(providerMetadataReport(provider), null, 2));
+      return;
+    }
+    out(`${pc.bold(provider.id)} (${provider.protocol}) · ${provider.baseUrl}`);
+    out(table(modelRows(provider.models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
+    printUncatalogedHint(provider.models, await withProgress(t("progress.catalog"), () => loadCatalog()), provider.modelsDevId);
     return;
   }
-  const catalog = await loadCatalog({ refresh: opts.refresh });
-  if (!catalog) fail("models.dev catalog unavailable (offline and no cache)");
-  if (!query) fail("usage: agentsw models <query> | agentsw models --provider <id>");
-  const limit = opts.limit ? Number(opts.limit) : 30;
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog({ refresh: opts.refresh }));
+  if (!catalog) fail(t("models.catalogUnavailable"));
+  if (!query) fail(t("models.usage"));
+  const limit = parseLimit(opts.limit);
   const hits = searchCatalog(catalog, query, limit);
+  if (isJson()) {
+    emitJson(modelsQueryReport(query, hits));
+    return;
+  }
   if (hits.length === 0) {
-    console.log(`no models.dev entries match "${query}"`);
+    out(t("models.noMatch", { query }));
     return;
   }
   const rows = hits.map((h) => {
     const row = modelRows([h.spec])[0]!;
     return [h.provider, ...row];
   });
-  console.log(table(rows, ["PROVIDER", ...MODEL_HEADER]));
+  out(table(rows, ["PROVIDER", ...MODEL_HEADER], MODEL_QUERY_OPTIONS));
 }
 
 export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string } = {}): Promise<void> {
@@ -742,20 +852,25 @@ export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string
   const providers = opts.provider ? [getProvider(store, opts.provider)] : Object.values(store.providers);
   resolveMetadataOptions(opts);
   for (const provider of providers) Object.assign(provider, resolveMetadataOptions(opts, provider));
-  const catalog = await loadCatalog({ refresh: true });
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog({ refresh: true }));
   const gatewayLoader = sharedGatewayLoader(true);
   let updated = 0;
   for (const provider of providers) {
     const before = JSON.stringify(provider.models);
-    provider.models = await enrichProviderModels(catalog, provider.models.map((m) => m.id), {
-      ...provider,
-      modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl),
-    }, { gatewayLoader });
+    provider.models = await withProgress(t("progress.metadata"), () =>
+      enrichProviderModels(catalog, provider.models.map((m) => m.id), {
+        ...provider,
+        modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl),
+      }, { gatewayLoader }));
     if (JSON.stringify(provider.models) !== before) updated++;
   }
   saveStore(store);
-  console.log(pc.green(t("refresh.checked", { changed: updated })));
-  if (updated > 0) console.log(pc.dim(t("refresh.next")));
+  if (isJson()) {
+    emitJson({ checked: providers.length, updated, providers: providers.map((p) => p.id) });
+    return;
+  }
+  out(pc.green(t("refresh.checked", { changed: updated })));
+  if (updated > 0) note(t("refresh.next"));
   for (const provider of providers) printUncatalogedHint(provider.models, catalog, provider.modelsDevId);
 }
 
@@ -771,34 +886,43 @@ export async function cmdDiscover(
   const flagFilter = parseFilterOpts(opts, provider.modelFilter);
   if (opts.filter === false) provider.modelFilter = undefined;
   else if (flagFilter) provider.modelFilter = flagFilter;
-  process.stderr.write(pc.dim(`discovering models from ${provider.baseUrl} ...\n`));
-  const listed = await discoverProviderModels(provider);
+  const listed = await withProgress(t("add.discovering", { url: provider.baseUrl }), (progress) =>
+    discoverProviderModels(provider, {
+      onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: provider.baseUrl, page, count })),
+    }));
   const pinned = [provider.defaultModel, provider.smallModel].filter((model): model is string => !!model);
   const outcome = applyModelFilter(listed, provider.modelFilter, pinned);
   reportDropped(outcome.dropped);
   const ids = outcome.kept;
+  // Pinned ids survive a listing that dropped them, so they are not "removed upstream".
+  const retainedIds = [...new Set([...ids, ...pinned])];
+  const retained = new Set(retainedIds);
   const known = provider.models.map((m) => m.id);
   const added = ids.filter((m) => !known.includes(m));
-  const gone = known.filter((m) => !ids.includes(m));
-  const catalog = await loadCatalog();
-  const retainedIds = [...new Set([...ids, ...pinned])];
-  provider.models = await enrichProviderModels(catalog, retainedIds, { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) });
+  const gone = known.filter((m) => !retained.has(m));
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
+  provider.models = await withProgress(t("progress.metadata"), () =>
+    enrichProviderModels(catalog, retainedIds, { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) }));
   if (!ids.includes(provider.defaultModel)) {
-    console.log(pc.yellow(`default model ${provider.defaultModel} no longer listed; keeping it anyway`));
+    out(pc.yellow(t("discover.defaultMissing", { model: provider.defaultModel })));
   }
   saveStore(store);
-  console.log(
+  if (isJson()) {
+    emitJson({ provider: id, models: ids.length, added, removed: gone });
+    return;
+  }
+  out(
     `${pc.bold(id)}: ${ids.length} models (${pc.green(`+${added.length}`)} / ${pc.red(`-${gone.length}`)})` +
       (added.length ? `\n  new: ${added.join(", ")}` : "") +
       (gone.length ? `\n  removed upstream: ${gone.join(", ")}` : ""),
   );
-  console.log(table(modelRows(provider.models), MODEL_HEADER));
+  out(table(modelRows(provider.models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
   printUncatalogedHint(provider.models, catalog, provider.modelsDevId);
   if (opts.sync) {
-    console.log("");
+    out("");
     await cmdSync({ provider: id, apps: opts.apps });
   } else {
-    console.log(pc.dim("\nrun `agentsw sync` to push into app configs"));
+    note(`\n${t("discover.next")}`);
   }
 }
 
@@ -812,104 +936,148 @@ interface AppRow {
   checkFailed?: string;
 }
 
-async function collectAppRows(): Promise<AppRow[]> {
+async function collectAppRows(onProgress?: (done: number, total: number) => void): Promise<AppRow[]> {
+  const total = appPackages.length;
+  let done = 0;
   return Promise.all(
     appPackages.map(async (app) => {
-      const [installedResult, latestResult] = await Promise.allSettled([
-        Promise.resolve().then(() => installedVersion(app)),
-        latestVersion(app),
-      ]);
-      const installed = installedResult.status === "fulfilled" ? installedResult.value : "?";
-      const latest = latestResult.status === "fulfilled" ? latestResult.value : undefined;
-      const knownInstalled = normalizeAppVersion(installed);
-      const knownLatest = normalizeAppVersion(latest);
-      const checkFailed = installedResult.status === "rejected"
-        ? "installed version check failed"
-        : installed && !knownInstalled
-          ? "installed version unknown"
-          : installed && !knownLatest
-            ? "latest version unavailable"
-            : undefined;
-      return {
-        id: app.id,
-        name: app.name,
-        installed,
-        latest,
-        upgradable: !!knownInstalled && !!knownLatest && isNewer(knownInstalled, knownLatest),
-        installable: !installed && !!appCommand(app, "install"),
-        checkFailed,
-      };
+      try {
+        const [installedResult, latestResult] = await Promise.allSettled([
+          Promise.resolve().then(() => installedVersion(app)),
+          latestVersion(app),
+        ]);
+        const installed = installedResult.status === "fulfilled" ? installedResult.value : "?";
+        const latest = latestResult.status === "fulfilled" ? latestResult.value : undefined;
+        const knownInstalled = normalizeAppVersion(installed);
+        const knownLatest = normalizeAppVersion(latest);
+        const checkFailed = installedResult.status === "rejected"
+          ? t("apps.checkFailedProbe")
+          : installed && !knownInstalled
+            ? t("apps.checkFailedUnknown")
+            : installed && !knownLatest
+              ? t("apps.checkFailedLatest")
+              : undefined;
+        return {
+          id: app.id,
+          name: app.name,
+          installed,
+          latest,
+          upgradable: !!knownInstalled && !!knownLatest && isNewer(knownInstalled, knownLatest),
+          installable: !installed && !!appCommand(app, "install"),
+          checkFailed,
+        };
+      } finally {
+        onProgress?.(++done, total);
+      }
     }),
   );
 }
 
+type AppStatus = "upgradable" | "installable" | "not-installed" | "unknown" | "up-to-date";
+
+function appStatus(row: AppRow): AppStatus {
+  if (row.upgradable) return "upgradable";
+  if (!row.installed) return row.installable ? "installable" : "not-installed";
+  return row.checkFailed || !normalizeAppVersion(row.latest) ? "unknown" : "up-to-date";
+}
+
+function appStatusLabel(status: AppStatus): string {
+  switch (status) {
+    case "upgradable": return pc.yellow(t("apps.upgradeAvailable"));
+    case "installable": return pc.dim(t("apps.installable"));
+    case "not-installed": return pc.dim("-");
+    case "unknown": return pc.dim(t("apps.unknown"));
+    case "up-to-date": return pc.green(t("apps.upToDate"));
+  }
+}
+
 export async function cmdApps(): Promise<void> {
-  process.stderr.write(pc.dim("checking installed and latest versions ...\n"));
-  const rows = await collectAppRows();
-  console.log(
+  const rows = await withProgress(t("apps.checking"), (progress) =>
+    collectAppRows((done, total) => progress.update(t("progress.apps", { done, total }))));
+  if (isJson()) {
+    const report: AppReportRow[] = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      installed: row.installed,
+      latest: row.latest,
+      upgradable: row.upgradable,
+      installable: row.installable,
+      status: appStatus(row),
+    }));
+    emitJson(appsReport(report));
+    return;
+  }
+  out(
     table(
       rows.map((r) => [
         r.id,
-        r.installed ?? pc.dim("not installed"),
+        r.installed ?? pc.dim(t("apps.notInstalled")),
         r.latest ?? pc.dim("?"),
-        r.upgradable
-          ? pc.yellow("upgrade available")
-          : !r.installed
-            ? r.installable
-              ? pc.dim("installable")
-              : pc.dim("-")
-            : r.checkFailed || !normalizeAppVersion(r.latest)
-              ? pc.dim("unknown")
-              : pc.green("up to date"),
+        appStatusLabel(appStatus(r)),
       ]),
       ["APP", "INSTALLED", "LATEST", "STATUS"],
     ),
   );
   const upgradable = rows.filter((r) => r.upgradable).map((r) => r.id);
-  if (upgradable.length) console.log(pc.dim(`\nupgrade with: agentsw upgrade ${upgradable.join(" ")}`));
+  if (upgradable.length) note(`\n${t("apps.upgradeWith", { ids: upgradable.join(" ") })}`);
 }
 
 export async function cmdInstall(id: string): Promise<void> {
   const app = appPackages.find((a) => a.id === id);
-  if (!app) fail(`unknown app "${id}" (supported: ${appPackages.map((a) => a.id).join(", ")})`);
+  if (!app) fail(t("install.unknownApp", { value: id, apps: appPackages.map((a) => a.id).join(", ") }));
   const installCmd = appCommand(app, "install");
-  if (!installCmd) fail(`${app.name} is not installable on ${process.platform} (or is managed by its desktop app)`);
+  if (!installCmd) fail(t("install.notInstallable", { name: app.name, platform: process.platform }));
   const installed = installedVersion(app);
   if (installed) {
-    console.log(`${app.name} already installed (${installed}); use \`agentsw upgrade ${id}\``);
+    if (isJson()) {
+      emitJson({ app: id, status: "already-installed", version: installed });
+      return;
+    }
+    out(t("install.already", { name: app.name, version: installed, id }));
     return;
   }
-  console.log(`installing ${app.name}: ${pc.dim(installCmd)}`);
+  out(t("install.installing", { name: app.name, command: pc.dim(installCmd) }));
   runShell(installCmd);
   const detected = installedVersion(app);
-  if (!detected) throw new Error(`${app.name}: installer completed but the app is still not detected; check the installation and PATH`);
+  if (!detected) throw new Error(t("install.notDetected", { name: app.name }));
   const version = normalizeAppVersion(detected);
   if (!version) {
-    console.log(pc.yellow(`${app.name}: installer completed; app detected but version unknown`));
+    if (isJson()) error(t("install.versionUnknown", { name: app.name }));
+    out(pc.yellow(t("install.versionUnknown", { name: app.name })));
     process.exitCode = 1;
     return;
   }
-  console.log(pc.green(`${app.name} installed: ${version}`));
+  if (isJson()) {
+    emitJson({ app: id, status: "installed", version });
+    return;
+  }
+  out(pc.green(t("install.installed", { name: app.name, version })));
 }
 
 export async function cmdUpgrade(ids: string[]): Promise<void> {
   let selected = appPackages.filter((a) => ids.length === 0 || ids.includes(a.id));
   const unknown = ids.filter((id) => !appPackages.some((a) => a.id === id));
-  if (unknown.length) fail(`unknown app(s): ${unknown.join(", ")}`);
+  if (unknown.length) fail(t("upgrade.unknownApps", { ids: unknown.join(", ") }));
   const expectedVersions = new Map<string, string>();
+  const upgraded: Array<{ id: string; version: string }> = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
   if (ids.length === 0) {
     // no args: upgrade everything that is installed and outdated
-    process.stderr.write(pc.dim("checking versions ...\n"));
-    const rows = await collectAppRows();
+    const rows = await withProgress(t("upgrade.checking"), (progress) =>
+      collectAppRows((done, total) => progress.update(t("progress.apps", { done, total }))));
     const managed = rows.filter((row) => !!appCommand(appPackages.find((app) => app.id === row.id)!, "upgrade"));
     const failed = managed.filter((row) => row.checkFailed);
-    for (const row of failed) console.log(pc.yellow(`${row.id}: ${row.checkFailed}; update status unknown`));
+    for (const row of failed) out(pc.yellow(t("upgrade.statusUnknown", { id: row.id, reason: row.checkFailed! })));
     if (failed.length) process.exitCode = 1;
     const upgradable = managed.filter((row) => row.upgradable);
     if (upgradable.length === 0) {
-      if (failed.length) console.log("could not determine update status for every installed app");
-      else if (managed.some((row) => row.installed)) console.log("all checked apps are up to date");
-      else console.log("no installed CLI-managed apps to upgrade");
+      if (isJson()) {
+        emitJson({ upgraded, skipped: failed.map((row) => ({ id: row.id, reason: row.checkFailed! })) });
+        return;
+      }
+      if (failed.length) out(t("upgrade.cannotDetermine"));
+      else if (managed.some((row) => row.installed)) out(t("upgrade.allCurrent"));
+      else out(t("upgrade.none"));
       return;
     }
     for (const row of upgradable) expectedVersions.set(row.id, row.latest!);
@@ -918,28 +1086,33 @@ export async function cmdUpgrade(ids: string[]): Promise<void> {
   for (const app of selected) {
     const cmd = appCommand(app, "upgrade");
     if (!cmd) {
-      console.log(`${pc.yellow("skip")} ${app.id}: not CLI-upgradable`);
+      out(`${pc.yellow(t("dryRun.skip"))} ${t("upgrade.notCli", { id: app.id })}`);
+      skipped.push({ id: app.id, reason: "not-cli-managed" });
       process.exitCode = 1;
       continue;
     }
     try {
       if (!installedVersion(app)) {
-        console.log(`${pc.yellow("skip")} ${app.id}: not installed (use \`agentsw install ${app.id}\`)`);
+        out(`${pc.yellow(t("dryRun.skip"))} ${t("upgrade.notInstalled", { id: app.id })}`);
+        skipped.push({ id: app.id, reason: "not-installed" });
         process.exitCode = 1;
         continue;
       }
-      console.log(`upgrading ${app.name}: ${pc.dim(cmd)}`);
+      out(t("upgrade.upgrading", { name: app.name, command: pc.dim(cmd) }));
       runShell(cmd);
       const version = normalizeAppVersion(installedVersion(app));
-      if (!version) throw new Error("upgrade command completed but installed version is unknown or app is not detected");
+      if (!version) throw new Error(t("upgrade.unknownVersion"));
       const expected = expectedVersions.get(app.id);
-      if (expected && isNewer(version, expected)) throw new Error(`upgrade command completed but ${version} is older than available ${expected}`);
-      console.log(pc.green(`${app.id} -> ${version}`));
+      if (expected && isNewer(version, expected)) throw new Error(t("upgrade.olderThanAvailable", { version, expected }));
+      out(pc.green(t("upgrade.done", { id: app.id, version })));
+      upgraded.push({ id: app.id, version });
     } catch (err) {
-      console.log(pc.red(`${app.id} upgrade failed: ${(err as Error).message}`));
+      out(pc.red(t("upgrade.failed", { id: app.id, message: (err as Error).message })));
+      skipped.push({ id: app.id, reason: (err as Error).message });
       process.exitCode = 1;
     }
   }
+  if (isJson()) emitJson({ upgraded, skipped });
 }
 
 export interface ImportOptions extends MetadataOptions {
@@ -948,21 +1121,26 @@ export interface ImportOptions extends MetadataOptions {
 
 /** Collect custom providers, dedupe by endpoint and credentials, and import what is new. */
 export async function cmdImport(opts: ImportOptions): Promise<void> {
+  const interactive = process.stdin.isTTY === true && !opts.all && !isJson();
   const metadataOptions = resolveMetadataOptions(opts);
   const rows = scanCandidates();
   const fresh = rows.filter((r) => !r.configured);
   for (const r of rows) {
     if (r.configured) {
-      console.log(`${pc.yellow(t("import.skip"))} ${pc.bold(r.id)} · ${r.protocol} · ${r.baseUrl} — ${t("import.already", { id: pc.bold(r.configured) })}`);
+      out(`${pc.yellow(t("import.skip"))} ${pc.bold(r.id)} · ${r.protocol} · ${r.baseUrl} — ${t("import.already", { id: pc.bold(r.configured) })}`);
     }
   }
   if (fresh.length === 0) {
-    console.log(rows.length ? t("import.noneNew") : t("import.noneFound"));
+    if (isJson()) {
+      emitJson({ providers: [], candidates: rows.length });
+      return;
+    }
+    out(rows.length ? t("import.noneNew") : t("import.noneFound"));
     return;
   }
 
-  console.log("");
-  console.log(
+  out("");
+  out(
     table(
       fresh.map((r) => [
         r.id,
@@ -973,11 +1151,12 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
         r.apiKey ? pc.green(t("import.keyYes")) : r.keyEnv ? pc.yellow(t("import.keyEnv", { name: r.keyEnv })) : pc.red(t("import.keyMissing")),
       ]),
       ["ID", t("table.protocol"), "BASE URL", t("table.models"), t("table.from"), t("table.key")],
+      { truncate: [2, 4] },
     ),
   );
 
   let chosen: MergedCandidate[];
-  if (process.stdin.isTTY && !opts.all) {
+  if (interactive) {
     const { pick } = await prompts(
       {
         type: "multiselect",
@@ -990,10 +1169,10 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
           selected: true,
         })),
       },
-      { onCancel: () => fail(t("add.cancelled")) },
+      { onCancel: () => cancelInteractive() },
     );
     if (!Array.isArray(pick) || pick.length === 0) {
-      console.log(pc.dim(t("import.nothingSelected")));
+      out(pc.dim(t("import.nothingSelected")));
       return;
     }
     chosen = (pick as number[]).map((i) => fresh[i]).filter((r): r is MergedCandidate => r !== undefined);
@@ -1002,14 +1181,14 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
   }
 
   const store = loadStore();
-  const catalog = await loadCatalog();
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   const gatewayLoader = sharedGatewayLoader();
   const imported: string[] = [];
   for (const c of chosen) {
     let apiKey = c.apiKey;
     if (!apiKey) {
       const why = c.keyEnv ? t("import.keyRefMissing", { name: c.keyEnv }) : t("import.keyNotStored");
-      if (!process.stdin.isTTY || opts.all) {
+      if (!interactive) {
         fail(t("import.missingKey", { id: c.id, why }));
       }
       const a = await prompts(
@@ -1019,7 +1198,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
           message: t("import.keyPrompt", { id: c.id, url: c.baseUrl, why }),
           validate: (v: string) => (v.trim() ? true : t("import.required")),
         },
-        { onCancel: () => fail(t("add.cancelled")) },
+        { onCancel: () => cancelInteractive() },
       );
       apiKey = a.key;
     }
@@ -1027,25 +1206,46 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     // A prompted credential can identify a provider imported earlier in this same batch.
     const existing = findMatchingProvider(Object.values(store.providers), { protocol: c.protocol, baseUrl: c.baseUrl, apiKey });
     if (existing) {
-      console.log(`${pc.yellow(t("import.skip"))} ${pc.bold(c.id)} · ${c.protocol} · ${c.baseUrl} — ${t("import.already", { id: pc.bold(existing.id) })}`);
+      out(`${pc.yellow(t("import.skip"))} ${pc.bold(c.id)} · ${c.protocol} · ${c.baseUrl} — ${t("import.already", { id: pc.bold(existing.id) })}`);
       continue;
     }
 
     let ids = [...c.models];
     if (ids.length === 0) {
-      process.stderr.write(pc.dim(`${t("import.discovering", { id: c.id })}\n`));
-      try {
-        ids = await discoverProviderModels({ baseUrl: c.baseUrl, apiKey: apiKey!, protocol: c.protocol });
-      } catch (err) {
-        fail(t("import.discoveryFailed", { id: c.id, error: (err as Error).message }));
+      const discover = (): Promise<string[]> =>
+        withProgress(t("import.discovering", { id: c.id }), (progress) =>
+          discoverProviderModels({ baseUrl: c.baseUrl, apiKey: apiKey!, protocol: c.protocol }, {
+            onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: c.baseUrl, page, count })),
+          }));
+      let listed: string[] | undefined;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          listed = await discover();
+          break;
+        } catch (err) {
+          if (!interactive) fail(t("import.discoveryFailed", { id: c.id, error: (err as Error).message }));
+          // Skipping one provider keeps the rest of the batch importable.
+          if (attempt >= 2) break;
+          const { retry } = await prompts(
+            { type: "toggle", name: "retry", message: t("import.retryDiscovery", { id: c.id, error: (err as Error).message }), initial: true },
+            { onCancel: () => cancelInteractive() },
+          );
+          if (!retry) break;
+        }
       }
+      if (listed === undefined) {
+        out(pc.yellow(t("import.skippedAfterFailure", { id: c.id })));
+        continue;
+      }
+      ids = listed;
       ids = applyModelFilter(ids, undefined, []).kept;
     }
     if (ids.length === 0) fail(t("import.noModelsImport", { id: c.id }));
 
     const id = availableProviderId(c.id, store.providers);
     const hint = guessProviderHint(catalog, c.baseUrl);
-    const models = await enrichProviderModels(catalog, ids, { ...metadataOptions, modelsDevId: hint }, { gatewayLoader });
+    const models = await withProgress(t("progress.metadata"), () =>
+      enrichProviderModels(catalog, ids, { ...metadataOptions, modelsDevId: hint }, { gatewayLoader }));
     const defaultModel = c.defaultModel && ids.includes(c.defaultModel) ? c.defaultModel : ids[0]!;
     const existed = store.providers[id] !== undefined;
     store.providers[id] = {
@@ -1062,10 +1262,14 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     };
     if (!store.active) store.active = id;
     imported.push(id);
-    console.log(
+    out(
       `${pc.green(t(existed ? "import.updated" : "import.imported"))} ${pc.bold(id)} · ${c.protocol} · ${c.baseUrl} · ${t("import.modelsCount", { count: ids.length })} [${t("import.from")} ${c.sources.join(", ")}]`,
     );
   }
   saveStore(store);
-  if (imported.length) console.log(pc.dim(`\n${t("import.next", { id: imported[0]! })}`));
+  if (isJson()) {
+    emitJson({ providers: imported });
+    return;
+  }
+  if (imported.length) note(`\n${t("import.next", { id: imported[0]! })}`);
 }

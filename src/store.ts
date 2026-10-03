@@ -1,6 +1,7 @@
 import path from "node:path";
 import { appDataDir, isDryRun, readFileSnapshot, recordPendingWrites } from "./fsutil.js";
 import type { FileSnapshot } from "./fsutil.js";
+import { isJsonObject } from "./jsonc.js";
 import { commitFileChanges } from "./config-transaction.js";
 import type { Provider, Store } from "./types.js";
 
@@ -8,6 +9,28 @@ export const configDir = appDataDir("agentsw");
 export const configFile = path.join(configDir, "config.json");
 
 const loadedSnapshots = new WeakMap<Store, FileSnapshot>();
+
+/**
+ * Reject only shapes that would otherwise crash later with an opaque TypeError.
+ * Messages name the file and the provider id, never a field value, so no
+ * credential can leak through an error. Extra/unknown fields stay allowed.
+ */
+function validateStore(store: Store): void {
+  const raw = store as unknown as Record<string, unknown>;
+  if (raw.version !== undefined && raw.version !== 1) {
+    const version = typeof raw.version === "number" ? ` ${raw.version}` : "";
+    throw new Error(`${configFile}: unsupported provider store version${version}`);
+  }
+  for (const [id, provider] of Object.entries(store.providers)) {
+    if (!isJsonObject(provider)) throw new Error(`${configFile}: provider "${id}" is not an object`);
+    if (!Array.isArray((provider as { models?: unknown }).models)) {
+      throw new Error(`${configFile}: provider "${id}" has no models array`);
+    }
+    for (const model of (provider as { models: unknown[] }).models) {
+      if (!isJsonObject(model)) throw new Error(`${configFile}: provider "${id}" has a model that is not an object`);
+    }
+  }
+}
 
 export function loadStore(): Store {
   const snapshot = readFileSnapshot(configFile);
@@ -26,6 +49,7 @@ export function loadStore(): Store {
     if (!store.providers || typeof store.providers !== "object" || Array.isArray(store.providers)) {
       throw new Error(`${configFile}: expected a providers object`);
     }
+    validateStore(store);
   }
   loadedSnapshots.set(store, snapshot);
   return store;

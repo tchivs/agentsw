@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { appDataDir, backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import { isJsonObject } from "../jsonc.js";
+import { workbuddyDir } from "../app-paths.js";
 import { localProviderId } from "../provider-identity.js";
 import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
@@ -9,8 +10,7 @@ import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function configDir(): string {
-  return process.env.WORKBUDDY_CONFIG_DIR?.trim() || process.env.CODEBUDDY_CONFIG_DIR?.trim() ||
-    (process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy"));
+  return workbuddyDir();
 }
 
 interface WorkbuddyModel {
@@ -83,7 +83,9 @@ export const workbuddy: TargetApp = transactionalTarget({
   id: "workbuddy",
   name: "WorkBuddy",
   protocols: ["openai"],
-  configPaths: [path.join(configDir(), "models.json"), path.join(configDir(), "settings.json")],
+  get configPaths() {
+    return [path.join(configDir(), "models.json"), path.join(configDir(), "settings.json")];
+  },
 
   detect: () => fs.existsSync(configDir()),
 

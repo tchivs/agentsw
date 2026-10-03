@@ -1,34 +1,13 @@
 import fs from "node:fs";
-import path from "node:path";
 import YAML from "yaml";
-import { backupFile, expandHome, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { dshCredentialsFile, dshDir, dshSettingsFile } from "../app-paths.js";
 import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "../provider-identity.js";
 import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-import { apiValue, classifyApi, mergeModels, sdkBaseUrl } from "./wire.js";
-
-/** `$DSH_HOME`, or `~/.dsh` (packages/util/home-paths `resolveDshHome`). */
-function dshHome(): string {
-  const env = process.env.DSH_HOME?.trim();
-  return env ? expandHome(env) : process.platform === "win32" ? localAppDataDir("dsh") : path.join(home, ".dsh");
-}
-
-/**
- * Settings document: `<harness home>/settings.yaml` by default; the extension
- * picks the format, so an existing `.yml`/`.json` document is written in place.
- */
-function settingsFile(): string {
-  const dir = dshHome();
-  for (const name of ["settings.yaml", "settings.yml", "settings.json"]) {
-    const file = path.join(dir, name);
-    if (fs.existsSync(file)) return file;
-  }
-  return path.join(dir, "settings.yaml");
-}
-
-const credentialsFile = (): string => path.join(dshHome(), ".credentials.yaml");
+import { apiValue, classifyApi, entryApi, mergeModels, sdkBaseUrl } from "./wire.js";
 
 /** Layout version of `.credentials.yaml` this build reads and writes. */
 const CREDENTIALS_VERSION = 1;
@@ -91,23 +70,26 @@ export const dsh: TargetApp = transactionalTarget({
   id: "dsh",
   name: "DeepSeek Harness",
   protocols: ["openai", "anthropic"],
-  configPaths: [settingsFile(), credentialsFile()],
+  get configPaths() {
+    return [dshSettingsFile(), dshCredentialsFile()];
+  },
 
-  detect: () => fs.existsSync(dshHome()),
+  detect: () => fs.existsSync(dshDir()),
 
   async apply(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
-    const file = settingsFile();
+    const file = dshSettingsFile();
     const doc = parseSettings(file);
 
     const at = ["llm-pi-ai", "providers", provider.id];
     const prev = (doc.getIn(at) as YAML.YAMLMap | undefined)?.toJSON?.() as Record<string, unknown> | undefined;
     const ref = managedCredentialRef(provider.id);
+    const baseURL = sdkBaseUrl(provider.protocol, provider.baseUrl);
     const entry: Record<string, unknown> = {
       displayName: provider.name,
       apiKeyEnv: ref, // credential reference, never the secret
-      api: apiValue(provider.protocol, provider.openaiApi, prev?.api),
-      baseURL: sdkBaseUrl(provider.protocol, provider.baseUrl),
+      api: apiValue(provider.protocol, provider.openaiApi, prev?.api ?? entryApi(prev ?? {})),
+      baseURL,
     };
 
     if (YAML.isMap(doc.getIn(at))) {
@@ -156,7 +138,7 @@ export const dsh: TargetApp = transactionalTarget({
 
   async prune(provider: Provider): Promise<ApplyResult> {
     const notes: string[] = [];
-    const file = settingsFile();
+    const file = dshSettingsFile();
     // Settings must be understood before any credential can be removed.
     const doc = parseSettings(file);
     const at = ["llm-pi-ai", "providers", provider.id];
@@ -187,7 +169,7 @@ export const dsh: TargetApp = transactionalTarget({
   },
 
   current(): string | undefined {
-    const text = readTextIfExists(settingsFile());
+    const text = readTextIfExists(dshSettingsFile());
     if (!text) return undefined;
     try {
       const parsed = YAML.parse(text) as { "agent-default-model"?: { provider?: string; model?: string } } | null;
@@ -200,7 +182,7 @@ export const dsh: TargetApp = transactionalTarget({
   },
 
   candidates(): ProviderCandidate[] {
-    const text = readTextIfExists(settingsFile());
+    const text = readTextIfExists(dshSettingsFile());
     if (!text) return [];
     type DshSettings = {
       "llm-pi-ai"?: { providers?: Record<string, Record<string, unknown>> };
@@ -219,7 +201,8 @@ export const dsh: TargetApp = transactionalTarget({
     const self = this.id;
     return Object.entries(providers).flatMap(([id, entry]) => {
       if (!entry || typeof entry.baseURL !== "string") return [];
-      const wire = classifyApi(entry.api);
+      // llm-pi-ai declares the wire at provider level or, agreeing, on every model.
+      const wire = classifyApi(entryApi(entry));
       if (!wire) return [];
       const keyEnv = typeof entry.apiKeyEnv === "string" && entry.apiKeyEnv ? entry.apiKeyEnv : undefined;
       // dsh credential precedence: inherited process environment first, then the managed store.
@@ -250,7 +233,7 @@ export const dsh: TargetApp = transactionalTarget({
 /** Read the managed store's `refs` section; an unreadable document yields no keys. */
 function readCredentialRefs(): Record<string, string> {
   try {
-    const doc = parseCredentials(credentialsFile());
+    const doc = parseCredentials(dshCredentialsFile());
     const parsed = doc.toJS() as Record<string, unknown>;
     return (doc.get("version") === undefined ? parsed : parsed.refs ?? {}) as Record<string, string>;
   } catch {
@@ -288,7 +271,7 @@ function parseCredentials(file: string): YAML.Document {
  * instead of being re-rooted one level deeper. Returns the file.
  */
 function writeCredential(ref: string, apiKey: string, notes: string[], oldRef: string | undefined, referenced: ReadonlySet<string>): string {
-  const file = credentialsFile();
+  const file = dshCredentialsFile();
   const doc = parseCredentials(file);
   if (doc.get("version") === undefined) {
     const refs = doc.contents;
@@ -312,7 +295,7 @@ function writeCredential(ref: string, apiKey: string, notes: string[], oldRef: s
 
 /** Drop only managed references that no surviving route uses. */
 function deleteCredentials(refs: ReadonlySet<string>, notes: string[]): string | undefined {
-  const file = credentialsFile();
+  const file = dshCredentialsFile();
   if (readTextIfExists(file) === undefined) return undefined;
   const doc = parseCredentials(file);
   let changed = false;

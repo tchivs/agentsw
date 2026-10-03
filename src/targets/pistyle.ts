@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { backupFile, home, writeFileAtomic } from "../fsutil.js";
+import { backupFile, writeFileAtomic } from "../fsutil.js";
+import { piDir, piModelsFile, piSettingsFile, type PiId } from "../app-paths.js";
 import { editJsoncObject, isJsonObject, readJsoncObject } from "../jsonc.js";
 import type { JsoncDocument } from "../jsonc.js";
 import type { ApplyResult, Provider } from "../types.js";
@@ -65,18 +66,17 @@ function thinkingLevelMap(efforts: string[]): Record<string, string | null> {
   return map;
 }
 
-export function piStyleTarget(opts: { id: string; name: string; configDirName: string; dirEnvVar: string }): TargetApp {
-  const resolveDir = () => {
-    const env = process.env[opts.dirEnvVar];
-    if (env) return env.startsWith("~") ? path.join(home, env.slice(1)) : env;
-    return path.join(home, opts.configDirName);
-  };
+export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
+  const id = opts.id;
+  const resolveDir = () => piDir(id);
 
   return transactionalTarget({
     id: opts.id,
     name: opts.name,
     protocols: ["openai", "anthropic"],
-    configPaths: [path.join(resolveDir(), "models.json"), path.join(resolveDir(), "settings.json")],
+    get configPaths() {
+      return [piModelsFile(id), piSettingsFile(id)];
+    },
 
     detect: () => fs.existsSync(path.dirname(resolveDir())),
 
@@ -245,16 +245,6 @@ export function piStyleTarget(opts: { id: string; name: string; configDirName: s
   });
 }
 
-export const pi = piStyleTarget({
-  id: "pi",
-  name: "pi",
-  configDirName: ".pi/agent",
-  dirEnvVar: "PI_CODING_AGENT_DIR",
-});
+export const pi = piStyleTarget({ id: "pi", name: "pi" });
 
-export const prime = piStyleTarget({
-  id: "prime",
-  name: "prime-agent",
-  configDirName: ".prime/agent",
-  dirEnvVar: "PRIME_AGENT_CODING_AGENT_DIR",
-});
+export const prime = piStyleTarget({ id: "prime", name: "prime-agent" });

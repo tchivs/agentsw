@@ -4,7 +4,20 @@ import YAML from "yaml";
 import { applyEdits, findNodeAtLocation, getNodeValue, parseTree } from "jsonc-parser";
 import type { Edit, Node as JsonNode, ParseError } from "jsonc-parser";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { appDataDir, expandHome, home, localAppDataDir } from "./fsutil.js";
+import {
+  codexAuthFile,
+  codexConfigFile,
+  dshCredentialsFile,
+  dshSettingsFiles,
+  hermesConfigFile,
+  hermesEnvFile,
+  ompConfigFiles,
+  ompModelsFiles,
+  opencodeConfigFiles,
+  piModelsFile,
+  piSettingsFile,
+  workbuddyModelsFile,
+} from "./app-paths.js";
 import { isJsonObject, readJsoncObject } from "./jsonc.js";
 import { configFile } from "./store.js";
 import { commitFileChanges } from "./config-transaction.js";
@@ -285,12 +298,12 @@ export async function renameProvider(
   exact(store, ["active"]);
   finish(store, beforeStore, 0o600);
 
-  visit(path.join(home, ".codex", "config.toml"), "toml", (editor) => {
+  visit(codexConfigFile(), "toml", (editor) => {
     const entry = get(editor.value, ["model_providers", oldId]);
     if (isJsonObject(entry)) {
       let key = typeof entry.env_key === "string" ? process.env[entry.env_key] : undefined;
       if (!entry.env_key && entry.requires_openai_auth && get(editor.value, ["model_provider"]) === oldId) {
-        const authFile = path.join(home, ".codex", "auth.json");
+        const authFile = codexAuthFile();
         const authText = readExisting(authFile);
         changes.push({ file: authFile, before: authText, after: authText });
         if (authText !== undefined) {
@@ -306,17 +319,15 @@ export async function renameProvider(
     renameMap(editor, ["model_providers"]);
   });
 
-  const ompDir = path.join(home, ".omp", "agent");
-  for (const name of ["models.yml", "models.yaml"]) visit(path.join(ompDir, name), "yaml", (editor) => renameMap(editor, ["providers"], undefined, true));
-  for (const name of ["config.yml", "config.yaml"]) visit(path.join(ompDir, name), "yaml", (editor) => {
+  for (const file of ompModelsFiles()) visit(file, "yaml", (editor) => renameMap(editor, ["providers"], undefined, true));
+  for (const file of ompConfigFiles()) visit(file, "yaml", (editor) => {
     compound(editor, ["model"]);
     for (const [role] of entries(editor, ["modelRoles"])) compound(editor, ["modelRoles", role]);
   });
 
-  for (const [env, fallback] of [["PI_CODING_AGENT_DIR", ".pi/agent"], ["PRIME_AGENT_CODING_AGENT_DIR", ".prime/agent"]] as const) {
-    const dir = process.env[env] ? expandHome(process.env[env]!) : path.join(home, fallback);
-    visit(path.join(dir, "models.json"), "json", (editor) => renameMap(editor, ["providers"], undefined, env === "PRIME_AGENT_CODING_AGENT_DIR"));
-    visit(path.join(dir, "settings.json"), "json", (editor) => {
+  for (const id of ["pi", "prime"] as const) {
+    visit(piModelsFile(id), "json", (editor) => renameMap(editor, ["providers"], undefined, id === "prime"));
+    visit(piSettingsFile(id), "json", (editor) => {
       exact(editor, ["defaultProvider"]);
       const recent = get(editor.value, ["recentModels"]);
       if (Array.isArray(recent)) recent.forEach((item, index) => {
@@ -326,12 +337,7 @@ export async function renameProvider(
     });
   }
 
-  const opencodeFiles = new Set(["config.json", "opencode.json", "opencode.jsonc"].map((name) => path.join(appDataDir("opencode"), name)));
-  const customOpenCode = process.env.OPENCODE_CONFIG_DIR?.trim();
-  if (customOpenCode) for (const name of ["opencode.json", "opencode.jsonc"]) opencodeFiles.add(path.join(expandHome(customOpenCode), name));
-  const sharedOpenCode = process.env.OPENCODE_CONFIG?.trim();
-  if (sharedOpenCode) opencodeFiles.add(expandHome(sharedOpenCode));
-  for (const file of opencodeFiles) visit(file, "json", (editor) => {
+  for (const file of opencodeConfigFiles()) visit(file, "json", (editor) => {
     renameMap(editor, ["provider"]);
     for (const key of ["model", "small_model"]) compound(editor, [key]);
     for (const key of ["agent", "mode", "command"]) {
@@ -363,14 +369,13 @@ export async function renameProvider(
     return key;
   };
 
-  const hermesDir = process.env.HERMES_HOME?.trim() ? expandHome(process.env.HERMES_HOME.trim()) : localAppDataDir("hermes");
-  const envFile = path.join(hermesDir, ".env");
+  const envFile = hermesEnvFile();
   const envBefore = readExisting(envFile);
   const assignments = envBefore === undefined ? [] : envAssignments(envFile, envBefore);
   const envValues = new Map(assignments.map((assignment) => [assignment.name, assignment.value]));
   let envKey: string | undefined;
   let hermesPresent = false;
-  visit(path.join(hermesDir, "config.yaml"), "yaml", (editor) => {
+  visit(hermesConfigFile(), "yaml", (editor) => {
     hermesPresent = true;
     const keyRef = get(editor.value, ["providers", oldId, "key_env"]);
     const key = typeof keyRef === "string" ? process.env[keyRef] ?? envValues.get(keyRef) : undefined;
@@ -385,16 +390,14 @@ export async function renameProvider(
     .map((assignment) => ({ offset: assignment.offset, length: envKey!.length, content: newKey }))) : envBefore;
   changes.push({ file: envFile, before: envBefore, after: envAfter, mode: 0o600 });
 
-  const dshDir = process.env.DSH_HOME?.trim() ? expandHome(process.env.DSH_HOME.trim()) : localAppDataDir("dsh");
   const settings: Array<{ editor: Editor; before: string }> = [];
-  for (const name of ["settings.yaml", "settings.yml", "settings.json"]) {
-    const file = path.join(dshDir, name);
+  for (const file of dshSettingsFiles()) {
     const before = readExisting(file);
     if (before === undefined) changes.push({ file, before, after: before });
-    else settings.push({ editor: name.endsWith("json") ? jsonEditor(file, before) : yamlEditor(file, before), before });
+    else settings.push({ editor: file.endsWith("json") ? jsonEditor(file, before) : yamlEditor(file, before), before });
   }
   const dshMaps = settings.map(({ editor }) => entries(editor, ["llm-pi-ai", "providers"]));
-  const credentialFile = path.join(dshDir, ".credentials.yaml");
+  const credentialFile = dshCredentialsFile();
   let credentialKey: string | undefined;
   let credentialRefs: ObjectValue = {};
   visit(credentialFile, "yaml", (editor) => {
@@ -415,9 +418,7 @@ export async function renameProvider(
     finish(editor, before);
   }
 
-  const workbuddyEnv = process.env.WORKBUDDY_CONFIG_DIR?.trim() ?? process.env.CODEBUDDY_CONFIG_DIR?.trim();
-  const workbuddyDir = workbuddyEnv ? expandHome(workbuddyEnv) : process.platform === "win32" ? appDataDir("workbuddy") : path.join(home, ".workbuddy");
-  visit(path.join(workbuddyDir, "models.json"), "json", (editor) => {
+  visit(workbuddyModelsFile(), "json", (editor) => {
     const at: Location = Array.isArray(editor.value) ? [] : ["models"];
     const rows = get(editor.value, at);
     if (rows === undefined) return;

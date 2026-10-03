@@ -319,3 +319,30 @@ for (const locale of ["en", "zh-CN"] as const) {
     });
   }
 }
+
+test("a failing menu action is reported and returns to the menu", { timeout: 5000 }, async () => {
+  mock.method(globalThis, "fetch", async () => { throw new Error("network down"); });
+  // The trailing "list" proves the dispatch loop kept going after the failure instead of unwinding out of cmdMenu.
+  const answers = ["discover", "legacy", false, "list", "quit"];
+  const questions = capturePrompts(answers);
+  await cmdMenu();
+  assert.equal(answers.length, 0, "the loop stopped consuming answers after the failure");
+  assert.deepEqual(questions.map((question) => question.name), ["action", "id", "v", "action", "action"]);
+  assert.equal(errors.length, 1, errors.join("\n"));
+  assert.match(errors[0]!, /network down/);
+});
+
+test("provider pickers offer a back option that returns to the action list", { timeout: 5000 }, async () => {
+  const answers = ["metadata", "__back__", "quit"];
+  const questions = capturePrompts(answers);
+  await cmdMenu();
+  assert.equal(answers.length, 0);
+  // Backing out skips the metadata prompt entirely and asks for the next action instead.
+  assert.deepEqual(questions.map((question) => question.name), ["action", "id", "action"]);
+  const picker = questions.find((question) => question.name === "id")!;
+  const choices = picker.choices as prompts.Choice[];
+  assert.equal(choices[0]!.value, "__back__");
+  assert.equal(choices[0]!.title, t("menu.back"));
+  assert.deepEqual(choices.slice(1).map((choice) => choice.value), ["legacy"]);
+  assert.deepEqual(errors, []);
+});

@@ -1,29 +1,30 @@
 import fs from "node:fs";
-import path from "node:path";
-import { backupFile, home, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, readJsonIfExists, writeFileAtomic } from "../fsutil.js";
 import { isJsonObject } from "../jsonc.js";
+import { claudeDir, claudeSettingsFile } from "../app-paths.js";
 import { transactionalTarget } from "../target-transaction.js";
 import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { stripApiVersion } from "./wire.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
-const dir = path.join(home, ".claude");
-const settingsFile = path.join(dir, "settings.json");
-
 /**
- * Claude Code reads Anthropic-protocol endpoints via env vars in ~/.claude/settings.json.
+ * Claude Code reads Anthropic-protocol endpoints via env vars in
+ * $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json).
  * We merge the "env" block and leave every other setting untouched.
  */
 export const claudecode: TargetApp = transactionalTarget({
   id: "claude",
   name: "Claude Code",
   protocols: ["anthropic"],
-  configPaths: [settingsFile],
+  get configPaths() {
+    return [claudeSettingsFile()];
+  },
 
-  detect: () => fs.existsSync(dir),
+  detect: () => fs.existsSync(claudeDir()),
 
   async apply(provider: Provider): Promise<ApplyResult> {
+    const settingsFile = claudeSettingsFile();
     const notes: string[] = [];
     const settingsValue = readJsonIfExists<Record<string, unknown>>(settingsFile);
     const settings = settingsValue === undefined ? {} : settingsValue;
@@ -51,6 +52,7 @@ export const claudecode: TargetApp = transactionalTarget({
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
+    const settingsFile = claudeSettingsFile();
     const settings = readJsonIfExists<Record<string, unknown>>(settingsFile);
     if (settings !== undefined && (!isJsonObject(settings) || (settings.env !== undefined && !isJsonObject(settings.env)))) {
       throw new Error(`${settingsFile}: expected settings and env to be JSON objects`);
@@ -79,13 +81,13 @@ export const claudecode: TargetApp = transactionalTarget({
   },
 
   current(): string | undefined {
-    const env = readJsonIfExists<{ env?: Record<string, string> }>(settingsFile)?.env;
+    const env = readJsonIfExists<{ env?: Record<string, string> }>(claudeSettingsFile())?.env;
     if (!env?.ANTHROPIC_BASE_URL) return undefined;
     return `${env.ANTHROPIC_BASE_URL} · ${env.ANTHROPIC_MODEL ?? "?"}`;
   },
 
   candidates(): ProviderCandidate[] {
-    const env = readJsonIfExists<{ env?: Record<string, string> }>(settingsFile)?.env;
+    const env = readJsonIfExists<{ env?: Record<string, string> }>(claudeSettingsFile())?.env;
     const baseUrl = env?.ANTHROPIC_BASE_URL;
     if (!baseUrl) return [];
     const models = [

@@ -6,6 +6,69 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-03
+
+### Added
+
+- Global `--json` prints exactly one credential-free document per run
+  (`{"ok":true,"command":…,"version":…,"data":…}`, or `{"ok":false,…,"error":{"message":…}}` with
+  exit code 1) and disables prompts and progress, so scripted runs never block on input.
+  `--json --dry-run` lists the file paths a run would touch without ever emitting the staged
+  configuration. Without `--json`, `models --provider <id> --metadata` keeps its bare object.
+- Global `--quiet` suppresses progress, hints and warnings while keeping results and errors, and
+  `--no-color` disables color (so does `NO_COLOR`; `--no-color` overrides `FORCE_COLOR`).
+- Slow operations report progress on a TTY: protocol probing, model-list pagination (page and
+  running model count), catalog and metadata lookups, Gateway loading, and per-app version
+  checks. The line animates only when nothing else is borrowing it and disappears before
+  results print; pipes and CI keep the previous single static line, and `AGENTSW_NO_PROGRESS=1`
+  turns it off.
+- `discover`/`add`/`quick`/`import` retry a failed discovery when interactive instead of losing
+  the whole run, and a failing menu action reports the error and returns to the menu.
+- Menu provider pickers and the removal scope select gained a "back to main menu" entry, and
+  Ctrl-C inside a menu prompt abandons that action instead of quitting the application.
+
+### Changed
+
+- Tables size themselves to the terminal: long BASE URL, CONFIG and NAME cells are truncated
+  with `…` while IDs and status columns stay intact, and numeric columns are right-aligned.
+  Piped output is unchanged.
+- Interactive cancellation is consistent: standalone prompts print `cancelled` and exit `130`;
+  inside the menu they return to the menu. Errors are red and warnings yellow everywhere, and
+  the remaining hardcoded English strings follow the interface language.
+- `apps` and `upgrade` output, install hints and model-discovery messages are localized; every
+  user-visible "next step" hint now goes to stderr so `--quiet` can drop it.
+
+### Fixed
+
+- A corrupt or unreadable models.dev cache no longer aborts `models`, `add`, `discover` or
+  `refresh`: it is ignored and refetched, and a 200 response that is not catalog-shaped is
+  rejected instead of being cached and failing every later run.
+- `models --limit` values that are not positive integers (`--limit abc`, `--limit 0`, ...)
+  fail with a clear error instead of dumping the whole catalog or one row.
+- `discover` no longer reports a pinned default or small model that the provider stopped
+  listing under "removed upstream" while keeping it anyway.
+- Switching providers no longer inherits the previous provider's `model_reasoning_effort` in
+  Codex, and opencode clears a provider's own small model once that provider stops defining one.
+- The dsh adapter reads a wire declared on every model, as omp and pi already did, so such
+  providers import instead of being skipped and keep their Responses wire on sync.
+- Claude Code and Codex now honor `CLAUDE_CONFIG_DIR` and `CODEX_HOME`; previously they always
+  wrote `~/.claude` and `~/.codex`, so a relocated install was configured in the wrong place
+  and `status`/`remove`/`rename` disagreed with `use`.
+- The opencode adapter edits the file that actually exists, chooses between `opencode.json`,
+  `opencode.jsonc` and `config.json` the way opencode does, and preserves comments — `rename`
+  previously migrated `config.json` only in the default directory.
+- A base URL whose path already ends in `/models` no longer becomes `/models/v1/models`, and
+  model-list pagination stops after 100 pages instead of looping forever on an endpoint that
+  keeps returning fresh cursors.
+- A provider store containing a wrong-typed provider or model is now rejected at load with the
+  file and provider id, instead of crashing later with an opaque `TypeError`.
+
+### Changed
+
+- All config paths come from one resolver (`src/app-paths.ts`) and are recomputed per command,
+  so every adapter, `rename` and `remove` agree on the same files; `dsh` also honors
+  `%LOCALAPPDATA%` on Windows.
+
 ## [0.9.2] - 2026-10-01
 
 ### Fixed
@@ -369,7 +432,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/tchivs/agentsw/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/tchivs/agentsw/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/tchivs/agentsw/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tchivs/agentsw/compare/v0.8.0...v0.9.0

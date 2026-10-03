@@ -1,15 +1,11 @@
 import fs from "node:fs";
-import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { SafeConfigError, backupFile, home, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { SafeConfigError, backupFile, readJsonIfExists, readTextIfExists, writeFileAtomic } from "../fsutil.js";
 import { isJsonObject } from "../jsonc.js";
+import { codexAuthFile, codexConfigFile, codexDir } from "../app-paths.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
-
-const dir = path.join(home, ".codex");
-const configFile = path.join(dir, "config.toml");
-const authFile = path.join(dir, "auth.json");
 
 /** smol-toml quotes the offending source line, which may hold a key: report only the position. */
 function parseConfigToml(file: string, text: string): Record<string, unknown> {
@@ -23,19 +19,24 @@ function parseConfigToml(file: string, text: string): Record<string, unknown> {
 }
 
 /**
- * Codex CLI: [model_providers.<id>] in ~/.codex/config.toml selects a custom
- * OpenAI-protocol endpoint; the key ships via ~/.codex/auth.json OPENAI_API_KEY.
- * TOML round-trip via smol-toml preserves data but not comments (backed up first).
+ * Codex CLI: [model_providers.<id>] in $CODEX_HOME/config.toml (default
+ * ~/.codex/config.toml) selects a custom OpenAI-protocol endpoint; the key ships
+ * via auth.json in the same directory. TOML round-trip via smol-toml preserves
+ * data but not comments (backed up first).
  */
 export const codex: TargetApp = transactionalTarget({
   id: "codex",
   name: "Codex CLI",
   protocols: ["openai"],
-  configPaths: [configFile, authFile],
+  get configPaths() {
+    return [codexConfigFile(), codexAuthFile()];
+  },
 
-  detect: () => fs.existsSync(dir),
+  detect: () => fs.existsSync(codexDir()),
 
   async apply(provider: Provider): Promise<ApplyResult> {
+    const configFile = codexConfigFile();
+    const authFile = codexAuthFile();
     const notes: string[] = [];
     const text = readTextIfExists(configFile);
     const config = text ? parseConfigToml(configFile, text) : {};
@@ -51,6 +52,10 @@ export const codex: TargetApp = transactionalTarget({
     const model = provider.models.find((m) => m.id === provider.defaultModel);
     if (provider.reasoningEffort && model?.reasoning !== false) {
       config.model_reasoning_effort = provider.reasoningEffort;
+    } else {
+      // The effort belongs to the active model: switching providers must not
+      // inherit the previous provider's level (prune treats it as owned too).
+      delete config.model_reasoning_effort;
     }
 
     // Codex only speaks the OpenAI Responses API (wire_api = "chat" was removed Feb 2026).
@@ -96,6 +101,7 @@ export const codex: TargetApp = transactionalTarget({
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
+    const configFile = codexConfigFile();
     const text = readTextIfExists(configFile);
     if (!text) return { app: this.id, changed: [], notes: [], skipped: "no config.toml" };
     const config = parseConfigToml(configFile, text);
@@ -123,10 +129,10 @@ export const codex: TargetApp = transactionalTarget({
   },
 
   current(): string | undefined {
-    const text = readTextIfExists(configFile);
+    const text = readTextIfExists(codexConfigFile());
     if (!text) return undefined;
     try {
-      const config = parseConfigToml(configFile, text);
+      const config = parseConfigToml(codexConfigFile(), text);
       if (!config.model_provider) return undefined;
       return `${String(config.model_provider)} · ${String(config.model ?? "?")}`;
     } catch {
@@ -135,6 +141,7 @@ export const codex: TargetApp = transactionalTarget({
   },
 
   candidates(): ProviderCandidate[] {
+    const configFile = codexConfigFile();
     const text = readTextIfExists(configFile);
     if (!text) return [];
     let config: Record<string, unknown>;
@@ -145,7 +152,7 @@ export const codex: TargetApp = transactionalTarget({
     }
     const providers = config.model_providers as Record<string, Record<string, unknown>> | undefined;
     if (!providers) return [];
-    const auth = readJsonIfExists<{ OPENAI_API_KEY?: string; tokens?: { access_token?: string } }>(authFile);
+    const auth = readJsonIfExists<{ OPENAI_API_KEY?: string; tokens?: { access_token?: string } }>(codexAuthFile());
     const authKey = auth?.OPENAI_API_KEY || auth?.tokens?.access_token;
     const active = typeof config.model_provider === "string" ? config.model_provider : undefined;
     const self = this.id;

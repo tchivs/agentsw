@@ -10,7 +10,7 @@ import type { Provider } from "../src/types.js";
 import { legacyManagedCredentialRef, localProviderId, managedCredentialRef } from "../src/provider-identity.js";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-remove-"));
-const envNames = ["HOME", "AGENTSW_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "FIXTURE_CODEX_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_"))];
+const envNames = ["HOME", "AGENTSW_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "FIXTURE_CODEX_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_"))];
 const originalEnv = new Map(envNames.map((name) => [name, process.env[name]]));
 for (const name of envNames) delete process.env[name];
 process.env.HOME = sandbox;
@@ -34,7 +34,7 @@ const provider: Provider = {
 beforeEach(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
   fs.mkdirSync(sandbox);
-  for (const name of ["PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "HERMES_HOME", "DSH_HOME", "FIXTURE_CODEX_KEY", "CUSTOM_KEY"]) delete process.env[name];
+  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "HERMES_HOME", "DSH_HOME", "FIXTURE_CODEX_KEY", "CUSTOM_KEY"]) delete process.env[name];
   process.env.OPENCODE_CONFIG_DIR = path.join(sandbox, "opencode-custom");
   process.env.OPENCODE_CONFIG = path.join(sandbox, "opencode-shared.jsonc");
 });
@@ -204,6 +204,34 @@ test("OpenCode global, custom and shared layers preserve comments and unrelated 
     assert.equal(data.unknown.model, "local/free-text");
     assert.match(fs.readFileSync(file, "utf8"), /preserve comment/);
   }
+});
+
+test("Claude removal edits the settings file selected by CLAUDE_CONFIG_DIR", async () => {
+  const anthropic: Provider = { ...provider, id: "claude-remove", protocol: "anthropic", baseUrl: "https://claude-remove.example" };
+  put(".config/agentsw/config.json", { version: 1, active: anthropic.id, providers: { [anthropic.id]: anthropic } });
+  process.env.CLAUDE_CONFIG_DIR = path.join(sandbox, "claude-env");
+  const settings = put("claude-env/settings.json", {
+    theme: "dark",
+    env: { ANTHROPIC_BASE_URL: anthropic.baseUrl, ANTHROPIC_AUTH_TOKEN: anthropic.apiKey, ANTHROPIC_MODEL: "model-a" },
+  });
+  const defaultClaude = put(".claude/settings.json", { theme: "default-untouched" });
+
+  const result = await removeProvider(anthropic.id, { apps: "claude" });
+  assert.deepEqual(result.files, [settings], "only the env-selected settings file is edited");
+  assert.deepEqual(parsed(settings), { theme: "dark", env: {} });
+  assert.equal(fs.readFileSync(defaultClaude, "utf8"), JSON.stringify({ theme: "default-untouched" }, null, 2) + "\n");
+});
+
+test("Codex removal edits the config selected by CODEX_HOME", async () => {
+  store();
+  process.env.CODEX_HOME = path.join(sandbox, "codex-env");
+  const toml = put("codex-env/config.toml", `model_provider = "${provider.id}"\nmodel = "model-a"\n\n[model_providers.${provider.id}]\nbase_url = "${provider.baseUrl}"\nrequires_openai_auth = true\n`);
+  const defaultCodex = put(".codex/config.toml", 'model = "keep"\n');
+
+  const result = await removeProvider(provider.id, { apps: "codex" });
+  assert.deepEqual(result.files, [toml], "only the env-selected Codex config is edited");
+  assert.equal(parsed(toml).model_providers?.[provider.id], undefined);
+  assert.equal(fs.readFileSync(defaultCodex, "utf8"), 'model = "keep"\n');
 });
 
 test("OMP removes both named layers, expands aliases and clears only known role references", async () => {

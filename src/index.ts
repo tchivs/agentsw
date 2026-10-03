@@ -22,6 +22,7 @@ import { cmdMenu } from "./menu.js";
 import { loadStore } from "./store.js";
 import type { Locale } from "./types.js";
 import { cmdListLocalProviders, cmdRemoveProvider, cmdRename } from "./provider-actions.js";
+import { configureOutput, error, isJson, setCommandName } from "./ui.js";
 
 // Locale lookup is best effort: help/version and app-local commands do not need the store.
 function savedLocale(): Locale | undefined {
@@ -49,7 +50,17 @@ program
   .name("agentsw")
   .description(t("root.description"))
   .option("--lang <locale>", t("help.language"), parseLocale)
+  .option("--json", t("opt.json"))
+  .option("-q, --quiet", t("opt.quiet"))
+  .option("--no-color", t("opt.noColor"))
   .version(version);
+
+// Root options are accepted on either side of the subcommand; read the merged view and publish it once.
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  const opts = actionCommand.optsWithGlobals() as { json?: boolean; quiet?: boolean };
+  configureOutput({ json: opts.json === true, quiet: opts.quiet === true, version });
+  setCommandName(actionCommand.name());
+});
 
 // bare invocation -> interactive menu (help on non-TTY); unknown subcommand -> error.
 // excess arguments are surfaced by us, so the message names the offending command.
@@ -58,6 +69,8 @@ program
   .action((...handlerArgs: unknown[]) => {
     const cmd = handlerArgs[handlerArgs.length - 1] as Command;
     if (cmd.args.length > 0) program.error(t("error.unknownCommand", { value: cmd.args[0]! }));
+    // The menu is inherently interactive; reject instead of silently ignoring the flag.
+    if (isJson()) error(t("error.jsonRequiresCommand"));
     if (process.stdin.isTTY) return cmdMenu();
     program.outputHelp();
   });
@@ -206,6 +219,5 @@ program
   .action(cmdRefreshMeta);
 
 program.parseAsync().catch((err: Error) => {
-  process.stderr.write(`error: ${err.message}\n`);
-  process.exit(1);
+  error(err.message);
 });

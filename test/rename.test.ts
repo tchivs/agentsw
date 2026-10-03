@@ -9,7 +9,7 @@ import { parse as parseToml } from "smol-toml";
 import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "../src/provider-identity.js";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-rename-"));
-const envNames = ["HOME", "AGENTSW_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "UPPERCASE_LITERAL_KEY", "FIXTURE_LOOKUP_KEY", "MY_EXTERNAL_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_")), managedCredentialRef("OldID"), managedCredentialRef("api-example-openai"), legacyManagedCredentialRef("OldID"), legacyManagedCredentialRef("api-example-openai")];
+const envNames = ["HOME", "AGENTSW_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "HERMES_HOME", "DSH_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "UPPERCASE_LITERAL_KEY", "FIXTURE_LOOKUP_KEY", "MY_EXTERNAL_KEY", "CUSTOM_KEY", ...Object.keys(process.env).filter((key) => key.startsWith("AGENTSW_")), managedCredentialRef("OldID"), managedCredentialRef("api-example-openai"), legacyManagedCredentialRef("OldID"), legacyManagedCredentialRef("api-example-openai")];
 const originalEnv = new Map(envNames.map((key) => [key, process.env[key]]));
 for (const key of envNames) delete process.env[key];
 process.env.HOME = sandbox;
@@ -187,6 +187,21 @@ test("rename uses environment overrides and migrates both global and shared Open
   assert.equal(json("portable/workbuddy/models.json")[0].vendor, newId);
   assert.equal(fs.existsSync(file(".pi")), false);
   assert.equal(fs.existsSync(file(".hermes")), false);
+});
+
+test("rename migrates the Codex config selected by CODEX_HOME and leaves the default directory alone", async () => {
+  process.env.CODEX_HOME = file("codex-env");
+  write("codex-env/config.toml", `model_provider = "${oldId}"\nmodel = "m-a"\n\n[model_providers.${oldId}]\nbase_url = "${provider.baseUrl}"\nenv_key = "FIXTURE_LOOKUP_KEY"\n`);
+  process.env.FIXTURE_LOOKUP_KEY = provider.apiKey;
+  const defaultCodex = write(".codex/config.toml", 'model = "keep"\n');
+
+  await renameProvider(oldId, newId);
+  const toml = parseToml(text("codex-env/config.toml")) as { model_provider?: string; model_providers?: Record<string, unknown> };
+  assert.ok(toml.model_providers?.[newId], "the renamed provider entry is present");
+  assert.equal(toml.model_providers?.[oldId], undefined);
+  assert.equal(toml.model_provider, newId);
+  assert.equal(text(defaultCodex), 'model = "keep"\n', "the default directory is untouched");
+  delete process.env.FIXTURE_LOOKUP_KEY;
 });
 
 test("custom display names and unrelated model identifiers remain unchanged", async () => {

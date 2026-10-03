@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
 import YAML from "yaml";
-import { backupFile, home, localAppDataDir, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { backupFile, readTextIfExists, writeFileAtomic } from "../fsutil.js";
+import { hermesConfigFile, hermesDir, hermesEnvFile } from "../app-paths.js";
 import { envAssignments, removeEnvAssignments, upsertEnvAssignment } from "../envfile.js";
 import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRef } from "../provider-identity.js";
 import { transactionalTarget } from "../target-transaction.js";
@@ -11,12 +11,7 @@ import { sdkBaseUrl } from "./wire.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
-  const env = process.env.HERMES_HOME?.trim();
-  if (env) return env;
-  if (process.platform === "win32") {
-    return localAppDataDir("hermes");
-  }
-  return path.join(home, ".hermes");
+  return hermesDir();
 }
 
 function parseConfig(file: string, text: string | undefined): YAML.Document {
@@ -59,14 +54,13 @@ export const hermes: TargetApp = transactionalTarget({
   id: "hermes",
   name: "Hermes",
   protocols: ["openai", "anthropic"],
-  configPaths: [path.join(hermesHome(), "config.yaml"), path.join(hermesHome(), ".env")],
+  configPaths: [hermesConfigFile(), hermesEnvFile()],
 
   detect: () => fs.existsSync(hermesHome()),
 
   async apply(provider: Provider): Promise<ApplyResult> {
-    const home = hermesHome();
-    const configFile = path.join(home, "config.yaml");
-    const envFile = path.join(home, ".env");
+    const configFile = hermesConfigFile();
+    const envFile = hermesEnvFile();
     const notes: string[] = [];
 
     const text = readTextIfExists(configFile);
@@ -134,9 +128,8 @@ export const hermes: TargetApp = transactionalTarget({
   },
 
   async prune(provider: Provider): Promise<ApplyResult> {
-    const home = hermesHome();
-    const configFile = path.join(home, "config.yaml");
-    const envFile = path.join(home, ".env");
+    const configFile = hermesConfigFile();
+    const envFile = hermesEnvFile();
     const doc = parseConfig(configFile, readTextIfExists(configFile));
     const at = ["providers", provider.id];
     const hasProvider = doc.hasIn(at);
@@ -174,7 +167,7 @@ export const hermes: TargetApp = transactionalTarget({
   },
 
   current(): string | undefined {
-    const text = readTextIfExists(path.join(hermesHome(), "config.yaml"));
+    const text = readTextIfExists(hermesConfigFile());
     if (!text) return undefined;
     try {
       const parsed = YAML.parse(text) as { model?: { provider?: string; default?: string; model?: string } } | null;
@@ -186,8 +179,7 @@ export const hermes: TargetApp = transactionalTarget({
   },
 
   candidates(): ProviderCandidate[] {
-    const hh = hermesHome();
-    const text = readTextIfExists(path.join(hh, "config.yaml"));
+    const text = readTextIfExists(hermesConfigFile());
     if (!text) return [];
     type HermesConfig = {
       providers?: Record<
@@ -203,7 +195,7 @@ export const hermes: TargetApp = transactionalTarget({
       return [];
     }
     if (!parsed?.providers) return [];
-    const envFile = path.join(hh, ".env");
+    const envFile = hermesEnvFile();
     const envText = readTextIfExists(envFile) ?? "";
     const values = new Map(envAssignments(envFile, envText).map((assignment) => [assignment.name, assignment.value]));
     const readEnv = (key: string): string | undefined => process.env[key] ?? values.get(key);

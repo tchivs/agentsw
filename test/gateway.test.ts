@@ -7,7 +7,7 @@ import path from "node:path";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-gateway-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
-for (const name of ["HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
 const { loadGatewayCatalog, parseGatewayCatalog } = await import("../src/gateway.js");
 const { setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
 const { configDir } = await import("../src/store.js");

@@ -108,13 +108,21 @@ dsh       yes    openai+anthropic  myproxy · glm-5.3-flash                 ~/.d
 | [Oh My Pi](https://omp.sh) (omp) | `~/.omp/agent/models.yml`（保留注释） | 双协议 |
 | [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) | `~/.pi/agent/models.json` + `settings.json` | 双协议 |
 | [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) | `~/.prime/agent/models.json` + `settings.json` | 双协议 |
-| [opencode](https://opencode.ai) | `~/.config/opencode/opencode.json` | 双协议 |
+| [opencode](https://opencode.ai) | `~/.config/opencode/` 下已存在的 `opencode.json`、`.jsonc` 或 `config.json`（保留注释） | 双协议 |
 | [Hermes](https://pypi.org/project/hermes-agent/) | `~/.hermes/config.yaml` + `.env`（保留注释） | 双协议 |
 | WorkBuddy | `~/.workbuddy/models.json` + `settings.json` | openai |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) | `~/.dsh/settings.yaml` + `.credentials.yaml` | 双协议 |
 
 未安装的应用会被跳过，而不是瞎猜。`--apps codex,omp` 只跑指定应用；
 对未检测到的应用显式传 `--apps` 可强制写入。
+
+每个适配器都会遵循对应应用自己的配置目录环境变量，并在每次命令中重新解析，因此
+`use`、`sync`、`status`、`rename`、`remove` 始终指向同一批文件：`CLAUDE_CONFIG_DIR`
+（Claude Code）、`CODEX_HOME`（Codex）、`PI_CODING_AGENT_DIR` / `PRIME_AGENT_CODING_AGENT_DIR`
+（pi / prime-agent）、`OPENCODE_CONFIG_DIR` 与 `OPENCODE_CONFIG`（opencode）、`HERMES_HOME`
+（Hermes）、`DSH_HOME`（dsh）、`WORKBUDDY_CONFIG_DIR`（WorkBuddy，回退到旧的
+`CODEBUDDY_CONFIG_DIR`）。空值会被忽略，开头的 `~` 会展开；opencode 会就地编辑实际存在的
+`opencode.json`、`opencode.jsonc` 或 `config.json`。
 
 交互菜单写配置前会问同一个问题：多选框第一行是**全部检测到的应用**，已检测到的排在前面，
 未检测到的会标注出来。上次的选择会被记住，所以菜单里的 `use`/`sync` 只会继续写你勾选的那几个。
@@ -277,6 +285,35 @@ asw remove unused-provider --apps omp
 `--apps` 则仅作用于指定智能体，也能删除从未导入 agentsw 的供应商，请勿和 `--prune` 同用。
 重命名和删除会先检查全部计划变更，再创建私有备份并写入。
 仅从智能体删除时中央条目仍保留，之后主动同步该供应商会重新写入该智能体。
+
+### 全局选项
+
+所有命令都支持，写在子命令前后均可：
+
+| 选项 | 作用 |
+|---|---|
+| `--json` | stdout 只输出一份 JSON 文档；同时关闭交互提问与进度，脚本运行绝不因等待输入而挂起 |
+| `-q, --quiet` | 抑制进度、提示与警告；结果与错误保留 |
+| `--no-color` | 关闭彩色输出（`NO_COLOR=1` 等效；`FORCE_COLOR=1` 强制彩色，`--no-color` 优先） |
+| `--lang en\|zh-CN` | 界面语言 |
+
+```bash
+asw status --json | jq '.data.apps[] | select(.current != .id)'
+asw use myproxy -a codex --dry-run --json   # 只给文件路径，不含配置正文
+asw list --quiet
+```
+
+成功时输出 `{"ok":true,"command":"status","version":"…","data":{…}}`；失败时 stdout 输出
+`{"ok":false,…,"error":{"message":"…"}}` 并以退出码 1 结束。`--json` 优先于 `--quiet`。
+JSON 载荷一律不含凭据；`--json --dry-run` 只报告将要改动的文件路径，绝不输出待写入的配置内容。
+`install` 与 `upgrade` 把 stdio 交给包管理器，其输出仍会到达终端（`--json` 下会把它的 stdout
+转到 stderr，以保证 JSON 文档可解析）。
+
+结果写 stdout，进度、警告与灰字的下一步提示写 stderr。因此 `agentsw status > out.txt` 只截到
+表格本身，脚本也可以单独读 stderr 了解过程中发生了什么，而不用从结果里把它剥出来。
+
+退出码：`0` 成功，`1` 出错，`130` 在交互提问处取消。不带 `--json` 时
+`models --provider <id> --metadata` 仍输出原来的裸 JSON 对象，现有脚本不受影响。
 
 ## 它如何对待你的配置
 
