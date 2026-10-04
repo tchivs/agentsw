@@ -87,7 +87,7 @@ agentsw                   # 全局安装后可用；短名 `asw` 完全等价
 ```
 
 **不带参数运行就是一个菜单——整个工具都在里面。** 添加供应商（自动识别或手动设置）、导入各智能体
-已有的供应商、切换供应商和默认模型、重新同步、更新模型列表、设置模型参数补充源、重命名或删除、
+已有的供应商、切换供应商和默认模型、同步供应商（重新获取模型列表再写入）、设置模型参数补充源、重命名或删除、
 安装/升级智能体、切换语言。首次运行会先问你要 English 还是简体中文，并提议接管你各智能体已经在用的配置。
 
 菜单里的每项操作都有对应的命令，方便脚本、CI 和无头机器——见 [命令](#命令)。
@@ -234,9 +234,11 @@ asw refresh --provider myproxy --metadata-mode off
 # 将显式关闭的供应商恢复为自动模式
 asw refresh --provider myproxy --metadata-mode auto
 
-# 单独预览、同步；sync 不查询目录
+# 单独预览、应用。sync 会先重新获取模型列表；
+# --no-refresh 则完全不联网，只写入已保存的列表。
 asw sync --provider myproxy --dry-run
 asw sync --provider myproxy
+asw sync --provider myproxy --no-refresh
 ```
 
 交互菜单的“设置并刷新模型参数补充源”提供“自动按需（推荐）”“始终补充”“关闭”，
@@ -266,8 +268,9 @@ asw sync --provider myproxy
   审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败会先重试一次，
   仍失败才使用旧缓存，无缓存时只跳过补充。`AGENTSW_DEBUG=1` 会说明该次尝试失败的原因，
   `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
-- **自动查询不等于自动同步：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，并不新增自动推送。
-  同步行为不变：普通 `sync` 仅写入已保存的设置，既不获取模型列表，也不请求元数据目录。
+- **自动查询不等于自动推送：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，永远不会自行写入智能体配置。
+  推送是 `sync`，而且它先刷新：先获取供应商模型列表、按目录补全、保存到 store，再写入各智能体。
+  `sync --no-refresh` 不联网，只写入已保存的列表；`discover <id>` 刷新完就停，不写任何智能体。
 
 ## 命令
 
@@ -281,8 +284,8 @@ asw sync --provider myproxy
 | `list --apps omp,prime` | 列出智能体本地供应商 ID，包括未导入 agentsw 的条目 |
 | `rename <id> <new-id>` | 备份并迁移 ID 和配置引用，支持 `--dry-run` |
 | `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
-| `sync` | 重新应用当前供应商（比如某个智能体升级之后） |
-| `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据 |
+| `sync` | 先刷新该供应商的模型列表，再写入各智能体配置；`--no-refresh` 只写已保存的列表 |
+| `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据；`--sync` 再推送到各智能体 |
 | `models [query]` | 搜索 models.dev 目录（`-r` 强制刷新缓存，`-l <n>` 限制条数） |
 | `refresh [--provider <id>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表 |
 | `models --provider <id> --metadata` | 以 JSON 查看字段来源、冲突和参考价格 |

@@ -288,7 +288,7 @@ test("preview redacts semantic secrets in JSONC, TOML, YAML and dotenv including
     return { app: "fixture", changed: files.map(([name]) => path.join(sandbox, name!)), notes: [] };
   }));
   const before = snapshot();
-  await cmdSync({ apps: "fixture", dryRun: true });
+  await cmdSync({ apps: "fixture", dryRun: true, refresh: false });
   const output = messages.join("\n");
   assert.doesNotMatch(output, /fixture-(?:old|new)-(?:header|json|toml|yaml|env|auth)/);
   assert.match(output, /- .*before/);
@@ -307,7 +307,7 @@ test("credential-file previews redact arbitrary flat and nested reference values
     return { app: "fixture", changed: [file], notes: [] };
   }));
   const before = snapshot();
-  await cmdSync({ apps: "fixture", dryRun: true });
+  await cmdSync({ apps: "fixture", dryRun: true, refresh: false });
   const output = messages.join("\n");
   assert.match(output, /refs/);
   assert.match(output, /CUSTOM/);
@@ -328,7 +328,7 @@ test("malformed preview configs never fall back to raw text and dry-run errors h
     fakeTarget("throws", async () => { throw new Error("parser leaked fixture-error-secret"); }),
   );
   const before = snapshot();
-  await cmdSync({ apps: "malformed,throws", dryRun: true });
+  await cmdSync({ apps: "malformed,throws", dryRun: true, refresh: false });
   assert.match(messages.join("\n"), /content withheld/);
   assert.match(messages.join("\n"), /could not be previewed safely/);
   assert.doesNotMatch(messages.join("\n"), /fixture-(?:malformed|new|error)-secret/);
@@ -346,7 +346,7 @@ test("dry-run shows content-free config errors but still withholds unknown ones"
     fakeTarget("leaky", async () => { throw new Error("parser leaked fixture-unknown-secret"); }),
   );
   const before = snapshot();
-  await cmdSync({ apps: "safe,leaky", dryRun: true });
+  await cmdSync({ apps: "safe,leaky", dryRun: true, refresh: false });
   const output = messages.join("\n");
   assert.match(output, /invalid JSON configuration/, "an actionable reason replaces the blanket message");
   assert.match(output, /could not be previewed safely/);
@@ -364,7 +364,7 @@ test("target detection and application errors set failure status while other tar
     fakeTarget("apply-fails", async () => { throw new Error("application failed"); }),
     fakeTarget("succeeds", async () => { applied++; return { app: "succeeds", changed: [], notes: [] }; }),
   );
-  await cmdSync({});
+  await cmdSync({ refresh: false });
   assert.equal(applied, 1);
   assert.equal(process.exitCode, 1);
   assert.match(messages.join("\n"), /detection failed/);
@@ -381,12 +381,41 @@ test("an app already in sync says so instead of printing a bare ok line", async 
       return { app: "writes", changed: [file], notes: [] };
     }),
   );
-  await cmdSync({ apps: "in-sync,writes" });
+  await cmdSync({ apps: "in-sync,writes", refresh: false });
   const lines = messages.filter((line) => line.startsWith("ok "));
   assert.equal(lines.length, 2);
   assert.match(lines[0]!, /^ok\s+in-sync\s+unchanged$/, "nothing written is reported, not left blank");
   assert.equal(lines[0]!.endsWith(" "), false, "the padding before an empty change list must not leak trailing spaces");
   assert.ok(lines[1]!.includes(file), "an app that did write still lists its files");
+});
+
+test("sync refreshes the model list before writing it to the apps", async (t) => {
+  const original = provider();
+  seed(original);
+  mockModels(t);
+  const applied: string[][] = [];
+  useTargets(t, fakeTarget("writes", async (p) => {
+    applied.push(p.models.map((m) => m.id));
+    return { app: "writes", changed: [], notes: [] };
+  }));
+  await cmdSync({ apps: "writes" });
+  const refreshed = ["keep-base", "keep-base-20260101", "m-small", "z-default"];
+  assert.deepEqual(applied, [refreshed], "the apps get the fetched list, not the stored one");
+  const saved = loadStore().providers[original.id]!;
+  assert.deepEqual(saved.models.map((m) => m.id), refreshed);
+  assert.equal(saved.models.find((m) => m.id === "keep-base")!.contextWindow, 111, "the refresh re-enriches from the catalog");
+});
+
+test("--no-refresh writes the saved model list without reaching the network", async (t) => {
+  const original = provider();
+  seed(original);
+  // beforeEach makes every fetch throw: a refresh here would fail the command instead of writing.
+  useTargets(t, fakeTarget("writes", async (p) => {
+    assert.deepEqual(p.models.map((m) => m.id), ["z-default", "m-small", "keep-base"]);
+    return { app: "writes", changed: [], notes: [] };
+  }));
+  await cmdSync({ apps: "writes", refresh: false });
+  assert.deepEqual(loadStore().providers[original.id]!.models.map((m) => m.id), ["z-default", "m-small", "keep-base"]);
 });
 
 test("install refuses successful-exit installers whose app remains undetected", async (t) => {

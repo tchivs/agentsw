@@ -166,6 +166,7 @@ program
   .option("-a, --apps <apps>", t("opt.apps"))
   .option("-p, --provider <id>", t("opt.provider"))
   .option("-n, --dry-run", t("opt.dryRun"))
+  .option("--no-refresh", t("opt.noRefresh"))
   .action(cmdSync);
 
 program.command("status").description(t("cmd.status")).action(cmdStatus);

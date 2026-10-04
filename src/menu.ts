@@ -5,11 +5,11 @@ import {
   cmdQuickAdd,
   cmdApps,
   cmdInstall,
-  cmdDiscover,
   cmdImport,
   cmdRefreshMeta,
   cmdList,
   cmdStatus,
+  cmdSync,
   cmdUpgrade,
   cmdUse,
 } from "./commands.js";
@@ -299,7 +299,7 @@ export async function cmdMenu(): Promise<void> {
       } else if (action === "sync") {
         const picked = await pickProvider(t("menu.syncFor"));
         if (!picked) continue;
-        await cmdDiscover(picked.id, { sync: true, apps: await pickApps(t("menu.pickApps")) });
+        await cmdSync({ provider: picked.id, apps: await pickApps(t("menu.pickApps")) });
       } else if (action === "metadata") {
         const picked = await pickProvider(t("menu.metadataProvider"));
         if (!picked) continue;

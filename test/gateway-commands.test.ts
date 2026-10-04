@@ -213,7 +213,15 @@ test("import opt-in enriches only candidate models and leaves configured provide
   assert.equal(JSON.stringify(loadStore()), before);
 });
 
-test("sync does not fetch catalogs or emit audit metadata into runtime app configs", async () => {
+test("discover --sync writes the refreshed list without fetching the endpoint a second time", async () => {
+  seed(provider());
+  await cmdDiscover("fixture", { sync: true, apps: "pi" });
+  assert.equal(requests.filter((url) => url === `${endpoint}/models`).length, 1, "sync reuses the refreshed list");
+  const parsed = JSON.parse(fs.readFileSync(path.join(sandbox, ".pi/agent/models.json"), "utf8"));
+  assert.deepEqual(parsed.providers.fixture.models.map((m: { id: string }) => m.id), [modelId]);
+});
+
+test("sync --no-refresh does not fetch catalogs or emit audit metadata into runtime app configs", async () => {
   seed(provider({ gatewayMetadata: true }));
   await cmdRefreshMeta({ provider: "fixture" });
   requests = [];
@@ -223,7 +231,7 @@ test("sync does not fetch catalogs or emit audit metadata into runtime app confi
   assert.equal(parsed.providers.fixture.models[0].metadata, undefined);
   assert.equal(parsed.providers.fixture.models[0].maxTokens, 1024);
   assert.equal(parsed.providers.fixture.api, "openai-responses");
-  await cmdSync({ provider: "fixture", apps: "pi", dryRun: true });
+  await cmdSync({ provider: "fixture", apps: "pi", dryRun: true, refresh: false });
   assert.deepEqual(requests, []);
 });
 

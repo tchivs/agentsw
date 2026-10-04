@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `sync` refreshes the provider's model list (and re-enriches saved metadata) before writing the
+  agent configs, so one command keeps both sides in step; `sync --no-refresh` writes the saved
+  list without fetching. The menu's separate model-list action and its "also sync?" toggle are
+  gone — the single **Sync a provider** action runs the same refresh-then-write path as the CLI.
+
 ## [0.10.2] - 2026-10-04
 
 ### Fixed

@@ -250,9 +250,11 @@ asw refresh --provider myproxy --metadata-mode off
 # Return an explicitly disabled provider to automatic mode
 asw refresh --provider myproxy --metadata-mode auto
 
-# Preview and apply separately; sync does not query catalogs
+# Preview and apply separately. Sync fetches the model list first;
+# --no-refresh writes the saved list without touching the network.
 asw sync --provider myproxy --dry-run
 asw sync --provider myproxy
+asw sync --provider myproxy --no-refresh
 ```
 
 The menu's **Configure and refresh model metadata** action offers **Automatic (recommended)**,
@@ -287,9 +289,10 @@ Import still skips already configured accounts.
   Gateway has a separate 24-hour cache; a failed request is retried once before falling back to stale cached data
   (or skipping supplementation when there is none). `AGENTSW_DEBUG=1` reports why an attempt failed, and
   `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the 15-second whole-request budget.
-- **Automatic lookup is not automatic sync:** enrichment updates saved metadata during add/quick/discover/import/refresh.
-  It does not add an automatic push to agents. Sync behavior is unchanged: ordinary `sync` only writes saved settings
-  and fetches neither model lists nor metadata catalogs.
+- **Automatic lookup is not an automatic push:** enrichment updates saved metadata during add/quick/discover/import/refresh
+  and never writes agent configs by itself. `sync` is the push, and it refreshes first: it fetches the provider's model
+  list, re-enriches it from the catalogs, saves the store, then applies it. `sync --no-refresh` writes the saved list
+  without fetching, and `discover <id>` stops after the refresh without writing any agent.
 
 ## Commands
 
@@ -303,8 +306,8 @@ Import still skips already configured accounts.
 | `list --apps omp,prime` | list agent-local provider IDs, including entries absent from agentsw |
 | `rename <id> <new-id>` | back up and migrate the ID and config references; supports `--dry-run` |
 | `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--dry-run` |
-| `sync` | re-apply the active provider (after an agent update, say) |
-| `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models` |
+| `sync` | refresh the provider's model list, then re-apply it to the agent configs; `--no-refresh` writes the saved list |
+| `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models`; `--sync` pushes it to the agents |
 | `models [query]` | search the models.dev catalog (`-r` refresh the cache, `-l <n>` limit rows) |
 | `refresh [--provider <id>]` | refresh saved metadata and optionally configure Gateway; keep the model list |
 | `models --provider <id> --metadata` | inspect field sources, conflicts and reference pricing as JSON |

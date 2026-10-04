@@ -28,7 +28,7 @@ import {
   statusReport,
   type AppReportRow,
 } from "./report.js";
-import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider } from "./types.js";
+import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider, Store } from "./types.js";
 
 /** Share successes and failures without fetching until a model actually needs the supplement. */
 function sharedGatewayLoader(refresh = false): () => Promise<GatewayCatalog | null> {
@@ -761,16 +761,76 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
   }
 }
 
-export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean }): Promise<void> {
+interface ProviderModelRefresh {
+  ids: string[];
+  added: string[];
+  removed: string[];
+  catalog?: Catalog | undefined;
+}
+
+/**
+ * Shared by `discover` and `sync`: fetch the live model list, re-enrich from the catalog, persist.
+ * `pinned` ids survive a listing that dropped them, so they are not reported as "removed upstream".
+ */
+async function refreshProviderModels(store: Store, provider: Provider): Promise<ProviderModelRefresh> {
+  const listed = await withProgress(t("add.discovering", { url: provider.baseUrl }), (progress) =>
+    discoverProviderModels(provider, {
+      onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: provider.baseUrl, page, count })),
+    }));
+  const pinned = [provider.defaultModel, provider.smallModel].filter((model): model is string => !!model);
+  const outcome = applyModelFilter(listed, provider.modelFilter, pinned);
+  reportDropped(outcome.dropped);
+  const ids = outcome.kept;
+  const retained = new Set([...ids, ...pinned]);
+  const known = provider.models.map((m) => m.id);
+  const added = ids.filter((m) => !known.includes(m));
+  const removed = known.filter((m) => !retained.has(m));
+  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
+  provider.models = await withProgress(t("progress.metadata"), () =>
+    enrichProviderModels(catalog, [...retained], { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) }));
+  if (!ids.includes(provider.defaultModel)) {
+    out(pc.yellow(t("discover.defaultMissing", { model: provider.defaultModel })));
+  }
+  saveStore(store);
+  return { ids, added, removed, catalog };
+}
+
+function printModelRefresh(provider: Provider, refresh: ProviderModelRefresh): void {
+  out(
+    `${pc.bold(provider.id)}: ${refresh.ids.length} models (${pc.green(`+${refresh.added.length}`)} / ${pc.red(`-${refresh.removed.length}`)})` +
+      (refresh.added.length ? `\n  new: ${refresh.added.join(", ")}` : "") +
+      (refresh.removed.length ? `\n  removed upstream: ${refresh.removed.join(", ")}` : ""),
+  );
+  out(table(modelRows(provider.models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
+  printUncatalogedHint(provider.models, refresh.catalog, provider.modelsDevId);
+}
+
+export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean; refresh?: boolean }): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
   const id = opts.provider ?? store.active;
   if (!id) fail(t("sync.noActive"));
   const provider = getProvider(store, id);
+  let refresh: ProviderModelRefresh | undefined;
+  if (opts.refresh !== false) {
+    try {
+      refresh = await refreshProviderModels(store, provider);
+    } catch (err) {
+      // The refresh is the new default; say how to write the saved list instead of just dying.
+      throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
+    }
+    if (!isJson()) printModelRefresh(provider, refresh);
+  }
   out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
   const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
   if (isJson()) {
-    emitJson({ provider: id, model: provider.defaultModel, dryRun: opts.dryRun === true, ...outcome });
+    emitJson({
+      provider: id,
+      model: provider.defaultModel,
+      dryRun: opts.dryRun === true,
+      ...(refresh ? { refreshed: { models: refresh.ids.length, added: refresh.added, removed: refresh.removed } } : {}),
+      ...outcome,
+    });
   }
 }
 
@@ -889,41 +949,16 @@ export async function cmdDiscover(
   const flagFilter = parseFilterOpts(opts, provider.modelFilter);
   if (opts.filter === false) provider.modelFilter = undefined;
   else if (flagFilter) provider.modelFilter = flagFilter;
-  const listed = await withProgress(t("add.discovering", { url: provider.baseUrl }), (progress) =>
-    discoverProviderModels(provider, {
-      onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: provider.baseUrl, page, count })),
-    }));
-  const pinned = [provider.defaultModel, provider.smallModel].filter((model): model is string => !!model);
-  const outcome = applyModelFilter(listed, provider.modelFilter, pinned);
-  reportDropped(outcome.dropped);
-  const ids = outcome.kept;
-  // Pinned ids survive a listing that dropped them, so they are not "removed upstream".
-  const retainedIds = [...new Set([...ids, ...pinned])];
-  const retained = new Set(retainedIds);
-  const known = provider.models.map((m) => m.id);
-  const added = ids.filter((m) => !known.includes(m));
-  const gone = known.filter((m) => !retained.has(m));
-  const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
-  provider.models = await withProgress(t("progress.metadata"), () =>
-    enrichProviderModels(catalog, retainedIds, { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) }));
-  if (!ids.includes(provider.defaultModel)) {
-    out(pc.yellow(t("discover.defaultMissing", { model: provider.defaultModel })));
-  }
-  saveStore(store);
+  const refresh = await refreshProviderModels(store, provider);
   if (isJson()) {
-    emitJson({ provider: id, models: ids.length, added, removed: gone });
+    emitJson({ provider: id, models: refresh.ids.length, added: refresh.added, removed: refresh.removed });
     return;
   }
-  out(
-    `${pc.bold(id)}: ${ids.length} models (${pc.green(`+${added.length}`)} / ${pc.red(`-${gone.length}`)})` +
-      (added.length ? `\n  new: ${added.join(", ")}` : "") +
-      (gone.length ? `\n  removed upstream: ${gone.join(", ")}` : ""),
-  );
-  out(table(modelRows(provider.models), MODEL_HEADER, MODEL_TABLE_OPTIONS));
-  printUncatalogedHint(provider.models, catalog, provider.modelsDevId);
+  printModelRefresh(provider, refresh);
   if (opts.sync) {
     out("");
-    await cmdSync({ provider: id, apps: opts.apps });
+    // The list is already fresh: write it without a second fetch.
+    await cmdSync({ provider: id, apps: opts.apps, refresh: false });
   } else {
     note(`\n${t("discover.next")}`);
   }
