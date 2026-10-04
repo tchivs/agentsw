@@ -9,6 +9,7 @@ import type { ApplyResult, Provider } from "../types.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import {
   apiValue,
+  applyDeepseekCompat,
   classifyApi,
   entryApi,
   mergeModels,
@@ -23,14 +24,6 @@ function modelFiles(): [string, string] {
   const [yml, yaml] = ompModelsFiles();
   return [yml!, yaml!];
 }
-
-/**
- * omp keys its DeepSeek wire rules by provider name ("deepseek",
- * "opencode-go", ...), so a gateway or reseller entry never picks them up: its
- * Responses replay then omits reasoning_text and DeepSeek answers 400. Match
- * on the model id instead and write the flag per model; a user value wins.
- */
-const DEEPSEEK_MODEL_ID = /deepseek/i;
 
 function parseModelsDocument(file: string, text: string | undefined): YAML.Document {
   const doc = parseYamlMapping(file, text);
@@ -71,13 +64,7 @@ export const omp: TargetApp = transactionalTarget({
     const models = mergeModels(prev?.models, provider.models.map(ownedModelMetadata), OWNED_MODEL_METADATA_KEYS);
     const conflicts = stripConflictingOverrides(models, api, baseUrl);
     if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
-    if (!anthropic) {
-      for (const model of models) {
-        if (!DEEPSEEK_MODEL_ID.test(String(model.id))) continue;
-        const compat = (model.compat ?? {}) as Record<string, unknown>;
-        model.compat = { requiresReasoningContentForToolCalls: true, ...compat };
-      }
-    }
+    if (!anthropic) applyDeepseekCompat(models, { requiresReasoningContentForToolCalls: true });
     const entry: Record<string, unknown> = {
       baseUrl,
       apiKey: provider.apiKey, // omp treats value as env-var name first, then literal

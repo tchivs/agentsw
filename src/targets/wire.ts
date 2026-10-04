@@ -116,6 +116,25 @@ export function mergeModels(
 /** Per-model keys every pi-family adapter owns; see `ownedModelMetadata`. */
 export const OWNED_MODEL_METADATA_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens", "cost"] as const;
 
+const DEEPSEEK_MODEL_ID = /deepseek/i;
+
+/**
+ * omp/pi/prime key their DeepSeek wire rules by provider name ("deepseek",
+ * "opencode-go", ...), so a gateway or reseller entry matches none of them: its
+ * reasoning replay then breaks and DeepSeek answers 400. Match on the model id
+ * instead and write the adapter's own flags per model; an explicit user value wins.
+ */
+export function applyDeepseekCompat(
+  models: Array<Record<string, unknown>>,
+  flags: Record<string, unknown>,
+): void {
+  for (const model of models) {
+    if (!DEEPSEEK_MODEL_ID.test(String(model.id))) continue;
+    const compat = (model.compat ?? {}) as Record<string, unknown>;
+    model.compat = { ...flags, ...compat };
+  }
+}
+
 /**
  * Whether a store entry describes the model at all. A bare id is ignorance,
  * not a catalog statement, so adapters must not clear what the app config

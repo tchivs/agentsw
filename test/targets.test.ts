@@ -249,6 +249,65 @@ test("omp gives gateway-fronted deepseek models the reasoning-replay compat flag
   await omp.prune({ ...provider, id: "gw" });
 });
 
+test("pi and prime give gateway-fronted deepseek models the reasoning-replay compat flags", async () => {
+  // Same gap as omp: both apps key their deepseek wire rules by provider name,
+  // so a gateway entry matches none of them and the reasoning replay 400s.
+  for (const id of ["pi", "prime"] as const) {
+    const target = targets.find((t) => t.id === id)!;
+    const file = path.join(sandbox, `.${id}`, "agent", "models.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        providers: {
+          gw: {
+            baseUrl: "https://gw.example/v1",
+            api: "openai-completions",
+            models: [{ id: "deepseek-v4-pro", compat: { requiresReasoningContentOnAssistantMessages: false } }],
+          },
+        },
+      }),
+    );
+    const gw = {
+      ...provider,
+      id: "gw",
+      baseUrl: "https://gw.example/v1",
+      models: [{ id: "deepseek-v4.1-flash" }, { id: "deepseek-v4-pro" }, { id: "gpt-5.6-luna" }],
+    };
+    type CompatModel = { id: string; compat?: Record<string, unknown> };
+    const flagOf = (models: CompatModel[], mid: string) => models.find((m) => m.id === mid)?.compat;
+    const read = (): CompatModel[] => JSON.parse(fs.readFileSync(file, "utf8")).providers.gw.models;
+
+    await target.apply(gw);
+    assert.deepEqual(
+      flagOf(read(), "deepseek-v4.1-flash"),
+      { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+      `${id}: a deepseek model without provider-name-keyed rules gets the flags`,
+    );
+    assert.deepEqual(
+      flagOf(read(), "deepseek-v4-pro"),
+      { requiresReasoningContentOnAssistantMessages: false, thinkingFormat: "deepseek" },
+      `${id}: an explicit user value wins over the default`,
+    );
+    assert.equal(flagOf(read(), "gpt-5.6-luna"), undefined, `${id}: non-deepseek models get no flag`);
+
+    await target.apply(gw);
+    assert.deepEqual(
+      flagOf(read(), "deepseek-v4.1-flash"),
+      { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+      `${id}: re-sync is idempotent`,
+    );
+
+    await target.apply({ ...gw, id: "gw-anthropic", protocol: "anthropic" as const });
+    assert.equal(
+      flagOf(JSON.parse(fs.readFileSync(file, "utf8")).providers["gw-anthropic"].models, "deepseek-v4.1-flash"),
+      undefined,
+      `${id}: anthropic-wire entries replay differently and get no flag`,
+    );
+    await target.prune({ ...provider, id: "gw" });
+    await target.prune({ ...provider, id: "gw-anthropic" });
+  }
+});
+
 test("omp keeps an existing responses wire when the store carries no flavor", async () => {
   const omp = targets.find((t) => t.id === "omp")!;
   const file = path.join(sandbox, ".omp", "agent", "models.yml");

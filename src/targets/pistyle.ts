@@ -10,6 +10,7 @@ import { transactionalTarget } from "../target-transaction.js";
 import type { ProviderCandidate, TargetApp } from "./types.js";
 import {
   apiValue,
+  applyDeepseekCompat,
   classifyApi,
   entryApi,
   mergeModels,
@@ -106,6 +107,12 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
         })),
         OWNED_MODEL_KEYS,
       );
+      // pi/prime key their DeepSeek wire rules by provider name, so a gateway
+      // entry never picks them up; the flags below are what their own deepseek
+      // catalog entries carry. Anthropic-wire entries replay differently.
+      if (provider.protocol === "openai") {
+        applyDeepseekCompat(models, { requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" });
+      }
       const conflicts = stripConflictingOverrides(models, api, baseUrl);
       if (conflicts.length) notes.push(`dropped model overrides pointing elsewhere: ${conflicts.join(", ")}`);
       providers[provider.id] = {
