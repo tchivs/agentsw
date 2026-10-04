@@ -94,9 +94,10 @@ agentsw                   # once installed globally; the short alias `asw` is id
 
 **Run it with no arguments and you get a menu — that is the whole tool.** Every action lives
 there: add a provider (auto-detect or manual setup), import the providers already configured in
-your agents, switch provider and default model, re-sync, update a model list, configure model
-metadata, rename or delete, install/upgrade an agent, change language. On the first run it asks
-for English or 简体中文 and offers to adopt what your agents are already using.
+your agents, switch provider and default model, sync a provider (fetch its current model list,
+then write it to your agents), configure model metadata, rename or delete, install/upgrade an
+agent, change language. On the first run it asks for English or 简体中文 and offers to adopt what
+your agents are already using.
 
 Each menu action has a command equivalent for scripts, CI and headless machines — see
 [Commands](#commands). Examples below are written as `asw`; without a global install, run them

@@ -10,7 +10,6 @@ import {
   cmdRefreshMeta,
   cmdList,
   cmdStatus,
-  cmdSync,
   cmdUpgrade,
   cmdUse,
 } from "./commands.js";
@@ -239,7 +238,6 @@ export async function cmdMenu(): Promise<void> {
           { title: t("menu.status"), description: t("menu.statusHelp"), value: "status" },
           { title: t("menu.list"), description: t("menu.listHelp"), value: "list" },
           { title: t("menu.sync"), description: t("menu.syncHelp"), value: "sync" },
-          { title: t("menu.discover"), description: t("menu.discoverHelp"), value: "discover" },
           { title: t("menu.metadata"), description: t("menu.metadataHelp"), value: "metadata" },
           { title: t("menu.rename"), description: t("menu.renameHelp"), value: "rename" },
           { title: t("menu.remove"), description: t("menu.removeHelp"), value: "remove" },
@@ -299,12 +297,9 @@ export async function cmdMenu(): Promise<void> {
       } else if (action === "list") {
         cmdList();
       } else if (action === "sync") {
-        await cmdSync({ apps: await pickApps(t("menu.pickApps")) });
-      } else if (action === "discover") {
-        const picked = await pickProvider(t("menu.discoverFor"));
+        const picked = await pickProvider(t("menu.syncFor"));
         if (!picked) continue;
-        const sync = await askToggle(t("menu.pushRefresh"));
-        await cmdDiscover(picked.id, { sync, apps: sync ? await pickApps(t("menu.pickApps")) : undefined });
+        await cmdDiscover(picked.id, { sync: true, apps: await pickApps(t("menu.pickApps")) });
       } else if (action === "metadata") {
         const picked = await pickProvider(t("menu.metadataProvider"));
         if (!picked) continue;

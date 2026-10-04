@@ -161,7 +161,11 @@ for (const locale of ["en", "zh-CN"] as const) {
     fs.mkdirSync(path.join(sandbox, ".omp/agent"), { recursive: true });
     fs.writeFileSync(codexFile, 'model = "untouched"\n');
     const before = fs.readFileSync(codexFile, "utf8");
-    const questions = capturePrompts(["sync", ["omp"], "quit"]);
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = String(input);
+      return url.startsWith("https://api.example.test") ? Response.json({ data: [{ id: "model-a" }] }) : Response.json({});
+    });
+    const questions = capturePrompts(["sync", "legacy", ["omp"], "quit"]);
     await cmdMenu();
     const apps = questions.find((question) => question.name === "apps")!;
     assert.ok(apps, "sync should ask which apps to write");
@@ -177,7 +181,7 @@ for (const locale of ["en", "zh-CN"] as const) {
     assert.equal(fs.readFileSync(codexFile, "utf8"), before, "deselected apps must keep their config");
     assert.deepEqual(JSON.parse(fs.readFileSync(storeFile, "utf8")).syncTargets, ["omp"]);
 
-    const next = capturePrompts(["sync", ["omp"], "quit"]);
+    const next = capturePrompts(["sync", "legacy", ["omp"], "quit"]);
     await cmdMenu();
     const recalled = next.find((question) => question.name === "apps")!.choices as prompts.Choice[];
     assert.equal(recalled[0]!.selected, false, "a remembered narrow selection must uncheck 'all'");
@@ -192,7 +196,7 @@ for (const locale of ["en", "zh-CN"] as const) {
     await cmdMenu();
     const choices = questions.find((question) => question.name === "action")!.choices as prompts.Choice[];
     assert.deepEqual(choices.map((choice) => choice.value), [
-      "quickAdd", "add", "import", "use", "status", "list", "sync", "discover", "metadata", "rename", "remove", "apps", "install", "language", "quit",
+      "quickAdd", "add", "import", "use", "status", "list", "sync", "metadata", "rename", "remove", "apps", "install", "language", "quit",
     ]);
     assert.equal(new Set(choices.map((choice) => choice.title)).size, choices.length);
     for (const choice of choices) {
@@ -205,8 +209,8 @@ for (const locale of ["en", "zh-CN"] as const) {
     assert.match(choice("add").title, /manual setup|手动设置/);
     assert.match(choice("list").title, /agentsw/);
     assert.match(choice("status").title, /each agent|各智能体/);
-    assert.match(choice("sync").description!, /without fetching|不重新获取/);
-    assert.match(choice("discover").description!, /Fetch models|重新获取模型/);
+    assert.match(choice("sync").description!, /Fetch the provider|从供应商获取/);
+    assert.match(choice("sync").description!, /agent configs|智能体配置/);
     assert.match(choice("metadata").description!, /Keep the model list|保留模型列表/);
     assert.match(choice("metadata").description!, /AI Gateway/);
     assert.match(choice("rename").title, /ID/);
@@ -323,11 +327,11 @@ for (const locale of ["en", "zh-CN"] as const) {
 test("a failing menu action is reported and returns to the menu", { timeout: 5000 }, async () => {
   mock.method(globalThis, "fetch", async () => { throw new Error("network down"); });
   // The trailing "list" proves the dispatch loop kept going after the failure instead of unwinding out of cmdMenu.
-  const answers = ["discover", "legacy", false, "list", "quit"];
+  const answers = ["sync", "legacy", ["omp"], "list", "quit"];
   const questions = capturePrompts(answers);
   await cmdMenu();
   assert.equal(answers.length, 0, "the loop stopped consuming answers after the failure");
-  assert.deepEqual(questions.map((question) => question.name), ["action", "id", "v", "action", "action"]);
+  assert.deepEqual(questions.map((question) => question.name), ["action", "id", "apps", "action", "action"]);
   assert.equal(errors.length, 1, errors.join("\n"));
   assert.match(errors[0]!, /network down/);
 });
