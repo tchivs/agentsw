@@ -25,8 +25,8 @@
 
 - **它能去桌面应用去不了的地方。** 无头服务器、容器、devcontainer、CI。
   `npx agentsw use myproxy -a codex,omp` 在开机脚本里是一行；GUI 点九次不是。
-- **`--dry-run` 输出脱敏 diff。** 写盘前先预览；预览不写文件、不创建备份。
-  正式提交变更时，已有配置文件才会先备份。
+- **`--dry-run` 输出脱敏 diff。** 写盘前先预览；预览不写文件、不创建备份，供应商 store 也一样——
+  预览 `sync` 不会把刷新到的模型列表留在配置里。正式提交变更时，已有配置文件才会先备份。
 - **默认不破坏现有配置。** 只覆盖 agentsw 自己管理的字段：它不建模的供应商级键
   （`authHeader`、`headers`、`compat`、`discovery`）、`thinkingLevelMap` 之类的模型级字段、
   以及 YAML 注释，都会在重新同步后原样保留。
@@ -235,6 +235,7 @@ asw refresh --provider myproxy --metadata-mode off
 asw refresh --provider myproxy --metadata-mode auto
 
 # 单独预览、应用。sync 会先重新获取模型列表；
+# --dry-run 同样会获取，预览因此与真实 sync 一致，但什么都不保存；
 # --no-refresh 则完全不联网，只写入已保存的列表。
 asw sync --provider myproxy --dry-run
 asw sync --provider myproxy
@@ -270,6 +271,7 @@ asw sync --provider myproxy --no-refresh
   `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
 - **自动查询不等于自动推送：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，永远不会自行写入智能体配置。
   推送是 `sync`，而且它先刷新：先获取供应商模型列表、按目录补全、保存到 store，再写入各智能体。
+  `sync --dry-run` 会获取同一份列表以保证预览准确，但既不保存列表也不写配置；
   `sync --no-refresh` 不联网，只写入已保存的列表；`discover <id>` 刷新完就停，不写任何智能体。
 
 ## 命令

@@ -771,8 +771,10 @@ interface ProviderModelRefresh {
 /**
  * Shared by `discover` and `sync`: fetch the live model list, re-enrich from the catalog, persist.
  * `pinned` ids survive a listing that dropped them, so they are not reported as "removed upstream".
+ * `save: false` keeps the refreshed list in memory for the caller to preview: a dry run shows what a
+ * real sync would write without leaving the fetched list behind in the store.
  */
-async function refreshProviderModels(store: Store, provider: Provider): Promise<ProviderModelRefresh> {
+async function refreshProviderModels(store: Store, provider: Provider, save = true): Promise<ProviderModelRefresh> {
   const listed = await withProgress(t("add.discovering", { url: provider.baseUrl }), (progress) =>
     discoverProviderModels(provider, {
       onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: provider.baseUrl, page, count })),
@@ -791,7 +793,7 @@ async function refreshProviderModels(store: Store, provider: Provider): Promise<
   if (!ids.includes(provider.defaultModel)) {
     out(pc.yellow(t("discover.defaultMissing", { model: provider.defaultModel })));
   }
-  saveStore(store);
+  if (save) saveStore(store);
   return { ids, added, removed, catalog };
 }
 
@@ -811,15 +813,20 @@ export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?:
   const id = opts.provider ?? store.active;
   if (!id) fail(t("sync.noActive"));
   const provider = getProvider(store, id);
+  const saveRefresh = opts.dryRun !== true;
   let refresh: ProviderModelRefresh | undefined;
   if (opts.refresh !== false) {
     try {
-      refresh = await refreshProviderModels(store, provider);
+      refresh = await refreshProviderModels(store, provider, saveRefresh);
     } catch (err) {
       // The refresh is the new default; say how to write the saved list instead of just dying.
       throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
     }
-    if (!isJson()) printModelRefresh(provider, refresh);
+    if (!isJson()) {
+      printModelRefresh(provider, refresh);
+      // --dry-run promises to write nothing, so say the fetched list only lived long enough to preview.
+      if (!saveRefresh) note(t("sync.refreshNotSaved"));
+    }
   }
   out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
   const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
@@ -828,7 +835,9 @@ export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?:
       provider: id,
       model: provider.defaultModel,
       dryRun: opts.dryRun === true,
-      ...(refresh ? { refreshed: { models: refresh.ids.length, added: refresh.added, removed: refresh.removed } } : {}),
+      ...(refresh
+        ? { refreshed: { models: refresh.ids.length, added: refresh.added, removed: refresh.removed, saved: saveRefresh } }
+        : {}),
       ...outcome,
     });
   }

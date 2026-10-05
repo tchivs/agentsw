@@ -246,6 +246,7 @@ const messages = {
   "use.switching": { en: "switching to {id} ({protocol}) · default model {model}", "zh-CN": "正在切换到 {id} ({protocol})· 默认模型 {model}" },
   "sync.noActive": { en: "no active provider; run agentsw use <id> first", "zh-CN": "没有当前供应商;请先运行 agentsw use <id>" },
   "sync.syncing": { en: "syncing provider {id} · default model {model}", "zh-CN": "正在同步供应商 {id} · 默认模型 {model}" },
+  "sync.refreshNotSaved": { en: "dry run: the refreshed model list was not saved", "zh-CN": "试运行:刷新到的模型列表未保存" },
   "sync.refreshFailed": { en: "could not refresh the model list; pass --no-refresh to write the saved list instead", "zh-CN": "无法刷新模型列表;可以加 --no-refresh 只写入已保存的列表" },
   "status.config": { en: "config: {file}", "zh-CN": "配置:{file}" },
   "status.active": { en: "active provider: {id}", "zh-CN": "当前供应商:{id}" },

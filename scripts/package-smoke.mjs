@@ -44,12 +44,16 @@ try {
   for (const file of [path.join(home, ".pi", "agent", "models.json"), path.join(home, ".omp", "agent", "models.yml"), path.join(home, ".config", "opencode", "opencode.json")]) {
     assert.doesNotMatch(fs.readFileSync(file, "utf8"), /"?metadata"?\s*:|referenceCost|fetchedAt|ai-gateway/);
   }
+  const storeFile = path.join(home, ".config", "agentsw", "config.json");
+  const beforePreview = fs.readFileSync(storeFile, "utf8");
   const preview = cli("sync", "--apps", "pi,omp,opencode", "--dry-run", "--no-refresh");
   assert.ok(!preview.includes("fixture-package-key"));
+  // A preview writes nothing, the provider store included.
+  assert.equal(fs.readFileSync(storeFile, "utf8"), beforePreview);
   assert.match(cli("status"), /smoke/);
   cli("rename", "smoke", "renamed-smoke");
   cli("remove", "renamed-smoke", "--apps", "pi");
-  const store = () => JSON.parse(fs.readFileSync(path.join(home, ".config", "agentsw", "config.json"), "utf8"));
+  const store = () => JSON.parse(fs.readFileSync(storeFile, "utf8"));
   assert.ok(store().providers["renamed-smoke"]);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "models.json"), "utf8")).providers?.["renamed-smoke"]);
   cli("remove", "renamed-smoke", "--prune");

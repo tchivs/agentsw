@@ -27,7 +27,8 @@ without touching the settings you hand-tuned.
   `npx agentsw use myproxy -a codex,omp` is one line in a provisioning script; nine GUI
   clicks are not.
 - **`--dry-run` prints redacted diffs.** Preview changes without writing files or creating
-  backups. Existing configuration files are backed up when actual changes are committed.
+  backups — the provider store included, so a previewed `sync` does not leave its refreshed
+  model list behind. Existing configuration files are backed up when changes are committed.
 - **Non-destructive by design.** Only the fields agentsw owns are rewritten. Provider-level
   keys it does not model — `authHeader`, `headers`, `compat`, `discovery` — per-model extras
   like `thinkingLevelMap`, and YAML comments all survive a re-sync.
@@ -251,6 +252,7 @@ asw refresh --provider myproxy --metadata-mode off
 asw refresh --provider myproxy --metadata-mode auto
 
 # Preview and apply separately. Sync fetches the model list first;
+# --dry-run still fetches, so the preview matches a real sync, but saves nothing;
 # --no-refresh writes the saved list without touching the network.
 asw sync --provider myproxy --dry-run
 asw sync --provider myproxy
@@ -291,8 +293,9 @@ Import still skips already configured accounts.
   `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the 15-second whole-request budget.
 - **Automatic lookup is not an automatic push:** enrichment updates saved metadata during add/quick/discover/import/refresh
   and never writes agent configs by itself. `sync` is the push, and it refreshes first: it fetches the provider's model
-  list, re-enriches it from the catalogs, saves the store, then applies it. `sync --no-refresh` writes the saved list
-  without fetching, and `discover <id>` stops after the refresh without writing any agent.
+  list, re-enriches it from the catalogs, saves the store, then applies it. `sync --dry-run` fetches the same list so
+  the preview is accurate but saves neither it nor the configs. `sync --no-refresh` writes the saved list without
+  fetching, and `discover <id>` stops after the refresh without writing any agent.
 
 ## Commands
 

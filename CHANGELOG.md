@@ -13,6 +13,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   list without fetching. The menu's separate model-list action and its "also sync?" toggle are
   gone — the single **Sync a provider** action runs the same refresh-then-write path as the CLI.
 
+### Fixed
+
+- `sync --dry-run` no longer saves the refreshed model list. The refresh above ran before the
+  dry-run scope opened, so previewing a sync wrote the freshly fetched list straight into the
+  provider store — the one thing `--dry-run` promises not to do. The fetch still happens, so the
+  preview matches what a real sync would write, but the list now stays in memory and `--json`
+  reports it as `refreshed.saved: false`.
+
 ## [0.10.2] - 2026-10-04
 
 ### Fixed

@@ -316,6 +316,39 @@ test("credential-file previews redact arbitrary flat and nested reference values
   assert.deepEqual(snapshot(), before);
 });
 
+test("a dry-run sync previews the refreshed list without saving it to the store", async (t) => {
+  const original = provider();
+  seed(original);
+  mockModels(t);
+  useTargets(t, fakeTarget("fixture", async () => ({ app: "fixture", changed: [], notes: [] })));
+  const before = snapshot();
+  await cmdSync({ apps: "fixture", dryRun: true });
+  // The preview reports the ids the endpoint listed just now, not the saved ones,
+  assert.match(messages.join("\n"), /keep-base-20260101/);
+  // and leaves the store exactly as it found it, like every other dry run.
+  assert.deepEqual(snapshot(), before);
+  assert.deepEqual(loadStore().providers[original.id]!.models.map((m) => m.id), original.models.map((m) => m.id));
+  assert.deepEqual(drainPendingWrites(), []);
+});
+
+test("a dry-run sync reports the unsaved refresh in its JSON payload", async (t) => {
+  const { configureOutput } = await import("../src/ui.js");
+  const original = provider();
+  seed(original);
+  mockModels(t);
+  useTargets(t, fakeTarget("fixture", async () => ({ app: "fixture", changed: [], notes: [] })));
+  const documents: string[] = [];
+  t.mock.method(process.stdout, "write", ((chunk: string) => { documents.push(String(chunk)); return true; }) as never);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  const before = snapshot();
+  await cmdSync({ apps: "fixture", dryRun: true });
+  const { data } = JSON.parse(documents.join("")) as { data: { refreshed: { models: number; saved: boolean } } };
+  assert.equal(data.refreshed.models, 4, "the payload counts the ids the refresh kept");
+  assert.equal(data.refreshed.saved, false, "a machine consumer is told the store was left alone");
+  assert.deepEqual(snapshot(), before);
+});
+
 test("malformed preview configs never fall back to raw text and dry-run errors hide parser secrets", async (t) => {
   seed(provider());
   const file = path.join(sandbox, "invalid.json");
