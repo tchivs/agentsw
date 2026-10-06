@@ -17,6 +17,8 @@ export const claudecode: TargetApp = transactionalTarget({
   id: "claude",
   name: "Claude Code",
   protocols: ["anthropic"],
+  // The env block names one endpoint: a second provider replaces the first rather than joining it.
+  singleProvider: true,
   get configPaths() {
     return [claudeSettingsFile()];
   },

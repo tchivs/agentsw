@@ -94,6 +94,44 @@ async function pickProvider(message: string): Promise<{ id: string; defaultModel
 }
 
 /**
+ * Multi-select providers for one sync. The first row takes every configured provider and maps to
+ * the CLI's `--all`; toggling everything off means "back", not "all", because a sync writes files.
+ */
+async function pickProviders(message: string): Promise<{ all: boolean; ids: string[] } | undefined> {
+  const store = loadStore();
+  const ids = Object.keys(store.providers);
+  if (ids.length === 0) {
+    out(pc.yellow(t("menu.noProvidersHint")));
+    return undefined;
+  }
+  const { providers } = await prompts(
+    {
+      type: "multiselect",
+      name: "providers",
+      message,
+      hint: t("menu.appsHint"),
+      instructions: false,
+      choices: [
+        { title: t("menu.providersAll", { count: ids.length }), value: "__all__" },
+        ...ids.map((pid) => {
+          const p = store.providers[pid]!;
+          return {
+            title: `${pid} · ${p.protocol} · ${t("menu.defaultModel")} ${p.defaultModel}${store.active === pid ? `  (${t("menu.active")})` : ""}`,
+            value: pid,
+            selected: store.active === pid,
+          };
+        }),
+      ],
+    },
+    cancel,
+  );
+  const chosen: string[] = Array.isArray(providers) ? providers : [];
+  if (chosen.includes("__all__")) return { all: true, ids };
+  const selected = chosen.filter((value) => value !== "__all__");
+  return selected.length ? { all: false, ids: selected } : undefined;
+}
+
+/**
  * Multi-select target apps, remembering the previous choice. The first row selects
  * every detected app; picking it (or toggling everything off) returns undefined,
  * which keeps the CLI default of "all detected apps". A narrower selection becomes
@@ -297,9 +335,10 @@ export async function cmdMenu(): Promise<void> {
       } else if (action === "list") {
         cmdList();
       } else if (action === "sync") {
-        const picked = await pickProvider(t("menu.syncFor"));
+        const picked = await pickProviders(t("menu.syncFor"));
         if (!picked) continue;
-        await cmdSync({ provider: picked.id, apps: await pickApps(t("menu.pickApps")) });
+        const apps = await pickApps(t("menu.pickApps"));
+        await cmdSync(picked.all ? { all: true, apps } : { provider: picked.ids.join(","), apps });
       } else if (action === "metadata") {
         const picked = await pickProvider(t("menu.metadataProvider"));
         if (!picked) continue;

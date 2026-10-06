@@ -33,6 +33,12 @@ export interface TargetApp {
   name: string;
   /** wire protocols this app can consume */
   protocols: Protocol[];
+  /**
+   * True when the app's config names exactly one provider rather than keeping a map of
+   * them (Claude Code's env block). Syncing several providers at once writes such an app
+   * once, for the active provider, instead of letting each provider overwrite the last.
+   */
+  singleProvider?: boolean;
   /** primary config file(s) this adapter writes */
   configPaths: string[];
   /** true when the app appears installed (config dir exists) */

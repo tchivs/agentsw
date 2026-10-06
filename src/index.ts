@@ -164,7 +164,8 @@ program
   .command("sync")
   .description(t("cmd.sync"))
   .option("-a, --apps <apps>", t("opt.apps"))
-  .option("-p, --provider <id>", t("opt.provider"))
+  .option("-p, --provider <ids>", t("opt.provider"))
+  .option("--all", t("opt.syncAll"))
   .option("-n, --dry-run", t("opt.dryRun"))
   .option("--no-refresh", t("opt.noRefresh"))
   .action(cmdSync);

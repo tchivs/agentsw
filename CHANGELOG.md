@@ -13,6 +13,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
   list without fetching. The menu's separate model-list action and its "also sync?" toggle are
   gone — the single **Sync a provider** action runs the same refresh-then-write path as the CLI.
 
+### Added
+
+- `sync --all` syncs every configured provider, and `--provider` now takes a comma-separated list
+  (`sync -p alpha,beta`), so refreshing a machine's providers is one command instead of one per
+  provider. The menu's **Sync providers** action is a multi-select with an "all" row; selecting
+  nothing returns to the menu.
+
+  Each provider is refreshed and written in turn, with the active provider last, so whatever
+  "current" pointer an app keeps ends up where the store says it should. An app that names a single
+  provider rather than a map — Claude Code's env block — is written once, for the active provider,
+  and left untouched when none of the synced providers is the active one, because syncing is not
+  switching. A provider whose endpoint cannot be reached is reported and skipped; the rest still
+  sync and the run exits non-zero. `--json` reports a `providers` array plus the deduplicated union
+  of the files touched; a single-provider sync keeps the payload it had.
+
 ### Fixed
 
 - `sync --dry-run` no longer saves the refreshed model list. The refresh above ran before the

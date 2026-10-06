@@ -240,6 +240,10 @@ asw refresh --provider myproxy --metadata-mode auto
 asw sync --provider myproxy --dry-run
 asw sync --provider myproxy
 asw sync --provider myproxy --no-refresh
+
+# 一次刷新并推送多个供应商。
+asw sync --all
+asw sync --provider myproxy,backup-proxy
 ```
 
 交互菜单的“设置并刷新模型参数补充源”提供“自动按需（推荐）”“始终补充”“关闭”，
@@ -269,6 +273,11 @@ asw sync --provider myproxy --no-refresh
   审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败会先重试一次，
   仍失败才使用旧缓存，无缓存时只跳过补充。`AGENTSW_DEBUG=1` 会说明该次尝试失败的原因，
   `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
+- **一次同步多个供应商：** `sync --all` 取全部已配置的供应商，`-p a,b` 取指定列表；逐个刷新并写入，
+  并把当前供应商放在最后，这样各智能体记录的“当前指向”最终就停在 store 所说的那一个。
+  只记录单个供应商（而非供应商表）的应用——例如 Claude Code 的 env 块——只会为当前供应商写一次；
+  如果本次同步的供应商里没有当前供应商，就完全不动它：同步不是切换。
+  某个供应商的端点不可达时会被报告并跳过，其余照常同步，整个运行以非零状态结束。
 - **自动查询不等于自动推送：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，永远不会自行写入智能体配置。
   推送是 `sync`，而且它先刷新：先获取供应商模型列表、按目录补全、保存到 store，再写入各智能体。
   `sync --dry-run` 会获取同一份列表以保证预览准确，但既不保存列表也不写配置；
@@ -286,7 +295,7 @@ asw sync --provider myproxy --no-refresh
 | `list --apps omp,prime` | 列出智能体本地供应商 ID，包括未导入 agentsw 的条目 |
 | `rename <id> <new-id>` | 备份并迁移 ID 和配置引用，支持 `--dry-run` |
 | `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
-| `sync` | 先刷新该供应商的模型列表，再写入各智能体配置；`--no-refresh` 只写已保存的列表 |
+| `sync` | 先刷新各供应商的模型列表，再写入各智能体配置；`--all` 或 `-p a,b` 可一次处理多个，`--no-refresh` 只写已保存的列表 |
 | `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据；`--sync` 再推送到各智能体 |
 | `models [query]` | 搜索 models.dev 目录（`-r` 强制刷新缓存，`-l <n>` 限制条数） |
 | `refresh [--provider <id>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表 |

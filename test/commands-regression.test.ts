@@ -101,8 +101,12 @@ function useApps(t: TestContext, ...next: AppPackage[]): void {
   t.after(() => { appPackages.splice(0, appPackages.length, ...original); });
 }
 
-function fakeTarget(id: string, apply: TargetApp["apply"]): TargetApp {
-  return transactionalTarget({ id, name: id, protocols: ["openai", "anthropic"], configPaths: [], detect: () => true, current: () => undefined, apply, prune: apply });
+function fakeTarget(id: string, apply: TargetApp["apply"], singleProvider = false): TargetApp {
+  return transactionalTarget({ id, name: id, protocols: ["openai", "anthropic"], configPaths: [], detect: () => true, current: () => undefined, singleProvider, apply, prune: apply });
+}
+
+function recordingTarget(id: string, seen: string[], singleProvider = false): TargetApp {
+  return fakeTarget(id, async (p) => { seen.push(p.id); return { app: id, changed: [], notes: [] }; }, singleProvider);
 }
 
 test("automatic add and quick reentry retain all user-owned options, IDs, names, and hints", async (t) => {
@@ -347,6 +351,97 @@ test("a dry-run sync reports the unsaved refresh in its JSON payload", async (t)
   assert.equal(data.refreshed.models, 4, "the payload counts the ids the refresh kept");
   assert.equal(data.refreshed.saved, false, "a machine consumer is told the store was left alone");
   assert.deepEqual(snapshot(), before);
+});
+
+test("sync --all refreshes every provider and leaves a one-slot app on the active one", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  mockModels(t);
+  const many: string[] = [];
+  const one: string[] = [];
+  useTargets(t, recordingTarget("many", many), recordingTarget("one", one, true));
+  await cmdSync({ apps: "many,one", all: true });
+  // Whatever "current" pointer an app keeps belongs to the last writer, so the active provider goes last.
+  assert.deepEqual(many, ["beta", "alpha"]);
+  assert.deepEqual(one, ["alpha"], "an app holding one provider is written once, for the active one");
+  const store = loadStore();
+  for (const id of ["alpha", "beta"]) {
+    assert.ok(store.providers[id]!.models.some((m) => m.id === "keep-base-20260101"), `${id} saved its refreshed list`);
+  }
+  assert.equal(process.exitCode, undefined);
+});
+
+test("a one-slot app is left alone when none of the synced providers is the active one", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  const gamma = provider({ id: "gamma", baseUrl: "https://gamma.example/tenant/v1" });
+  seed(gamma, alpha, beta);
+  mockModels(t);
+  const many: string[] = [];
+  const one: string[] = [];
+  useTargets(t, recordingTarget("many", many), recordingTarget("one", one, true));
+  await cmdSync({ apps: "many,one", provider: "alpha,beta" });
+  assert.deepEqual(many, ["alpha", "beta"]);
+  // Syncing is not switching: nothing here should take the single slot away from gamma.
+  assert.deepEqual(one, []);
+  assert.match(messages.join("\n"), /one provider at a time/);
+});
+
+test("a multi-provider sync resolves every id before it fetches or writes anything", async (t) => {
+  seed(provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" }));
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => { fetches += 1; return Response.json({ data: [] }); });
+  const applied: string[] = [];
+  useTargets(t, recordingTarget("fixture", applied));
+  await assert.rejects(() => cmdSync({ apps: "fixture", provider: "alpha,ghost" }), /unknown provider "ghost"/);
+  assert.equal(fetches, 0, "an unknown id fails before the first provider is contacted");
+  assert.deepEqual(applied, []);
+  await assert.rejects(() => cmdSync({ apps: "fixture", provider: "alpha", all: true }), /process\.exit\(1\)/);
+  assert.deepEqual(applied, [], "--all and --provider are rejected before any work");
+});
+
+test("one unreachable provider is skipped while the rest of the sync still writes", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (new URL(String(input)).hostname === "beta.example") throw new Error("fixture network down");
+    return Response.json({ data: [{ id: "keep-base" }, { id: "m-small" }, { id: "z-default" }] });
+  });
+  const stderr: string[] = [];
+  t.mock.method(process.stderr, "write", ((chunk: string) => { stderr.push(String(chunk)); return true; }) as never);
+  const applied: string[] = [];
+  useTargets(t, recordingTarget("fixture", applied));
+  await cmdSync({ apps: "fixture", all: true });
+  assert.deepEqual(applied, ["alpha"], "the reachable provider is still synced");
+  assert.match(stderr.join(""), /beta/);
+  assert.match(stderr.join("") + messages.join("\n"), /1 of 2|synced 1/);
+  assert.equal(process.exitCode, 1, "a skipped provider still fails the run");
+});
+
+test("a multi-provider sync reports each provider and the union of its files as JSON", async (t) => {
+  const { configureOutput } = await import("../src/ui.js");
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  mockModels(t);
+  const documents: string[] = [];
+  t.mock.method(process.stdout, "write", ((chunk: string) => { documents.push(String(chunk)); return true; }) as never);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  const shared = path.join(sandbox, "shared.json");
+  useTargets(t, fakeTarget("fixture", async (p) => {
+    writeFileAtomic(shared, JSON.stringify({ provider: p.id }));
+    return { app: "fixture", changed: [shared], notes: [] };
+  }));
+  await cmdSync({ apps: "fixture", all: true });
+  const { data } = JSON.parse(documents.join("")) as {
+    data: { providers: Array<{ provider: string; refreshed: { saved: boolean } }>; files: string[] };
+  };
+  assert.deepEqual(data.providers.map((entry) => entry.provider), ["beta", "alpha"]);
+  assert.equal(data.providers.every((entry) => entry.refreshed.saved), true);
+  assert.deepEqual(data.files, [shared], "the same file touched twice is listed once");
 });
 
 test("malformed preview configs never fall back to raw text and dry-run errors hide parser secrets", async (t) => {

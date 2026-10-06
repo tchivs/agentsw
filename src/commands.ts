@@ -581,7 +581,19 @@ function reportResults(results: ApplyResult[]): void {
   }
 }
 
-async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string, redactErrors = false): Promise<ApplyResult[]> {
+interface RunTargetsOptions {
+  /** Replace adapter error text with a safe message (dry-run previews). */
+  redactErrors?: boolean;
+  /**
+   * Set only while one command syncs several providers. An app that names a single provider
+   * (`singleProvider`) is written once, for `winner`, and skipped for the rest instead of each
+   * provider overwriting the pointer the previous one just set. An undefined `winner` means none
+   * of the synced providers is the active one, so those apps keep pointing where they already do.
+   */
+  oneSlot?: { winner: string | undefined };
+}
+
+async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string, opts: RunTargetsOptions = {}): Promise<ApplyResult[]> {
   const selected = resolveTargets(appsFilter);
   const explicit = appsFilter !== undefined && appsFilter !== "all";
   const results: ApplyResult[] = [];
@@ -595,6 +607,17 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       });
       continue;
     }
+    if (op === "apply" && opts.oneSlot && target.singleProvider && provider.id !== opts.oneSlot.winner) {
+      results.push({
+        app: target.id,
+        changed: [],
+        notes: [],
+        skipped: opts.oneSlot.winner === undefined
+          ? `${target.name} holds one provider at a time; left as it is because none of these is the active provider`
+          : `${target.name} holds one provider at a time; written for ${opts.oneSlot.winner}`,
+      });
+      continue;
+    }
     try {
       if (!explicit && !target.detect()) {
         results.push({ app: target.id, changed: [], notes: [], skipped: `${target.name} not detected (pass --apps ${target.id} to force)` });
@@ -602,7 +625,7 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       }
       results.push(await target[op](provider));
     } catch (err) {
-      const safe = redactErrors && !(err instanceof SafeConfigError);
+      const safe = opts.redactErrors === true && !(err instanceof SafeConfigError);
       results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${safe ? t("preview.failedSafely") : (err as Error).message}`) });
       process.exitCode = 1;
     }
@@ -713,6 +736,7 @@ async function runWithOptionalDryRun(
   provider: Provider,
   apps: string | undefined,
   dryRun: boolean | undefined,
+  oneSlot?: RunTargetsOptions["oneSlot"],
 ): Promise<SyncOutcome> {
   const summarize = (results: ApplyResult[], files: string[]): SyncOutcome => ({
     apps: results.map((r) => r.app),
@@ -720,13 +744,13 @@ async function runWithOptionalDryRun(
     skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
   });
   if (!dryRun) {
-    const results = await runTargets(op, provider, apps);
+    const results = await runTargets(op, provider, apps, { oneSlot });
     reportResults(results);
     return summarize(results, results.flatMap((r) => (r.skipped ? [] : r.changed)));
   }
   setDryRun(true);
   try {
-    const results = await runTargets(op, provider, apps, true);
+    const results = await runTargets(op, provider, apps, { redactErrors: true, oneSlot });
     const writes = drainPendingWrites();
     for (const r of results) {
       if (r.skipped) out(`${pc.yellow(t("dryRun.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
@@ -807,39 +831,91 @@ function printModelRefresh(provider: Provider, refresh: ProviderModelRefresh): v
   printUncatalogedHint(provider.models, refresh.catalog, provider.modelsDevId);
 }
 
-export async function cmdSync(opts: { apps?: string; provider?: string; dryRun?: boolean; refresh?: boolean }): Promise<void> {
+/**
+ * `--all` takes every configured provider and `--provider` accepts a comma-separated list, the
+ * same shape as `--apps`; neither falls back to the active provider. Every id is resolved before
+ * any network call so an unknown one fails before half the run has been written.
+ *
+ * The active provider is ordered last. Apps that name a single provider are written once (see
+ * `RunTargetsOptions.oneSlot`), and for the rest the last writer owns whatever "current" pointer
+ * the app keeps, so finishing on the active provider leaves the agents where the store says they are.
+ */
+function resolveSyncProviders(store: Store, opts: { provider?: string; all?: boolean }): string[] {
+  if (opts.all && opts.provider !== undefined) fail(t("sync.allAndProvider"));
+  let ids: string[];
+  if (opts.all) {
+    ids = Object.keys(store.providers);
+    if (!ids.length) fail(t("sync.noProviders"));
+  } else if (opts.provider !== undefined) {
+    ids = [...new Set(opts.provider.split(",").map((id) => id.trim()).filter(Boolean))];
+    if (!ids.length) fail(t("sync.noneSelected"));
+  } else {
+    if (!store.active) fail(t("sync.noActive"));
+    ids = [store.active];
+  }
+  for (const id of ids) getProvider(store, id);
+  const active = store.active;
+  if (ids.length < 2 || !active || !ids.includes(active)) return ids;
+  return [...ids.filter((id) => id !== active), active];
+}
+
+export async function cmdSync(opts: { apps?: string; provider?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
-  const id = opts.provider ?? store.active;
-  if (!id) fail(t("sync.noActive"));
-  const provider = getProvider(store, id);
+  const ids = resolveSyncProviders(store, opts);
+  const many = ids.length > 1;
+  // Only a provider in this run can win the single-slot apps; otherwise they are left alone.
+  const oneSlot = many ? { winner: store.active && ids.includes(store.active) ? store.active : undefined } : undefined;
   const saveRefresh = opts.dryRun !== true;
-  let refresh: ProviderModelRefresh | undefined;
-  if (opts.refresh !== false) {
-    try {
-      refresh = await refreshProviderModels(store, provider, saveRefresh);
-    } catch (err) {
-      // The refresh is the new default; say how to write the saved list instead of just dying.
-      throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
+  const reports: Array<Record<string, unknown>> = [];
+  let failed = 0;
+  for (const [index, id] of ids.entries()) {
+    const provider = getProvider(store, id);
+    if (index) out("");
+    let refresh: ProviderModelRefresh | undefined;
+    if (opts.refresh !== false) {
+      try {
+        refresh = await refreshProviderModels(store, provider, saveRefresh);
+      } catch (err) {
+        // One unreachable provider must not strand the others: report it, write nothing for it,
+        // and fail the run. A single-provider sync has nothing else to do, so it still throws.
+        if (!many) throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
+        warn(t("sync.refreshSkipped", { id, message: (err as Error).message }));
+        process.exitCode = 1;
+        failed += 1;
+        reports.push({ provider: id, refreshFailed: true });
+        continue;
+      }
+      if (!isJson()) {
+        printModelRefresh(provider, refresh);
+        // --dry-run promises to write nothing, so say the fetched list only lived long enough to preview.
+        if (!saveRefresh) note(t("sync.refreshNotSaved"));
+      }
     }
-    if (!isJson()) {
-      printModelRefresh(provider, refresh);
-      // --dry-run promises to write nothing, so say the fetched list only lived long enough to preview.
-      if (!saveRefresh) note(t("sync.refreshNotSaved"));
-    }
-  }
-  out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
-  const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
-  if (isJson()) {
-    emitJson({
+    out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
+    const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot);
+    reports.push({
       provider: id,
       model: provider.defaultModel,
-      dryRun: opts.dryRun === true,
       ...(refresh
         ? { refreshed: { models: refresh.ids.length, added: refresh.added, removed: refresh.removed, saved: saveRefresh } }
         : {}),
       ...outcome,
     });
+  }
+  if (isJson()) {
+    const first = reports[0] ?? {};
+    emitJson(many
+      ? {
+          dryRun: opts.dryRun === true,
+          providers: reports,
+          files: [...new Set(reports.flatMap((report) => (report.files as string[] | undefined) ?? []))],
+        }
+      : { ...first, dryRun: opts.dryRun === true });
+    return;
+  }
+  if (many) {
+    out(`\n${failed ? pc.yellow(t("sync.summaryFailed", { ok: ids.length - failed, count: ids.length })) : t("sync.summaryOk", { count: ids.length })}`);
   }
 }
 
