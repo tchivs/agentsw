@@ -15,6 +15,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Picking providers works the same way everywhere. `--all` and a comma-separated `--provider a,b`
+  now mean the same thing on `sync`, `discover` and `refresh`; `discover` additionally takes its
+  ids positionally (`discover alpha beta`) and falls back to the active provider when given none,
+  where it used to require exactly one. Every id is resolved before the first request, so a typo
+  fails before half a run is on disk, and each command keeps its own default for an omitted
+  selection: the active provider for `sync` and `discover`, every provider for `refresh`.
+
+  `discover` refreshes several providers with the same isolation `sync` has — an unreachable
+  endpoint is reported and skipped, the rest still refresh, and the run exits non-zero — and
+  `discover --sync` then writes only the providers that actually refreshed, never a stale list.
+
 - `sync --all` syncs every configured provider, and `--provider` now takes a comma-separated list
   (`sync -p alpha,beta`), so refreshing a machine's providers is one command instead of one per
   provider. The menu's **Sync providers** action is a multi-select with an "all" row; selecting

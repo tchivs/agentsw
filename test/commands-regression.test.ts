@@ -13,7 +13,7 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-commands-regressi
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
-const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdModels, cmdUse, cmdSync, cmdApps, cmdInstall, cmdUpgrade } = await import("../src/commands.js");
+const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdModels, cmdUse, cmdSync, cmdRefreshMeta, cmdApps, cmdInstall, cmdUpgrade } = await import("../src/commands.js");
 const { saveStore, loadStore, configDir } = await import("../src/store.js");
 const { targets } = await import("../src/targets/index.js");
 const { appPackages } = await import("../src/apps.js");
@@ -103,6 +103,26 @@ function useApps(t: TestContext, ...next: AppPackage[]): void {
 
 function fakeTarget(id: string, apply: TargetApp["apply"], singleProvider = false): TargetApp {
   return transactionalTarget({ id, name: id, protocols: ["openai", "anthropic"], configPaths: [], detect: () => true, current: () => undefined, singleProvider, apply, prune: apply });
+}
+
+/**
+ * Capture the CLI's `--json` documents. The test runner reports through this same stream, so
+ * anything that is not our envelope has to reach the real stdout or the run loses its own results.
+ */
+function captureJson(t: TestContext): string[] {
+  const documents: string[] = [];
+  const write = process.stdout.write.bind(process.stdout) as (...args: unknown[]) => boolean;
+  t.mock.method(process.stdout, "write", ((chunk: unknown, ...rest: unknown[]) => {
+    const text = String(chunk);
+    if (text.startsWith('{"ok"')) { documents.push(text); return true; }
+    return write(chunk, ...rest);
+  }) as never);
+  return documents;
+}
+
+function jsonData<T>(documents: string[]): T {
+  assert.ok(documents.length, "the command wrote no JSON document");
+  return (JSON.parse(documents[documents.length - 1]!) as { data: T }).data;
 }
 
 function recordingTarget(id: string, seen: string[], singleProvider = false): TargetApp {
@@ -341,13 +361,12 @@ test("a dry-run sync reports the unsaved refresh in its JSON payload", async (t)
   seed(original);
   mockModels(t);
   useTargets(t, fakeTarget("fixture", async () => ({ app: "fixture", changed: [], notes: [] })));
-  const documents: string[] = [];
-  t.mock.method(process.stdout, "write", ((chunk: string) => { documents.push(String(chunk)); return true; }) as never);
+  const documents = captureJson(t);
   configureOutput({ json: true });
   t.after(() => configureOutput({ json: false }));
   const before = snapshot();
   await cmdSync({ apps: "fixture", dryRun: true });
-  const { data } = JSON.parse(documents.join("")) as { data: { refreshed: { models: number; saved: boolean } } };
+  const data = jsonData<{ refreshed: { models: number; saved: boolean } }>(documents);
   assert.equal(data.refreshed.models, 4, "the payload counts the ids the refresh kept");
   assert.equal(data.refreshed.saved, false, "a machine consumer is told the store was left alone");
   assert.deepEqual(snapshot(), before);
@@ -426,8 +445,7 @@ test("a multi-provider sync reports each provider and the union of its files as 
   const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
   seed(alpha, beta);
   mockModels(t);
-  const documents: string[] = [];
-  t.mock.method(process.stdout, "write", ((chunk: string) => { documents.push(String(chunk)); return true; }) as never);
+  const documents = captureJson(t);
   configureOutput({ json: true });
   t.after(() => configureOutput({ json: false }));
   const shared = path.join(sandbox, "shared.json");
@@ -436,12 +454,92 @@ test("a multi-provider sync reports each provider and the union of its files as 
     return { app: "fixture", changed: [shared], notes: [] };
   }));
   await cmdSync({ apps: "fixture", all: true });
-  const { data } = JSON.parse(documents.join("")) as {
-    data: { providers: Array<{ provider: string; refreshed: { saved: boolean } }>; files: string[] };
-  };
+  const data = jsonData<{ providers: Array<{ provider: string; refreshed: { saved: boolean } }>; files: string[] }>(documents);
   assert.deepEqual(data.providers.map((entry) => entry.provider), ["beta", "alpha"]);
   assert.equal(data.providers.every((entry) => entry.refreshed.saved), true);
   assert.deepEqual(data.files, [shared], "the same file touched twice is listed once");
+});
+
+test("discover takes several providers, survives one failure, and syncs only what it got", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  let listings = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    listings += 1;
+    if (new URL(String(input)).hostname === "beta.example") throw new Error("fixture network down");
+    return Response.json({ data: ["keep-base", "keep-base-20260101", "m-small", "z-default"].map((id) => ({ id })) });
+  });
+  const stderr: string[] = [];
+  t.mock.method(process.stderr, "write", ((chunk: string) => { stderr.push(String(chunk)); return true; }) as never);
+  const applied: string[] = [];
+  useTargets(t, recordingTarget("fixture", applied));
+  await cmdDiscover(["alpha", "beta"], { sync: true, apps: "fixture" });
+  assert.equal(listings, 2, "each provider is listed once and --sync does not fetch again");
+  assert.deepEqual(applied, ["alpha"], "a provider whose refresh failed is not written from its stale list");
+  assert.match(messages.join("\n"), /refreshed 1 of 2/);
+  assert.match(stderr.join(""), /beta/);
+  assert.equal(process.exitCode, 1);
+  assert.ok(loadStore().providers.alpha!.models.some((m) => m.id === "keep-base-20260101"));
+});
+
+test("discover accepts a comma-separated list and falls back to the active provider", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  mockModels(t);
+  await cmdDiscover(undefined, {});
+  let store = loadStore();
+  assert.ok(store.providers.alpha!.models.some((m) => m.id === "keep-base-20260101"), "no id refreshes the active provider");
+  assert.deepEqual(store.providers.beta!.models.map((m) => m.id), beta.models.map((m) => m.id), "and nothing else");
+  await cmdDiscover("beta,alpha", {});
+  store = loadStore();
+  for (const id of ["alpha", "beta"]) {
+    assert.ok(store.providers[id]!.models.some((m) => m.id === "keep-base-20260101"), `${id} was refreshed from the list`);
+  }
+  assert.match(messages.join("\n"), /refreshed 2 providers/);
+  // -p is accepted for symmetry with sync, and naming ids alongside --all is contradictory.
+  await cmdDiscover([], { provider: "beta" });
+  await assert.rejects(() => cmdDiscover(["alpha"], { all: true }), /process\.exit\(1\)/);
+});
+
+test("discover --all reports every provider in one JSON document", async (t) => {
+  const { configureOutput } = await import("../src/ui.js");
+  seed(
+    provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" }),
+    provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" }),
+  );
+  mockModels(t);
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdDiscover(undefined, { all: true });
+  const data = jsonData<{ providers: Array<{ provider: string; models: number }> }>(documents);
+  assert.deepEqual(data.providers.map((entry) => entry.provider), ["alpha", "beta"]);
+  assert.deepEqual(data.providers.map((entry) => entry.models), [4, 4]);
+});
+
+test("refresh narrows to a provider list and keeps its empty-store behaviour", async (t) => {
+  const { configureOutput } = await import("../src/ui.js");
+  seed(
+    provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" }),
+    provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" }),
+    provider({ id: "gamma", baseUrl: "https://gamma.example/tenant/v1" }),
+  );
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdRefreshMeta({ provider: "beta,gamma" });
+  const data = jsonData<{ checked: number; providers: string[] }>(documents);
+  assert.deepEqual(data.providers, ["beta", "gamma"]);
+  assert.equal(data.checked, 2);
+  await assert.rejects(() => cmdRefreshMeta({ provider: "beta", all: true }), /process\.exit\(1\)/);
+  // --all names an empty store, while the implicit "every provider" default still reports zero.
+  saveStore({ version: 1, providers: {} });
+  await assert.rejects(() => cmdRefreshMeta({ all: true }), /process\.exit\(1\)/);
+  documents.length = 0;
+  await cmdRefreshMeta({});
+  assert.equal(jsonData<{ checked: number }>(documents).checked, 0);
 });
 
 test("malformed preview configs never fall back to raw text and dry-run errors hide parser secrets", async (t) => {

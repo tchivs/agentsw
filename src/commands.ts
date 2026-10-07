@@ -831,38 +831,61 @@ function printModelRefresh(provider: Provider, refresh: ProviderModelRefresh): v
   printUncatalogedHint(provider.models, refresh.catalog, provider.modelsDevId);
 }
 
+/** Comma-separated ids, the same shape `--apps` takes. Repeats collapse; blanks are ignored. */
+function splitProviderList(value: string): string[] {
+  return [...new Set(value.split(",").map((id) => id.trim()).filter(Boolean))];
+}
+
 /**
- * `--all` takes every configured provider and `--provider` accepts a comma-separated list, the
- * same shape as `--apps`; neither falls back to the active provider. Every id is resolved before
- * any network call so an unknown one fails before half the run has been written.
- *
- * The active provider is ordered last. Apps that name a single provider are written once (see
- * `RunTargetsOptions.oneSlot`), and for the rest the last writer owns whatever "current" pointer
- * the app keeps, so finishing on the active provider leaves the agents where the store says they are.
+ * One provider selection for every command that acts on providers: `--all` takes every configured
+ * one, `--provider` takes a comma-separated list, and `fallback` says what no selection means —
+ * `"active"` for the commands that write (sync), `"all"` for the ones that only read and refresh.
+ * Every id is resolved up front so an unknown one fails before the first network call, never after
+ * half a run has been saved. An empty store is an error only when `--all` asked for it by name; the
+ * implicit all-providers fallback keeps reporting zero, as it did before there was a flag.
  */
-function resolveSyncProviders(store: Store, opts: { provider?: string; all?: boolean }): string[] {
-  if (opts.all && opts.provider !== undefined) fail(t("sync.allAndProvider"));
+function resolveProviderIds(store: Store, opts: { provider?: string; all?: boolean }, fallback: "active" | "all"): string[] {
+  if (opts.all && opts.provider !== undefined) fail(t("select.allAndProvider"));
   let ids: string[];
   if (opts.all) {
     ids = Object.keys(store.providers);
-    if (!ids.length) fail(t("sync.noProviders"));
+    if (!ids.length) fail(t("select.noProviders"));
   } else if (opts.provider !== undefined) {
-    ids = [...new Set(opts.provider.split(",").map((id) => id.trim()).filter(Boolean))];
-    if (!ids.length) fail(t("sync.noneSelected"));
+    ids = splitProviderList(opts.provider);
+    if (!ids.length) fail(t("select.noneSelected"));
+  } else if (fallback === "all") {
+    ids = Object.keys(store.providers);
   } else {
     if (!store.active) fail(t("sync.noActive"));
     ids = [store.active];
   }
   for (const id of ids) getProvider(store, id);
+  return ids;
+}
+
+/**
+ * Apps that name a single provider are written once (see `RunTargetsOptions.oneSlot`); for the rest
+ * the last writer owns whatever "current" pointer the app keeps, so a multi-provider sync finishes
+ * on the active provider and leaves the agents where the store says they already are.
+ */
+function activeLast(store: Store, ids: string[]): string[] {
   const active = store.active;
   if (ids.length < 2 || !active || !ids.includes(active)) return ids;
   return [...ids.filter((id) => id !== active), active];
 }
 
+/** Section separator plus the tail line that says how many of several providers came through. */
+function printMultiSummary(count: number, failed: number, key: "sync" | "discover"): void {
+  const done = count - failed;
+  out(`\n${failed
+    ? pc.yellow(t(key === "sync" ? "sync.summaryFailed" : "discover.summaryFailed", { ok: done, count }))
+    : t(key === "sync" ? "sync.summaryOk" : "discover.summaryOk", { count })}`);
+}
+
 export async function cmdSync(opts: { apps?: string; provider?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
-  const ids = resolveSyncProviders(store, opts);
+  const ids = activeLast(store, resolveProviderIds(store, opts, "active"));
   const many = ids.length > 1;
   // Only a provider in this run can win the single-slot apps; otherwise they are left alone.
   const oneSlot = many ? { winner: store.active && ids.includes(store.active) ? store.active : undefined } : undefined;
@@ -914,9 +937,7 @@ export async function cmdSync(opts: { apps?: string; provider?: string; all?: bo
       : { ...first, dryRun: opts.dryRun === true });
     return;
   }
-  if (many) {
-    out(`\n${failed ? pc.yellow(t("sync.summaryFailed", { ok: ids.length - failed, count: ids.length })) : t("sync.summaryOk", { count: ids.length })}`);
-  }
+  if (many) printMultiSummary(ids.length, failed, "sync");
 }
 
 export function cmdStatus(): void {
@@ -995,9 +1016,10 @@ export async function cmdModels(
   out(table(rows, ["PROVIDER", ...MODEL_HEADER], MODEL_QUERY_OPTIONS));
 }
 
-export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string } = {}): Promise<void> {
+export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string; all?: boolean } = {}): Promise<void> {
   const store = loadStore();
-  const providers = opts.provider ? [getProvider(store, opts.provider)] : Object.values(store.providers);
+  // Omitting the selection still means every provider: this command only reads catalogs.
+  const providers = resolveProviderIds(store, opts, "all").map((id) => getProvider(store, id));
   resolveMetadataOptions(opts);
   for (const provider of providers) Object.assign(provider, resolveMetadataOptions(opts, provider));
   const catalog = await withProgress(t("progress.catalog"), () => loadCatalog({ refresh: true }));
@@ -1023,28 +1045,53 @@ export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string
 }
 
 export async function cmdDiscover(
-  id: string,
-  opts: MetadataOptions & { sync?: boolean; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
+  ids: string | string[] | undefined,
+  opts: MetadataOptions & { sync?: boolean; all?: boolean; provider?: string; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
 ): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
-  const provider = getProvider(store, id);
-  Object.assign(provider, resolveMetadataOptions(opts, provider));
-  // flags override and re-persist the filter; --no-filter clears it
-  const flagFilter = parseFilterOpts(opts, provider.modelFilter);
-  if (opts.filter === false) provider.modelFilter = undefined;
-  else if (flagFilter) provider.modelFilter = flagFilter;
-  const refresh = await refreshProviderModels(store, provider);
+  // Ids may arrive as positional arguments, as one comma-separated list, or through `-p` for
+  // symmetry with sync; all three say the same thing, so accept them together.
+  const listed = [...(Array.isArray(ids) ? ids : [ids ?? ""]), opts.provider ?? ""].filter(Boolean).join(",");
+  const selected = resolveProviderIds(store, { provider: listed || undefined, all: opts.all }, "active");
+  // Reject bad metadata options once, before the first provider is contacted.
+  resolveMetadataOptions(opts);
+  const many = selected.length > 1;
+  const reports: Array<Record<string, unknown>> = [];
+  const refreshed: string[] = [];
+  for (const [index, id] of selected.entries()) {
+    const provider = getProvider(store, id);
+    if (index) out("");
+    Object.assign(provider, resolveMetadataOptions(opts, provider));
+    // flags override and re-persist the filter; --no-filter clears it
+    const flagFilter = parseFilterOpts(opts, provider.modelFilter);
+    if (opts.filter === false) provider.modelFilter = undefined;
+    else if (flagFilter) provider.modelFilter = flagFilter;
+    let refresh: ProviderModelRefresh;
+    try {
+      refresh = await refreshProviderModels(store, provider);
+    } catch (err) {
+      // One unreachable endpoint must not strand the others; a single provider still throws.
+      if (!many) throw err;
+      warn(t("sync.refreshSkipped", { id, message: (err as Error).message }));
+      process.exitCode = 1;
+      reports.push({ provider: id, refreshFailed: true });
+      continue;
+    }
+    refreshed.push(id);
+    reports.push({ provider: id, models: refresh.ids.length, added: refresh.added, removed: refresh.removed });
+    if (!isJson()) printModelRefresh(provider, refresh);
+  }
   if (isJson()) {
-    emitJson({ provider: id, models: refresh.ids.length, added: refresh.added, removed: refresh.removed });
+    emitJson(many ? { providers: reports } : (reports[0] ?? {}));
     return;
   }
-  printModelRefresh(provider, refresh);
-  if (opts.sync) {
+  if (many) printMultiSummary(selected.length, selected.length - refreshed.length, "discover");
+  if (opts.sync && refreshed.length) {
     out("");
-    // The list is already fresh: write it without a second fetch.
-    await cmdSync({ provider: id, apps: opts.apps, refresh: false });
-  } else {
+    // The lists are already fresh: write them without a second fetch.
+    await cmdSync({ provider: refreshed.join(","), apps: opts.apps, refresh: false });
+  } else if (!opts.sync) {
     note(`\n${t("discover.next")}`);
   }
 }

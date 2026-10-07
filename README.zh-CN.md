@@ -200,6 +200,10 @@ asw add -y --discover --exclude "*embedding*,*video*" --id myproxy ...
 asw add -y --discover --no-dedup ...            # 保留重复项
 asw discover myproxy --include "gpt-*,glm-*"    # 更新持久化过滤规则
 asw discover myproxy --no-filter                # 清除规则
+
+# 只刷新模型列表、不写任何智能体配置，可一次多个。
+asw discover --all
+asw discover myproxy backup-proxy
 ```
 
 手动 `--models` 指定的 id 和默认模型永不被过滤。
@@ -273,6 +277,10 @@ asw sync --provider myproxy,backup-proxy
   审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败会先重试一次，
   仍失败才使用旧缓存，无缓存时只跳过补充。`AGENTSW_DEBUG=1` 会说明该次尝试失败的原因，
   `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
+- **选择供应商的方式统一：** `sync`、`discover`、`refresh` 都支持 `--all` 和逗号分隔的 `-p a,b`，
+  `discover` 还可以直接写位置参数（`discover alpha beta`）。所有 id 在第一次请求前就全部解析，
+  写错一个会在任何东西落盘之前失败。不指定时各命令保持自己的默认：`sync` 和 `discover` 取当前供应商，
+  `refresh` 取全部。
 - **一次同步多个供应商：** `sync --all` 取全部已配置的供应商，`-p a,b` 取指定列表；逐个刷新并写入，
   并把当前供应商放在最后，这样各智能体记录的“当前指向”最终就停在 store 所说的那一个。
   只记录单个供应商（而非供应商表）的应用——例如 Claude Code 的 env 块——只会为当前供应商写一次；
@@ -281,7 +289,7 @@ asw sync --provider myproxy,backup-proxy
 - **自动查询不等于自动推送：** 添加、快速添加、发现、导入、刷新时补全保存的元数据，永远不会自行写入智能体配置。
   推送是 `sync`，而且它先刷新：先获取供应商模型列表、按目录补全、保存到 store，再写入各智能体。
   `sync --dry-run` 会获取同一份列表以保证预览准确，但既不保存列表也不写配置；
-  `sync --no-refresh` 不联网，只写入已保存的列表；`discover <id>` 刷新完就停，不写任何智能体。
+  `sync --no-refresh` 不联网，只写入已保存的列表；`discover` 刷新完就停，不写任何智能体。
 
 ## 命令
 
@@ -296,9 +304,9 @@ asw sync --provider myproxy,backup-proxy
 | `rename <id> <new-id>` | 备份并迁移 ID 和配置引用，支持 `--dry-run` |
 | `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
 | `sync` | 先刷新各供应商的模型列表，再写入各智能体配置；`--all` 或 `-p a,b` 可一次处理多个，`--no-refresh` 只写已保存的列表 |
-| `discover <id> [--sync]` | 从 `/v1/models` 刷新模型列表与元数据；`--sync` 再推送到各智能体 |
+| `discover [ids...] [--sync]` | 从 `/v1/models` 刷新模型列表与元数据；`--all` 或多个 id 可一次处理多个，不给 id 则取当前供应商；`--sync` 再推送到各智能体 |
 | `models [query]` | 搜索 models.dev 目录（`-r` 强制刷新缓存，`-l <n>` 限制条数） |
-| `refresh [--provider <id>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表 |
+| `refresh [--provider <ids>]` | 刷新已有模型参数，可设置 Gateway 补充源，不改变模型列表；默认全部，`-p a,b` 可缩小范围 |
 | `models --provider <id> --metadata` | 以 JSON 查看字段来源、冲突和参考价格 |
 | `prune <id>` / `remove <id> [--prune]` | 从各应用配置中清除 / 从存储中删除 |
 | `remove <id> --apps omp` | 仅删除指定智能体内的条目，支持 `--dry-run` |

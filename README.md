@@ -215,6 +215,10 @@ asw add -y --discover --exclude "*embedding*,*video*" --id myproxy ...
 asw add -y --discover --no-dedup ...            # keep duplicates
 asw discover myproxy --include "gpt-*,glm-*"    # update the persisted filter
 asw discover myproxy --no-filter                # clear it
+
+# Refresh several providers' model lists without writing any agent config.
+asw discover --all
+asw discover myproxy backup-proxy
 ```
 
 Explicit `--models` entries and the default model are never filtered out.
@@ -295,6 +299,10 @@ Import still skips already configured accounts.
   Gateway has a separate 24-hour cache; a failed request is retried once before falling back to stale cached data
   (or skipping supplementation when there is none). `AGENTSW_DEBUG=1` reports why an attempt failed, and
   `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the 15-second whole-request budget.
+- **One selection everywhere:** `--all` and a comma-separated `-p a,b` mean the same thing on `sync`, `discover`
+  and `refresh`, and `discover` also takes its ids positionally (`discover alpha beta`). Every id is resolved before
+  the first request, so a typo fails before half the run is on disk. Omitting the selection keeps each command's own
+  default: the active provider for `sync` and `discover`, every provider for `refresh`.
 - **Syncing several providers:** `sync --all` takes every configured provider and `-p a,b` takes a list; each is
   refreshed and written in turn, finishing with the active provider so whatever "current" pointer an app keeps ends
   up where the store says it should. An app that names one provider instead of a map — Claude Code's env block — is
@@ -305,7 +313,7 @@ Import still skips already configured accounts.
   and never writes agent configs by itself. `sync` is the push, and it refreshes first: it fetches the provider's model
   list, re-enriches it from the catalogs, saves the store, then applies it. `sync --dry-run` fetches the same list so
   the preview is accurate but saves neither it nor the configs. `sync --no-refresh` writes the saved list without
-  fetching, and `discover <id>` stops after the refresh without writing any agent.
+  fetching, and `discover` stops after the refresh without writing any agent.
 
 ## Commands
 
@@ -320,9 +328,9 @@ Import still skips already configured accounts.
 | `rename <id> <new-id>` | back up and migrate the ID and config references; supports `--dry-run` |
 | `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--dry-run` |
 | `sync` | refresh each provider's model list, then re-apply it to the agent configs; `--all` or `-p a,b` for several, `--no-refresh` writes the saved list |
-| `discover <id> [--sync]` | refresh the model list + metadata from `/v1/models`; `--sync` pushes it to the agents |
+| `discover [ids...] [--sync]` | refresh the model list + metadata from `/v1/models`; `--all` or several ids for more than one, no id for the active provider; `--sync` pushes them to the agents |
 | `models [query]` | search the models.dev catalog (`-r` refresh the cache, `-l <n>` limit rows) |
-| `refresh [--provider <id>]` | refresh saved metadata and optionally configure Gateway; keep the model list |
+| `refresh [--provider <ids>]` | refresh saved metadata and optionally configure Gateway; keep the model list; every provider unless `-p a,b` narrows it |
 | `models --provider <id> --metadata` | inspect field sources, conflicts and reference pricing as JSON |
 | `prune <id>` / `remove <id> [--prune]` | remove from app configs / from the store |
 | `remove <id> --apps omp` | delete only the selected app's entry; supports `--dry-run` |

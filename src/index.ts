@@ -182,8 +182,10 @@ program
   .action(cmdModels);
 
 program
-  .command("discover <id>")
+  .command("discover [ids...]")
   .description(t("cmd.discover"))
+  .option("-p, --provider <ids>", t("opt.refreshProvider"))
+  .option("--all", t("opt.refreshAll"))
   .option("-s, --sync", t("opt.syncAfter"))
   .option("-a, --apps <apps>", t("opt.appsSync"))
   .option("--include <globs>", t("opt.setInclude"))
@@ -213,7 +215,8 @@ program.command("upgrade [apps...]").description(t("cmd.upgrade")).action(cmdUpg
 program
   .command("refresh")
   .description(t("cmd.refresh"))
-  .option("-p, --provider <id>", t("opt.refreshProvider"))
+  .option("-p, --provider <ids>", t("opt.refreshProvider"))
+  .option("--all", t("opt.refreshAll"))
   .option("--metadata-mode <auto|on|off>", t("opt.metadataMode"))
   .option("--gateway-metadata", t("opt.gatewayMetadata"))
   .option("--no-gateway-metadata", t("opt.noGatewayMetadata"))
