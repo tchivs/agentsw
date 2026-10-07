@@ -29,6 +29,7 @@ import {
   type AppReportRow,
 } from "./report.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider, Store } from "./types.js";
+import type { TargetApp } from "./targets/types.js";
 
 /** Share successes and failures without fetching until a model actually needs the supplement. */
 function sharedGatewayLoader(refresh = false): () => Promise<GatewayCatalog | null> {
@@ -585,12 +586,12 @@ interface RunTargetsOptions {
   /** Replace adapter error text with a safe message (dry-run previews). */
   redactErrors?: boolean;
   /**
-   * Set only while one command syncs several providers. An app that names a single provider
-   * (`singleProvider`) is written once, for `winner`, and skipped for the rest instead of each
-   * provider overwriting the pointer the previous one just set. An undefined `winner` means none
-   * of the synced providers is the active one, so those apps keep pointing where they already do.
+   * Set only while one command syncs several providers: the provider each app that names a single
+   * one (`singleProvider`) should receive, by app id. Those apps are written once, for that
+   * provider, and skipped for every other, instead of each provider overwriting the pointer the
+   * previous one just set. An app missing from the map keeps pointing where it already does.
    */
-  oneSlot?: { winner: string | undefined };
+  oneSlot?: { winners: Map<string, string> };
 }
 
 async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?: string, opts: RunTargetsOptions = {}): Promise<ApplyResult[]> {
@@ -607,14 +608,15 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       });
       continue;
     }
-    if (op === "apply" && opts.oneSlot && target.singleProvider && provider.id !== opts.oneSlot.winner) {
+    if (op === "apply" && opts.oneSlot && target.singleProvider && provider.id !== opts.oneSlot.winners.get(target.id)) {
+      const winner = opts.oneSlot.winners.get(target.id);
       results.push({
         app: target.id,
         changed: [],
         notes: [],
-        skipped: opts.oneSlot.winner === undefined
-          ? `${target.name} holds one provider at a time; left as it is because none of these is the active provider`
-          : `${target.name} holds one provider at a time; written for ${opts.oneSlot.winner}`,
+        skipped: winner === undefined
+          ? `${target.name} holds one provider at a time; left as it is because this run does not say which`
+          : `${target.name} holds one provider at a time; written for ${winner}`,
       });
       continue;
     }
@@ -874,6 +876,26 @@ function activeLast(store: Store, ids: string[]): string[] {
   return [...ids.filter((id) => id !== active), active];
 }
 
+/**
+ * Which provider each single-slot app should receive. The active provider wins where the app can
+ * accept it; where it cannot — Claude Code takes anthropic endpoints only, and the active provider
+ * may well be an openai one — the single compatible provider in the run wins instead, because
+ * writing the only candidate takes nothing away. With several compatible candidates and no active
+ * provider among them the choice is the user's, so the app is left pointing where it already does.
+ */
+function oneSlotWinners(selected: TargetApp[], store: Store, ids: string[]): Map<string, string> {
+  const winners = new Map<string, string>();
+  for (const target of selected) {
+    if (!target.singleProvider) continue;
+    const usable = ids.filter((id) => supportsProtocol(target, store.providers[id]!.protocol));
+    const winner = store.active !== undefined && usable.includes(store.active)
+      ? store.active
+      : usable.length === 1 ? usable[0] : undefined;
+    if (winner !== undefined) winners.set(target.id, winner);
+  }
+  return winners;
+}
+
 /** Section separator plus the tail line that says how many of several providers came through. */
 function printMultiSummary(count: number, failed: number, key: "sync" | "discover"): void {
   const done = count - failed;
@@ -883,12 +905,11 @@ function printMultiSummary(count: number, failed: number, key: "sync" | "discove
 }
 
 export async function cmdSync(opts: { apps?: string; provider?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }): Promise<void> {
-  resolveTargets(opts.apps);
+  const selectedTargets = resolveTargets(opts.apps);
   const store = loadStore();
   const ids = activeLast(store, resolveProviderIds(store, opts, "active"));
   const many = ids.length > 1;
-  // Only a provider in this run can win the single-slot apps; otherwise they are left alone.
-  const oneSlot = many ? { winner: store.active && ids.includes(store.active) ? store.active : undefined } : undefined;
+  const oneSlot = many ? { winners: oneSlotWinners(selectedTargets, store, ids) } : undefined;
   const saveRefresh = opts.dryRun !== true;
   const reports: Array<Record<string, unknown>> = [];
   let failed = 0;

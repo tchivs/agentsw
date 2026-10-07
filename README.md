@@ -306,9 +306,11 @@ Import still skips already configured accounts.
 - **Syncing several providers:** `sync --all` takes every configured provider and `-p a,b` takes a list; each is
   refreshed and written in turn, finishing with the active provider so whatever "current" pointer an app keeps ends
   up where the store says it should. An app that names one provider instead of a map — Claude Code's env block — is
-  written once, for the active provider, and left untouched when none of the synced providers is the active one:
-  syncing is not switching. A provider whose endpoint cannot be reached is reported and skipped, the rest still
-  sync, and the run exits non-zero.
+  written once rather than once per provider: it gets the active provider when it can accept it, or the single
+  provider in the run that it can (Claude Code takes anthropic endpoints only, so an openai active provider does not
+  starve it). With several candidates and the active provider not among them the choice is yours, so the app keeps
+  pointing where it already does: syncing is not switching. A provider whose endpoint cannot be reached is reported
+  and skipped, the rest still sync, and the run exits non-zero.
 - **Automatic lookup is not an automatic push:** enrichment updates saved metadata during add/quick/discover/import/refresh
   and never writes agent configs by itself. `sync` is the push, and it refreshes first: it fetches the provider's model
   list, re-enriches it from the catalogs, saves the store, then applies it. `sync --dry-run` fetches the same list so

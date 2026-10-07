@@ -33,9 +33,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
   Each provider is refreshed and written in turn, with the active provider last, so whatever
   "current" pointer an app keeps ends up where the store says it should. An app that names a single
-  provider rather than a map — Claude Code's env block — is written once, for the active provider,
-  and left untouched when none of the synced providers is the active one, because syncing is not
-  switching. A provider whose endpoint cannot be reached is reported and skipped; the rest still
+  provider rather than a map — Claude Code's env block — is written once rather than once per
+  provider: it receives the active provider when it supports that protocol, otherwise the single
+  provider in the run that it does support, so an anthropic-only app is not starved by an openai
+  active provider. When several candidates compete and the active provider is not among them the
+  app keeps pointing where it already does, because syncing is not switching. A provider whose
+  endpoint cannot be reached is reported and skipped; the rest still
   sync and the run exits non-zero. `--json` reports a `providers` array plus the deduplicated union
   of the files touched; a single-provider sync keeps the payload it had.
 

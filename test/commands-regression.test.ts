@@ -125,8 +125,9 @@ function jsonData<T>(documents: string[]): T {
   return (JSON.parse(documents[documents.length - 1]!) as { data: T }).data;
 }
 
-function recordingTarget(id: string, seen: string[], singleProvider = false): TargetApp {
-  return fakeTarget(id, async (p) => { seen.push(p.id); return { app: id, changed: [], notes: [] }; }, singleProvider);
+function recordingTarget(id: string, seen: string[], singleProvider = false, protocols: Protocol[] = ["openai", "anthropic"]): TargetApp {
+  const apply: TargetApp["apply"] = async (p) => { seen.push(p.id); return { app: id, changed: [], notes: [] }; };
+  return transactionalTarget({ id, name: id, protocols, configPaths: [], detect: () => true, current: () => undefined, singleProvider, apply, prune: apply });
 }
 
 test("automatic add and quick reentry retain all user-owned options, IDs, names, and hints", async (t) => {
@@ -405,6 +406,27 @@ test("a one-slot app is left alone when none of the synced providers is the acti
   // Syncing is not switching: nothing here should take the single slot away from gamma.
   assert.deepEqual(one, []);
   assert.match(messages.join("\n"), /one provider at a time/);
+});
+
+test("a one-slot app that cannot take the active provider still gets its one usable one", async (t) => {
+  // Claude Code's shape: anthropic only, while the active provider speaks openai.
+  const openai = provider({ id: "oai", baseUrl: "https://oai.example/tenant/v1" });
+  const anthropic = provider({ id: "ant", protocol: "anthropic", baseUrl: "https://ant.example/tenant/v1" });
+  seed(openai, anthropic);
+  mockModels(t, ["openai", "anthropic"]);
+  const one: string[] = [];
+  useTargets(t, recordingTarget("one", one, true, ["anthropic"]));
+  await cmdSync({ apps: "one", all: true });
+  assert.deepEqual(one, ["ant"], "the only provider the app can accept is written, not nothing");
+
+  // With two usable candidates and the active provider not among them, the choice stays the user's.
+  const second = provider({ id: "ant2", protocol: "anthropic", baseUrl: "https://ant2.example/tenant/v1" });
+  seed(openai, anthropic, second);
+  const narrowed: string[] = [];
+  useTargets(t, recordingTarget("one", narrowed, true, ["anthropic"]));
+  await cmdSync({ apps: "one", provider: "ant,ant2" });
+  assert.deepEqual(narrowed, []);
+  assert.match(messages.join("\n"), /does not say which/);
 });
 
 test("a multi-provider sync resolves every id before it fetches or writes anything", async (t) => {
