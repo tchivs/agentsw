@@ -803,6 +803,13 @@ interface ProviderModelRefresh {
   ids: string[];
   added: string[];
   removed: string[];
+  /**
+   * Pinned ids (default and small model) the fresh listing no longer carries. They are deliberately
+   * kept — a flaky listing must not delete the model a person chose — but they are also exactly what
+   * the agent configs will be told to use, and being retained keeps them out of `removed`, so
+   * nothing else in the output or the payload would mention them.
+   */
+  missing: string[];
   catalog?: Catalog | undefined;
 }
 
@@ -828,11 +835,11 @@ async function refreshProviderModels(store: Store, provider: Provider, save = tr
   const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   provider.models = await withProgress(t("progress.metadata"), () =>
     enrichProviderModels(catalog, [...retained], { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) }));
-  if (!ids.includes(provider.defaultModel)) {
-    out(pc.yellow(t("discover.defaultMissing", { model: provider.defaultModel })));
-  }
+  // Reported by the caller, where it reads after the table or the per-app results instead of
+  // scrolling away above them.
+  const missing = [...new Set(pinned)].filter((model) => !ids.includes(model));
   if (save) saveStore(store);
-  return { ids, added, removed, catalog };
+  return { ids, added, removed, missing, catalog };
 }
 
 function printModelRefresh(provider: Provider, refresh: ProviderModelRefresh): void {
@@ -950,11 +957,23 @@ export async function cmdSync(opts: { apps?: string; provider?: string; all?: bo
     }
     out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
     const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot);
+    if (refresh?.missing.length) {
+      const models = refresh.missing.join(", ");
+      warn(t(opts.dryRun ? "refresh.pinnedMissing" : "sync.pinnedMissingWritten", { models, id }));
+    }
     reports.push({
       provider: id,
       model: provider.defaultModel,
       ...(refresh
-        ? { refreshed: { models: refresh.ids.length, added: refresh.added, removed: refresh.removed, saved: saveRefresh } }
+        ? {
+            refreshed: {
+              models: refresh.ids.length,
+              added: refresh.added,
+              removed: refresh.removed,
+              missing: refresh.missing,
+              saved: saveRefresh,
+            },
+          }
         : {}),
       ...outcome,
     });
@@ -1112,8 +1131,9 @@ export async function cmdDiscover(
       continue;
     }
     refreshed.push(id);
-    reports.push({ provider: id, models: refresh.ids.length, added: refresh.added, removed: refresh.removed });
+    reports.push({ provider: id, models: refresh.ids.length, added: refresh.added, removed: refresh.removed, missing: refresh.missing });
     if (!isJson()) printModelRefresh(provider, refresh);
+    if (refresh.missing.length) warn(t("refresh.pinnedMissing", { models: refresh.missing.join(", "), id }));
   }
   if (isJson()) {
     emitJson(many ? { providers: reports } : (reports[0] ?? {}));

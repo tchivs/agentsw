@@ -299,6 +299,11 @@ Import still skips already configured accounts.
   Gateway has a separate 24-hour cache; a failed request is retried once before falling back to stale cached data
   (or skipping supplementation when there is none). `AGENTSW_DEBUG=1` reports why an attempt failed, and
   `AGENTSW_GATEWAY_TIMEOUT_MS` overrides the 15-second whole-request budget.
+- **A model the endpoint dropped is reported, not hidden.** A refresh keeps the default and small
+  model even when the listing stops carrying them — one flaky listing must not delete the model you
+  chose — but being kept also keeps them out of the "removed upstream" line, so they are named in a
+  `warning:` after the apply and in `--json` as `refreshed.missing`. That is what a renamed model
+  looks like from the client side: the agents keep working with an id the endpoint now rejects.
 - **One selection everywhere:** `--all` and a comma-separated `-p a,b` mean the same thing on `sync`, `discover`
   and `refresh`, and `discover` also takes its ids positionally (`discover alpha beta`). Every id is resolved before
   the first request, so a typo fails before half the run is on disk. Omitting the selection keeps each command's own

@@ -51,6 +51,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A default or small model the endpoint has stopped listing is now named out loud. A refresh keeps
+  such an id on purpose — one flaky listing must not delete the model a person chose — but keeping
+  it also kept it out of `removed`, so the only trace was a dim yellow line between the refresh
+  header and a model table that can run to dozens of rows, and `--json` carried no trace at all
+  while `sync` went on writing that id into every agent config. This is exactly what an endpoint
+  renaming a model looks like from the client side. It is still written, and now it is reported:
+  a `warning:` naming the models and the `agentsw use <id> -m <model>` that replaces them, printed
+  after `discover`'s table and after `sync`'s per-app results, plus `refreshed.missing` in the
+  `--json` payload. The small model counts too, which it did not before.
+
 - `sync --dry-run` no longer saves the refreshed model list. The refresh above ran before the
   dry-run scope opened, so previewing a sync wrote the freshly fetched list straight into the
   provider store — the one thing `--dry-run` promises not to do. The fetch still happens, so the

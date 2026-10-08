@@ -277,6 +277,10 @@ asw sync --provider myproxy,backup-proxy
   审计信息仅保存在 agentsw，不写入智能体运行配置。Gateway 目录独立缓存 24 小时；请求失败会先重试一次，
   仍失败才使用旧缓存，无缓存时只跳过补充。`AGENTSW_DEBUG=1` 会说明该次尝试失败的原因，
   `AGENTSW_GATEWAY_TIMEOUT_MS` 可覆盖默认 15 秒的整体请求预算。
+- **端点下掉的模型会被明确报出,而不是悄悄保留。** 刷新时即使列表里不再有默认模型和小模型，也会保留它们——
+  一次抖动的列表不该删掉你选定的模型——但「removed upstream」里就不会出现它们了，所以改为在写入之后用
+  `warning:` 点名，`--json` 里对应 `refreshed.missing`。模型被改名时从客户端看到的就是这个现象：
+  配置照旧，而端点已经不认这个 id 了。
 - **选择供应商的方式统一：** `sync`、`discover`、`refresh` 都支持 `--all` 和逗号分隔的 `-p a,b`，
   `discover` 还可以直接写位置参数（`discover alpha beta`）。所有 id 在第一次请求前就全部解析，
   写错一个会在任何东西落盘之前失败。不指定时各命令保持自己的默认：`sync` 和 `discover` 取当前供应商，

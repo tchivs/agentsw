@@ -403,9 +403,13 @@ const messages = {
 
   "discover.summaryOk": { en: "refreshed {count} providers", "zh-CN": "已刷新 {count} 个供应商" },
   "discover.summaryFailed": { en: "refreshed {ok} of {count} providers; the rest were skipped", "zh-CN": "已刷新 {count} 个中的 {ok} 个供应商,其余已跳过" },
-  "discover.defaultMissing": {
-    en: "default model {model} no longer listed; keeping it anyway",
-    "zh-CN": "默认模型 {model} 已不在列表中;仍然保留",
+  "refresh.pinnedMissing": {
+    en: "{models} no longer listed by the endpoint; kept as configured — pick a listed model with: agentsw use {id} -m <model>",
+    "zh-CN": "{models} 已不在端点的模型列表中;仍按原配置保留 —— 可用 agentsw use {id} -m <model> 换成列表中的模型",
+  },
+  "sync.pinnedMissingWritten": {
+    en: "{models} no longer listed by the endpoint but was written to the agents anyway; pick a listed model with: agentsw use {id} -m <model>",
+    "zh-CN": "{models} 已不在端点的模型列表中,但仍写入了各智能体;可用 agentsw use {id} -m <model> 换成列表中的模型",
   },
   "discover.next": {
     en: "run `agentsw sync` to push into app configs",

@@ -226,19 +226,46 @@ test("discovery persists complete paginated results and retains old store on any
   assert.deepEqual(loadStore().providers[original.id]!.models.map((m) => m.id), ["first", "last", "m-small", "z-default"]);
 });
 
-test("discover keeps a pinned model out of the removed-upstream count", async (t) => {
+test("discover keeps a pinned model out of the removed-upstream count but names it as a warning", async (t) => {
   const original = provider();
   seed(original);
+  const stderr: string[] = [];
+  t.mock.method(process.stderr, "write", ((chunk: string) => { stderr.push(String(chunk)); return true; }) as never);
   t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id: "keep-base" }] }));
   await cmdDiscover(original.id, {});
   const output = messages.join("\n");
   assert.equal(output.includes("removed upstream"), false, "a retained pinned model is not removed upstream");
   assert.match(output, /\+0 \/ -0/);
-  assert.match(output, /no longer listed; keeping it anyway/);
+  // Retaining it keeps it out of `removed`, so the only mention left has to be loud and actionable.
+  assert.match(stderr.join(""), /warning: .*no longer listed by the endpoint/);
+  for (const model of [original.defaultModel, original.smallModel!]) assert.ok(stderr.join("").includes(model), model);
+  assert.match(stderr.join(""), /agentsw use user-owned-id -m/);
   assert.deepEqual(
     loadStore().providers[original.id]!.models.map((m) => m.id).sort(),
     ["keep-base", "m-small", "z-default"],
   );
+});
+
+test("a sync that writes a model the endpoint dropped says so after the apply and in its payload", async (t) => {
+  const original = provider();
+  seed(original);
+  const stderr: string[] = [];
+  t.mock.method(process.stderr, "write", ((chunk: string) => { stderr.push(String(chunk)); return true; }) as never);
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id: "keep-base" }] }));
+  const applied: string[] = [];
+  useTargets(t, recordingTarget("fixture", applied));
+  await cmdSync({ apps: "fixture" });
+  assert.deepEqual(applied, [original.id], "the chosen model is still written: a flaky listing must not drop it");
+  assert.match(stderr.join(""), /warning: .*written to the agents anyway/);
+
+  const { configureOutput } = await import("../src/ui.js");
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdSync({ apps: "fixture" });
+  const data = jsonData<{ refreshed: { missing: string[]; removed: string[] } }>(documents);
+  assert.deepEqual(data.refreshed.missing.sort(), ["m-small", "z-default"], "a machine consumer is told too");
+  assert.deepEqual(data.refreshed.removed, [], "and they are still not reported as removed upstream");
 });
 
 test("models rejects a non-positive or non-numeric --limit instead of dumping the catalog", async () => {
