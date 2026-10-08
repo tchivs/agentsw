@@ -4,16 +4,10 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-
-- `sync` refreshes the provider's model list (and re-enriches saved metadata) before writing the
-  agent configs, so one command keeps both sides in step; `sync --no-refresh` writes the saved
-  list without fetching. The menu's separate model-list action and its "also sync?" toggle are
-  gone — the single **Sync a provider** action runs the same refresh-then-write path as the CLI.
+## [0.11.0] - 2026-10-08
 
 ### Added
+
 
 - `use --small-model <id>` fills the slot agents reach for cheap background work — Claude Code's
   `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` — and `--no-small-model` clears
@@ -49,7 +43,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
   sync and the run exits non-zero. `--json` reports a `providers` array plus the deduplicated union
   of the files touched; a single-provider sync keeps the payload it had.
 
+### Changed
+
+
+- `sync` refreshes the provider's model list (and re-enriches saved metadata) before writing the
+  agent configs, so one command keeps both sides in step; `sync --no-refresh` writes the saved
+  list without fetching. The menu's separate model-list action and its "also sync?" toggle are
+  gone — the single **Sync a provider** action runs the same refresh-then-write path as the CLI.
+
 ### Fixed
+
 
 - A default or small model the endpoint has stopped listing is now named out loud. A refresh keeps
   such an id on purpose — one flaky listing must not delete the model a person chose — but keeping
@@ -534,7 +537,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/tchivs/agentsw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/tchivs/agentsw/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tchivs/agentsw/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tchivs/agentsw/compare/v0.9.2...v0.10.0
