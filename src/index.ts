@@ -157,6 +157,8 @@ program
   .description(t("cmd.use"))
   .option("-a, --apps <apps>", t("opt.appsDetailed"))
   .option("-m, --model <id>", t("opt.model"))
+  .option("--small-model <id>", t("opt.smallModel"))
+  .option("--no-small-model", t("opt.noSmallModel"))
   .option("-n, --dry-run", t("opt.dryRun"))
   .action(cmdUse);
 

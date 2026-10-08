@@ -341,6 +341,30 @@ test("credential-file previews redact arbitrary flat and nested reference values
   assert.deepEqual(snapshot(), before);
 });
 
+test("use sets and clears the small/fast model slot and rejects one the provider lacks", async (t) => {
+  const original = provider({ smallModel: undefined });
+  seed(original);
+  const applied: string[] = [];
+  useTargets(t, recordingTarget("fixture", applied));
+  await cmdUse(original.id, { apps: "fixture", smallModel: "keep-base" });
+  assert.equal(loadStore().providers[original.id]!.smallModel, "keep-base");
+
+  // Clearing returns the slot to "same as the default model", which is what an unset field means.
+  await cmdUse(original.id, { apps: "fixture", smallModel: false });
+  assert.equal("smallModel" in loadStore().providers[original.id]!, false);
+
+  // An unknown id is refused before anything is written, exactly as --model is.
+  await cmdUse(original.id, { apps: "fixture", smallModel: "keep-base" });
+  const before = snapshot();
+  await assert.rejects(() => cmdUse(original.id, { apps: "fixture", smallModel: "not-listed" }), /process\.exit\(1\)/);
+  assert.deepEqual(snapshot(), before);
+  assert.equal(loadStore().providers[original.id]!.smallModel, "keep-base", "a rejected id leaves the saved one alone");
+
+  // A dry run previews the new slot without saving it, like every other dry run.
+  await cmdUse(original.id, { apps: "fixture", smallModel: "m-small", dryRun: true });
+  assert.equal(loadStore().providers[original.id]!.smallModel, "keep-base");
+});
+
 test("a dry-run sync previews the refreshed list without saving it to the store", async (t) => {
   const original = provider();
   seed(original);

@@ -15,6 +15,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `use --small-model <id>` fills the slot agents reach for cheap background work — Claude Code's
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` — and `--no-small-model` clears
+  it again. Leaving it unset means "same as the default model", so an expensive default quietly
+  became the background model too, and the only way to set the slot was `add`, which demands the
+  endpoint and credential again. The id is validated against the provider's model list and a dry
+  run previews it without saving, exactly as `-m` does.
+
 - Picking providers works the same way everywhere. `--all` and a comma-separated `--provider a,b`
   now mean the same thing on `sync`, `discover` and `refresh`; `discover` additionally takes its
   ids positionally (`discover alpha beta`) and falls back to the active provider when given none,

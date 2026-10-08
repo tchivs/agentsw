@@ -304,7 +304,7 @@ asw sync --provider myproxy,backup-proxy
 | `list` / `status` | 已配置的供应商 / 各智能体当前指向 |
 | `list --apps omp,prime` | 列出智能体本地供应商 ID，包括未导入 agentsw 的条目 |
 | `rename <id> <new-id>` | 备份并迁移 ID 和配置引用，支持 `--dry-run` |
-| `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--dry-run` |
+| `use <id>` | 切换所有检测到的智能体；`-a codex,omp`、`-m <model>`、`--small-model <id>` / `--no-small-model`、`--dry-run` |
 | `sync` | 先刷新各供应商的模型列表，再写入各智能体配置；`--all` 或 `-p a,b` 可一次处理多个，`--no-refresh` 只写已保存的列表 |
 | `discover [ids...] [--sync]` | 从 `/v1/models` 刷新模型列表与元数据；`--all` 或多个 id 可一次处理多个，不给 id 则取当前供应商；`--sync` 再推送到各智能体 |
 | `models [query]` | 搜索 models.dev 目录（`-r` 强制刷新缓存，`-l <n>` 限制条数） |

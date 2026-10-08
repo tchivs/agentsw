@@ -39,6 +39,7 @@ const messages = {
   "opt.models": { en: "comma-separated model ids", "zh-CN": "逗号分隔的模型 id" },
   "opt.defaultModel": { en: "default model (defaults to first)", "zh-CN": "默认模型(默认取第一个)" },
   "opt.smallModel": { en: "small/fast model (Claude Code haiku slot)", "zh-CN": "小型/快速模型(Claude Code haiku 槽位)" },
+  "opt.noSmallModel": { en: "clear the small/fast model so the default model fills that slot", "zh-CN": "清除小型/快速模型,该槽位改用默认模型" },
   "opt.reasoning": { en: "preferred reasoning effort (codex): minimal|low|medium|high", "zh-CN": "Codex 首选推理等级: minimal|low|medium|high" },
   "opt.discover": { en: "list model ids from the provider's /v1/models", "zh-CN": "从供应商 /v1/models 获取模型 id" },
   "opt.include": { en: "keep only models matching comma-separated globs", "zh-CN": "仅保留匹配逗号分隔 glob 的模型" },

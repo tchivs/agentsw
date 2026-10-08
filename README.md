@@ -328,7 +328,7 @@ Import still skips already configured accounts.
 | `list` / `status` | configured providers / what each agent points at |
 | `list --apps omp,prime` | list agent-local provider IDs, including entries absent from agentsw |
 | `rename <id> <new-id>` | back up and migrate the ID and config references; supports `--dry-run` |
-| `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--dry-run` |
+| `use <id>` | switch every detected agent; `-a codex,omp`, `-m <model>`, `--small-model <id>` / `--no-small-model`, `--dry-run` |
 | `sync` | refresh each provider's model list, then re-apply it to the agent configs; `--all` or `-p a,b` for several, `--no-refresh` writes the saved list |
 | `discover [ids...] [--sync]` | refresh the model list + metadata from `/v1/models`; `--all` or several ids for more than one, no id for the active provider; `--sync` pushes them to the agents |
 | `models [query]` | search the models.dev catalog (`-r` refresh the cache, `-l <n>` limit rows) |

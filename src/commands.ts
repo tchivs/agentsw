@@ -766,15 +766,27 @@ async function runWithOptionalDryRun(
   }
 }
 
-export async function cmdUse(id: string, opts: { apps?: string; model?: string; dryRun?: boolean }): Promise<void> {
+export async function cmdUse(id: string, opts: { apps?: string; model?: string; smallModel?: string | boolean; dryRun?: boolean }): Promise<void> {
   resolveTargets(opts.apps);
   const store = loadStore();
   const provider = getProvider(store, id);
-  if (opts.model) {
-    if (!provider.models.some((m) => m.id === opts.model)) {
-      fail(t("use.modelMissing", { model: opts.model, id, have: provider.models.map((m) => m.id).join(", ") }));
+  const requireConfigured = (model: string): void => {
+    if (!provider.models.some((m) => m.id === model)) {
+      fail(t("use.modelMissing", { model, id, have: provider.models.map((m) => m.id).join(", ") }));
     }
+  };
+  if (opts.model) {
+    requireConfigured(opts.model);
     provider.defaultModel = opts.model;
+  }
+  // The slot agents reach for cheap background work — Claude Code's haiku variables. Leaving it
+  // unset means "same as the default model", so an expensive default silently becomes the
+  // background model too; `--no-small-model` returns the slot to that fallback.
+  if (typeof opts.smallModel === "string") {
+    requireConfigured(opts.smallModel);
+    provider.smallModel = opts.smallModel;
+  } else if (opts.smallModel === false) {
+    delete provider.smallModel;
   }
   if (!opts.dryRun) {
     store.active = id;
