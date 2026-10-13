@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Provider, Protocol } from "../src/types.js";
 import type { AppPackage } from "../src/apps.js";
 import type { TargetApp } from "../src/targets/types.js";
+import { configureOutput } from "../src/ui.js";
 
 // Resolve every application path inside this test's HOME before importing commands.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-commands-regression-"));
@@ -14,10 +15,10 @@ process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
 const { cmdAdd, cmdQuickAdd, cmdDiscover, cmdModels, cmdUse, cmdSync, cmdRefreshMeta, cmdApps, cmdInstall, cmdUpgrade } = await import("../src/commands.js");
-const { saveStore, loadStore, configDir } = await import("../src/store.js");
+const { saveStore, loadStore, configDir, configFile } = await import("../src/store.js");
 const { targets } = await import("../src/targets/index.js");
 const { appPackages } = await import("../src/apps.js");
-const { writeFileAtomic, backupFile, setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
+const { writeFileAtomic, backupFile, isDryRun, setDryRun, drainPendingWrites } = await import("../src/fsutil.js");
 const { transactionalTarget } = await import("../src/target-transaction.js");
 const { setLocale } = await import("../src/i18n.js");
 
@@ -424,6 +425,59 @@ test("a dry-run sync reports the unsaved refresh in its JSON payload", async (t)
   assert.deepEqual(snapshot(), before);
 });
 
+for (const cacheState of ["missing", "expired"]) {
+  test(`dry-run sync fetches ${cacheState} metadata caches without writing or previewing them`, async (t) => {
+    const original = provider({ gatewayMetadata: true });
+    seed(original);
+    const catalogFile = path.join(configDir, "models-dev.json");
+    const gatewayFile = path.join(configDir, "ai-gateway.json");
+    const catalog = JSON.parse(fs.readFileSync(catalogFile, "utf8"));
+    const gateway = JSON.parse(fs.readFileSync(gatewayFile, "utf8")).body;
+    if (cacheState === "missing") {
+      fs.rmSync(catalogFile);
+      fs.rmSync(gatewayFile);
+    } else {
+      fs.utimesSync(catalogFile, new Date(0), new Date(0));
+      fs.writeFileSync(gatewayFile, JSON.stringify({ version: 1, fetchedAt: new Date(0).toISOString(), body: gateway }));
+    }
+    const requests: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const host = new URL(String(input)).hostname;
+      requests.push(host);
+      if (host === "models.dev") return Response.json(catalog);
+      if (host === "ai-gateway.vercel.sh") return Response.json(gateway);
+      assert.equal(host, "fixture.example");
+      return Response.json({ data: [{ id: "keep-base" }] });
+    });
+    const file = path.join(sandbox, "fixture-preview.json");
+    useTargets(t, fakeTarget("fixture", async (p) => {
+      assert.equal(p.models.find((m) => m.id === "keep-base")?.contextWindow, 111);
+      writeFileAtomic(file, JSON.stringify({ models: p.models.map((m) => m.id) }));
+      return { app: "fixture", changed: [file], notes: [] };
+    }));
+    const documents = captureJson(t);
+    configureOutput({ json: true });
+    t.after(() => configureOutput({ json: false }));
+    const before = snapshot();
+    await cmdSync({ apps: "fixture", dryRun: true });
+    assert.deepEqual(requests, ["fixture.example", "models.dev", "ai-gateway.vercel.sh"]);
+    assert.equal(documents.length, 1);
+    assert.deepEqual(jsonData<{ files: string[] }>(documents).files, [file]);
+    assert.deepEqual(snapshot(), before);
+    assert.equal(isDryRun(), false);
+    assert.deepEqual(drainPendingWrites(), []);
+
+    // An exceptional refresh must also restore an existing preview scope and discard cache intents.
+    configureOutput({ json: false });
+    setDryRun(true);
+    t.mock.method(globalThis, "fetch", async () => { throw new Error("fixture network down"); });
+    await assert.rejects(cmdSync({ apps: "fixture", dryRun: true }), /could not refresh/);
+    assert.equal(isDryRun(), true);
+    assert.deepEqual(drainPendingWrites(), []);
+    assert.deepEqual(snapshot(), before);
+  });
+}
+
 test("sync --all refreshes every provider and leaves a one-slot app on the active one", async (t) => {
   const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
   const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
@@ -510,6 +564,31 @@ test("one unreachable provider is skipped while the rest of the sync still write
   assert.match(stderr.join(""), /beta/);
   assert.match(stderr.join("") + messages.join("\n"), /1 of 2|synced 1/);
   assert.equal(process.exitCode, 1, "a skipped provider still fails the run");
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdSync({ apps: "fixture", all: true });
+  assert.equal(documents.length, 1);
+  const envelope = JSON.parse(documents[0]!) as { ok: boolean; error: { message: string }; data: { providers: Array<{ provider: string; refreshFailed?: boolean; apps?: string[] }> } };
+  assert.equal(envelope.ok, false);
+  assert.match(envelope.error.message, /beta/);
+  assert.deepEqual(envelope.data.providers[0], { provider: "beta", refreshFailed: true });
+  assert.deepEqual(envelope.data.providers[1]!.apps, ["fixture"]);
+  for (const run of [
+    () => cmdSync({ apps: "fixture", provider: "beta" }),
+    () => cmdDiscover("beta", { apps: "fixture", sync: true, metadataMode: "off" }),
+  ]) {
+    documents.length = 0;
+    const before = snapshot();
+    await run();
+    assert.equal(documents.length, 1);
+    const single = JSON.parse(documents[0]!) as { ok: boolean; error: { message: string }; data: { provider: string; refreshFailed: boolean } };
+    assert.equal(single.ok, false);
+    assert.match(single.error.message, /beta/);
+    assert.equal(single.data.provider, "beta");
+    assert.equal(single.data.refreshFailed, true);
+    assert.deepEqual(snapshot(), before);
+  }
 });
 
 test("a multi-provider sync reports each provider and the union of its files as JSON", async (t) => {
@@ -536,7 +615,6 @@ test("a multi-provider sync reports each provider and the union of its files as 
 test("discover takes several providers, survives one failure, and syncs only what it got", async (t) => {
   const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
   const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
-  seed(alpha, beta);
   let listings = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     listings += 1;
@@ -547,13 +625,49 @@ test("discover takes several providers, survives one failure, and syncs only wha
   t.mock.method(process.stderr, "write", ((chunk: string) => { stderr.push(String(chunk)); return true; }) as never);
   const applied: string[] = [];
   useTargets(t, recordingTarget("fixture", applied));
-  await cmdDiscover(["alpha", "beta"], { sync: true, apps: "fixture" });
-  assert.equal(listings, 2, "each provider is listed once and --sync does not fetch again");
-  assert.deepEqual(applied, ["alpha"], "a provider whose refresh failed is not written from its stale list");
+  for (const flags of [{ exclude: "keep-base" }, { filter: false }]) {
+    seed(alpha, beta);
+    listings = 0;
+    applied.length = 0;
+    await cmdDiscover(["beta", "alpha"], { sync: true, apps: "fixture", metadataMode: "off", gatewayModels: '{"keep-base":"vendor/model"}', ...flags });
+    assert.equal(listings, 2, "each provider is listed once and --sync does not fetch again");
+    assert.deepEqual(applied, ["alpha"], "a failed provider is not written from its stale list");
+    const store = loadStore();
+    assert.deepEqual(store.providers.beta, beta, "failed flags never leak into a later successful save");
+    assert.equal(store.active, "alpha");
+    assert.equal(store.providers.alpha!.gatewayMetadata, false);
+    assert.deepEqual(store.providers.alpha!.gatewayModelAliases, { "keep-base": "vendor/model" });
+    assert.deepEqual(store.providers.alpha!.modelFilter, flags.filter === false ? undefined : { ...alpha.modelFilter, exclude: ["keep-base"] });
+    assert.deepEqual(store.providers.alpha!.models.map((m) => m.id).sort(), flags.filter === false
+      ? ["keep-base", "m-small", "z-default"]
+      : ["m-small", "z-default"]);
+    assert.equal(process.exitCode, 1);
+  }
   assert.match(messages.join("\n"), /refreshed 1 of 2/);
   assert.match(stderr.join(""), /beta/);
+});
+
+test("a failed discovery save restores its provider before the next provider saves", async (t) => {
+  const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+  const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+  seed(alpha, beta);
+  mockModels(t);
+  const rename = fs.renameSync.bind(fs);
+  let failNextSave = true;
+  t.mock.method(fs, "renameSync", ((from, to) => {
+    if (String(to) === configFile && failNextSave) {
+      failNextSave = false;
+      throw new Error("fixture store save failed");
+    }
+    return rename(from, to);
+  }) as typeof fs.renameSync);
+  await cmdDiscover(["beta", "alpha"], { filter: false, metadataMode: "off" });
+  const store = loadStore();
+  assert.deepEqual(store.providers.beta, beta);
+  assert.equal(store.active, "alpha");
+  assert.equal(store.providers.alpha!.modelFilter, undefined);
+  assert.equal(store.providers.alpha!.gatewayMetadata, false);
   assert.equal(process.exitCode, 1);
-  assert.ok(loadStore().providers.alpha!.models.some((m) => m.id === "keep-base-20260101"));
 });
 
 test("discover accepts a comma-separated list and falls back to the active provider", async (t) => {
@@ -576,6 +690,63 @@ test("discover accepts a comma-separated list and falls back to the active provi
   await assert.rejects(() => cmdDiscover(["alpha"], { all: true }), /process\.exit\(1\)/);
 });
 
+for (const partialFailure of [false, true]) {
+  test(`discover --sync --json writes refreshed models once${partialFailure ? " and skips failed providers" : ""}`, async (t) => {
+    const alpha = provider({ id: "alpha", baseUrl: "https://alpha.example/tenant/v1" });
+    const beta = provider({ id: "beta", baseUrl: "https://beta.example/tenant/v1" });
+    seed(...(partialFailure ? [alpha, beta] : [alpha]));
+    const listings: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/tenant/v1/models");
+      listings.push(url.hostname);
+      if (url.hostname === "beta.example") throw new Error("fixture network down");
+      return Response.json({ data: [{ id: "keep-new" }] });
+    });
+    const file = path.join(sandbox, "fixture-models.json");
+    const applied: string[] = [];
+    useTargets(t, fakeTarget("fixture", async (p) => {
+      applied.push(p.id);
+      writeFileAtomic(file, JSON.stringify({ provider: p.id, models: p.models.map((m) => m.id) }));
+      return { app: "fixture", changed: [file], notes: [] };
+    }));
+    const documents = captureJson(t);
+    configureOutput({ json: true });
+    t.after(() => configureOutput({ json: false }));
+    if (!partialFailure) process.exitCode = 1; // A prior command's status must not change this envelope.
+    await cmdDiscover(undefined, { all: true, sync: true, apps: "fixture" });
+    assert.deepEqual(listings, partialFailure ? ["alpha.example", "beta.example"] : ["alpha.example"]);
+    assert.deepEqual(applied, ["alpha"]);
+    const written = JSON.parse(fs.readFileSync(file, "utf8")) as { provider: string; models: string[] };
+    assert.equal(written.provider, "alpha");
+    assert.ok(written.models.includes("keep-new"));
+    assert.equal(documents.length, 1);
+    type Discovery = { provider: string; models: number; added: string[]; removed: string[]; missing: string[]; refreshFailed?: boolean; apps: string[]; files: string[]; model: string };
+    const envelope = JSON.parse(documents[0]!) as { ok: boolean; error?: { message: string }; data: Discovery & { providers?: Discovery[] } };
+    assert.equal(envelope.ok, !partialFailure);
+    const data = envelope.data;
+    const discovered = partialFailure ? data.providers!.find((entry) => entry.provider === "alpha")! : data;
+    assert.equal(discovered.provider, "alpha");
+    assert.equal(discovered.models, 1);
+    assert.deepEqual(discovered.added, ["keep-new"]);
+    assert.deepEqual(discovered.removed, ["keep-base"]);
+    assert.deepEqual(discovered.missing, ["z-default", "m-small"]);
+    assert.deepEqual(discovered.apps, ["fixture"]);
+    assert.equal(discovered.model, "z-default");
+    assert.deepEqual(discovered.files, [file]);
+    assert.equal(messages.length, 0, "stdout has no additional human-readable output");
+    assert.ok(!documents.join("").includes(alpha.apiKey!));
+    if (partialFailure) {
+      assert.equal(process.exitCode, 1);
+      assert.deepEqual(loadStore().providers.beta, beta);
+      assert.deepEqual(data.providers!.map((entry) => entry.provider), ["alpha", "beta"]);
+      assert.deepEqual(data.providers![1], { provider: "beta", refreshFailed: true });
+      assert.deepEqual(data.files, [file]);
+      assert.match(envelope.error!.message, /beta/);
+    } else assert.equal(envelope.error, undefined);
+  });
+}
+
 test("discover --all reports every provider in one JSON document", async (t) => {
   const { configureOutput } = await import("../src/ui.js");
   seed(
@@ -586,10 +757,19 @@ test("discover --all reports every provider in one JSON document", async (t) => 
   const documents = captureJson(t);
   configureOutput({ json: true });
   t.after(() => configureOutput({ json: false }));
-  await cmdDiscover(undefined, { all: true });
+  const file = path.join(sandbox, "fixture-models.json");
+  fs.writeFileSync(file, "unchanged");
+  useTargets(t, fakeTarget("fixture", async () => {
+    assert.fail("discovery without --sync must not apply a target");
+  }));
+  await cmdDiscover(undefined, { all: true, apps: "fixture" });
   const data = jsonData<{ providers: Array<{ provider: string; models: number }> }>(documents);
   assert.deepEqual(data.providers.map((entry) => entry.provider), ["alpha", "beta"]);
   assert.deepEqual(data.providers.map((entry) => entry.models), [4, 4]);
+  assert.equal(documents.length, 1);
+  assert.equal(messages.length, 0);
+  assert.equal(fs.readFileSync(file, "utf8"), "unchanged");
+  assert.ok(!documents.join("").includes("fixture-command-api-key"));
 });
 
 test("refresh narrows to a provider list and keeps its empty-store behaviour", async (t) => {
@@ -654,20 +834,54 @@ test("dry-run shows content-free config errors but still withholds unknown ones"
   assert.equal(process.exitCode, 1);
 });
 
-test("target detection and application errors set failure status while other targets continue", async (t) => {
-  seed(provider());
+test("target errors fail each provider while normal skips and stale exit status do not", async (t) => {
+  const alpha = provider({ id: "alpha" });
+  const beta = provider({ id: "beta" });
+  seed(alpha, beta);
   let applied = 0;
   const detection = fakeTarget("detect-fails", async () => { throw new Error("must not apply"); });
   detection.detect = () => { throw new Error("detection failed"); };
   useTargets(t, detection,
-    fakeTarget("apply-fails", async () => { throw new Error("application failed"); }),
+    fakeTarget("apply-fails", async () => { throw new Error(`application failed ${alpha.apiKey}`); }),
     fakeTarget("succeeds", async () => { applied++; return { app: "succeeds", changed: [], notes: [] }; }),
   );
-  await cmdSync({ refresh: false });
-  assert.equal(applied, 1);
+  await cmdSync({ all: true, refresh: false });
+  assert.equal(applied, 2);
   assert.equal(process.exitCode, 1);
   assert.match(messages.join("\n"), /detection failed/);
   assert.match(messages.join("\n"), /application failed/);
+  assert.match(messages.join("\n"), /synced 0 of 2 providers; the rest failed/);
+  assert.doesNotMatch(messages.join("\n"), /synced 2 providers/);
+
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdSync({ all: true, refresh: false });
+  assert.equal(documents.length, 1);
+  type Report = { provider: string; apps: string[]; failed?: string[] };
+  const envelope = JSON.parse(documents[0]!) as { ok: boolean; error: { message: string }; data: { providers: Report[] } };
+  assert.equal(envelope.ok, false);
+  assert.match(envelope.error.message, /alpha/);
+  assert.match(envelope.error.message, /beta/);
+  for (const report of envelope.data.providers) {
+    assert.deepEqual(report.failed, ["detect-fails", "apply-fails"]);
+    assert.ok(report.apps.includes("succeeds"));
+  }
+  assert.equal(documents.join("").includes(alpha.apiKey), false);
+
+  const undetected = recordingTarget("undetected", []);
+  undetected.detect = () => false;
+  targets.splice(0, targets.length, undetected, recordingTarget("unsupported", [], false, ["anthropic"]), recordingTarget("one", [], true));
+  configureOutput({ json: false });
+  messages = [];
+  await cmdSync({ all: true, refresh: false });
+  assert.match(messages.join("\n"), /synced 2 providers/);
+  configureOutput({ json: true });
+  documents.length = 0;
+  await cmdSync({ all: true, refresh: false });
+  assert.equal(documents.length, 1);
+  assert.equal(JSON.parse(documents[0]!).ok, true, "status comes from this run, not the prior failed exitCode");
+  assert.ok(jsonData<{ providers: Report[] }>(documents).providers.every((report) => report.failed === undefined));
 });
 
 test("an app already in sync says so instead of printing a bare ok line", async (t) => {

@@ -68,6 +68,15 @@ test("emitJson writes exactly one parseable envelope", () => {
   });
 });
 
+test("emitJson preserves partial data and the error.message failure contract", () => {
+  const data = { providers: [{ provider: "alpha" }, { provider: "beta", refreshFailed: true }] };
+  emitJson(data, "failed providers: beta");
+  assert.equal(stdout.length, 1);
+  assert.deepEqual(JSON.parse(stdout[0]!), {
+    ok: false, command: "status", version: "0.0.0-test", data, error: { message: "failed providers: beta" },
+  });
+});
+
 test("error exits 1 with a colored stderr line, or a single stdout document in machine mode", () => {
   assert.throws(() => error("boom"), /process\.exit\(1\)/);
   assert.deepEqual(stderr.map(plain), ["error: boom\n"]);

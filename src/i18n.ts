@@ -255,9 +255,12 @@ const messages = {
   "select.noneSelected": { en: "the provider selection is empty; name at least one id", "zh-CN": "未指定任何供应商,至少需要一个 id" },
   "sync.refreshSkipped": { en: "skipping {id}: {message}", "zh-CN": "已跳过 {id}:{message}" },
   "sync.summaryOk": { en: "synced {count} providers", "zh-CN": "已同步 {count} 个供应商" },
-  "sync.summaryFailed": { en: "synced {ok} of {count} providers; the rest were skipped", "zh-CN": "已同步 {count} 个中的 {ok} 个供应商,其余已跳过" },
+  "sync.summaryFailed": { en: "synced {ok} of {count} providers; the rest failed", "zh-CN": "已同步 {count} 个中的 {ok} 个供应商,其余失败" },
   "sync.refreshNotSaved": { en: "dry run: the refreshed model list was not saved", "zh-CN": "试运行:刷新到的模型列表未保存" },
   "sync.refreshFailed": { en: "could not refresh the model list; pass --no-refresh to write the saved list instead", "zh-CN": "无法刷新模型列表;可以加 --no-refresh 只写入已保存的列表" },
+  "sync.failed": { en: "sync failed for providers: {ids}", "zh-CN": "供应商同步失败:{ids}" },
+  "targets.failed": { en: "failed targets: {apps}", "zh-CN": "目标应用失败:{apps}" },
+  "targets.failedSafely": { en: "target operation failed", "zh-CN": "目标应用操作失败" },
   "status.config": { en: "config: {file}", "zh-CN": "配置:{file}" },
   "status.active": { en: "active provider: {id}", "zh-CN": "当前供应商:{id}" },
   "status.none": { en: "(none)", "zh-CN": "(无)" },
@@ -403,6 +406,7 @@ const messages = {
 
   "discover.summaryOk": { en: "refreshed {count} providers", "zh-CN": "已刷新 {count} 个供应商" },
   "discover.summaryFailed": { en: "refreshed {ok} of {count} providers; the rest were skipped", "zh-CN": "已刷新 {count} 个中的 {ok} 个供应商,其余已跳过" },
+  "discover.failed": { en: "discovery or sync failed for providers: {ids}", "zh-CN": "供应商发现或同步失败:{ids}" },
   "refresh.pinnedMissing": {
     en: "{models} no longer listed by the endpoint; kept as configured — pick a listed model with: agentsw use {id} -m <model>",
     "zh-CN": "{models} 已不在端点的模型列表中;仍按原配置保留 —— 可用 agentsw use {id} -m <model> 换成列表中的模型",

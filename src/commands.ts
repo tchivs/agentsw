@@ -13,7 +13,7 @@ import { loadGatewayCatalog, type GatewayCatalog } from "./gateway.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
 import { discoverProviderModels, probeProtocols } from "./discover.js";
 import { appCommand, appPackages, installedVersion, isNewer, latestVersion, normalizeAppVersion, runShell } from "./apps.js";
-import { SafeConfigError, drainPendingWrites, readTextIfExists, setDryRun } from "./fsutil.js";
+import { SafeConfigError, drainPendingWrites, isDryRun, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
 import { availableProviderId, providerIdFromBaseUrl, providerNameFromBaseUrl } from "./slug.js";
 import { t } from "./i18n.js";
@@ -556,13 +556,14 @@ export async function cmdPrune(id: string, opts: { apps?: string }): Promise<voi
   out(`${t("remove.pruning", { id: pc.bold(id) })}\n`);
   const results = await runTargets("prune", provider, opts.apps);
   if (isJson()) {
+    const failed = results.filter((r) => r.failed).map((r) => r.app);
     emitJson({
       provider: id,
       op: "prune",
       apps: results.filter((r) => !r.skipped).map((r) => r.app),
       files: results.flatMap((r) => (r.skipped ? [] : r.changed)),
       skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
-    });
+    }, failed.length ? t("targets.failed", { apps: failed.join(", ") }) : undefined);
     return;
   }
   reportResults(results);
@@ -627,8 +628,9 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
       }
       results.push(await target[op](provider));
     } catch (err) {
-      const safe = opts.redactErrors === true && !(err instanceof SafeConfigError);
-      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${safe ? t("preview.failedSafely") : (err as Error).message}`) });
+      const safe = (opts.redactErrors === true || isJson()) && !(err instanceof SafeConfigError);
+      const message = safe ? t(opts.redactErrors ? "preview.failedSafely" : "targets.failedSafely") : (err as Error).message;
+      results.push({ app: target.id, changed: [], notes: [], skipped: pc.red(`failed: ${message}`), failed: true });
       process.exitCode = 1;
     }
   }
@@ -731,6 +733,7 @@ interface SyncOutcome {
   apps: string[];
   files: string[];
   skipped: Array<{ app: string; reason: string }>;
+  failed?: string[];
 }
 
 async function runWithOptionalDryRun(
@@ -741,6 +744,7 @@ async function runWithOptionalDryRun(
   oneSlot?: RunTargetsOptions["oneSlot"],
 ): Promise<SyncOutcome> {
   const summarize = (results: ApplyResult[], files: string[]): SyncOutcome => ({
+    ...(results.some((r) => r.failed) ? { failed: results.filter((r) => r.failed).map((r) => r.app) } : {}),
     apps: results.map((r) => r.app),
     files,
     skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
@@ -750,6 +754,7 @@ async function runWithOptionalDryRun(
     reportResults(results);
     return summarize(results, results.flatMap((r) => (r.skipped ? [] : r.changed)));
   }
+  const wasDryRun = isDryRun();
   setDryRun(true);
   try {
     const results = await runTargets(op, provider, apps, { redactErrors: true, oneSlot });
@@ -762,7 +767,7 @@ async function runWithOptionalDryRun(
     // Only paths: the staged content is redacted for humans but still configuration, not a machine interface.
     return summarize(results, writes.map((w) => w.file));
   } finally {
-    setDryRun(false);
+    setDryRun(wasDryRun);
   }
 }
 
@@ -795,7 +800,8 @@ export async function cmdUse(id: string, opts: { apps?: string; model?: string; 
   out(`${t("use.switching", { id: pc.bold(id), protocol: provider.protocol, model: provider.defaultModel })}\n`);
   const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun);
   if (isJson()) {
-    emitJson({ provider: id, model: provider.defaultModel, dryRun: opts.dryRun === true, ...outcome });
+    emitJson({ provider: id, model: provider.defaultModel, dryRun: opts.dryRun === true, ...outcome },
+      outcome.failed?.length ? t("targets.failed", { apps: outcome.failed.join(", ") }) : undefined);
   }
 }
 
@@ -811,6 +817,17 @@ interface ProviderModelRefresh {
    */
   missing: string[];
   catalog?: Catalog | undefined;
+}
+
+function saveRefreshedProvider(store: Store, provider: Provider): void {
+  const previous = getProvider(store, provider.id);
+  store.providers[provider.id] = provider;
+  try {
+    saveStore(store);
+  } catch (err) {
+    store.providers[provider.id] = previous;
+    throw err;
+  }
 }
 
 /**
@@ -838,7 +855,7 @@ async function refreshProviderModels(store: Store, provider: Provider, save = tr
   // Reported by the caller, where it reads after the table or the per-app results instead of
   // scrolling away above them.
   const missing = [...new Set(pinned)].filter((model) => !ids.includes(model));
-  if (save) saveStore(store);
+  if (save) saveRefreshedProvider(store, provider);
   return { ids, added, removed, missing, catalog };
 }
 
@@ -923,29 +940,55 @@ function printMultiSummary(count: number, failed: number, key: "sync" | "discove
     : t(key === "sync" ? "sync.summaryOk" : "discover.summaryOk", { count })}`);
 }
 
-export async function cmdSync(opts: { apps?: string; provider?: string; all?: boolean; dryRun?: boolean; refresh?: boolean }): Promise<void> {
+interface SyncOptions {
+  apps?: string;
+  provider?: string;
+  all?: boolean;
+  dryRun?: boolean;
+  refresh?: boolean;
+}
+
+interface ProviderOperationReport extends Partial<SyncOutcome> {
+  provider: string;
+  model?: string;
+  models?: number;
+  added?: string[];
+  removed?: string[];
+  missing?: string[];
+  refreshFailed?: true;
+  refreshed?: { models: number; added: string[]; removed: string[]; missing: string[]; saved: boolean };
+}
+
+async function syncProviders(opts: SyncOptions): Promise<{ reports: ProviderOperationReport[]; failed: string[] }> {
   const selectedTargets = resolveTargets(opts.apps);
   const store = loadStore();
   const ids = activeLast(store, resolveProviderIds(store, opts, "active"));
   const many = ids.length > 1;
   const oneSlot = many ? { winners: oneSlotWinners(selectedTargets, store, ids) } : undefined;
   const saveRefresh = opts.dryRun !== true;
-  const reports: Array<Record<string, unknown>> = [];
-  let failed = 0;
+  const reports: ProviderOperationReport[] = [];
+  const failed: string[] = [];
   for (const [index, id] of ids.entries()) {
-    const provider = getProvider(store, id);
+    const provider = structuredClone(getProvider(store, id));
     if (index) out("");
     let refresh: ProviderModelRefresh | undefined;
     if (opts.refresh !== false) {
       try {
-        refresh = await refreshProviderModels(store, provider, saveRefresh);
+        const wasDryRun = isDryRun();
+        try {
+          if (opts.dryRun) setDryRun(true);
+          refresh = await refreshProviderModels(store, provider, saveRefresh);
+        } finally {
+          // Metadata cache writes are not target configuration previews.
+          if (opts.dryRun) setDryRun(wasDryRun);
+        }
       } catch (err) {
         // One unreachable provider must not strand the others: report it, write nothing for it,
-        // and fail the run. A single-provider sync has nothing else to do, so it still throws.
-        if (!many) throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
+        // and fail the run. Text mode keeps the single-provider exception contract.
+        if (!many && !isJson()) throw new Error(`${(err as Error).message}\n${t("sync.refreshFailed")}`);
         warn(t("sync.refreshSkipped", { id, message: (err as Error).message }));
         process.exitCode = 1;
-        failed += 1;
+        failed.push(id);
         reports.push({ provider: id, refreshFailed: true });
         continue;
       }
@@ -957,6 +1000,7 @@ export async function cmdSync(opts: { apps?: string; provider?: string; all?: bo
     }
     out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
     const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot);
+    if (outcome.failed?.length) failed.push(id);
     if (refresh?.missing.length) {
       const models = refresh.missing.join(", ");
       warn(t(opts.dryRun ? "refresh.pinnedMissing" : "sync.pinnedMissingWritten", { models, id }));
@@ -978,18 +1022,22 @@ export async function cmdSync(opts: { apps?: string; provider?: string; all?: bo
       ...outcome,
     });
   }
+  if (many) printMultiSummary(ids.length, failed.length, "sync");
+  return { reports, failed };
+}
+
+export async function cmdSync(opts: SyncOptions): Promise<void> {
+  const { reports, failed } = await syncProviders(opts);
   if (isJson()) {
-    const first = reports[0] ?? {};
-    emitJson(many
+    emitJson(reports.length > 1
       ? {
           dryRun: opts.dryRun === true,
           providers: reports,
-          files: [...new Set(reports.flatMap((report) => (report.files as string[] | undefined) ?? []))],
+          files: [...new Set(reports.flatMap((report) => report.files ?? []))],
         }
-      : { ...first, dryRun: opts.dryRun === true });
-    return;
+      : { ...(reports[0] ?? {}), dryRun: opts.dryRun === true },
+      failed.length ? t("sync.failed", { ids: failed.join(", ") }) : undefined);
   }
-  if (many) printMultiSummary(ids.length, failed, "sync");
 }
 
 export function cmdStatus(): void {
@@ -1109,10 +1157,11 @@ export async function cmdDiscover(
   // Reject bad metadata options once, before the first provider is contacted.
   resolveMetadataOptions(opts);
   const many = selected.length > 1;
-  const reports: Array<Record<string, unknown>> = [];
+  const reports: ProviderOperationReport[] = [];
   const refreshed: string[] = [];
+  const failed: string[] = [];
   for (const [index, id] of selected.entries()) {
-    const provider = getProvider(store, id);
+    const provider = structuredClone(getProvider(store, id));
     if (index) out("");
     Object.assign(provider, resolveMetadataOptions(opts, provider));
     // flags override and re-persist the filter; --no-filter clears it
@@ -1121,12 +1170,14 @@ export async function cmdDiscover(
     else if (flagFilter) provider.modelFilter = flagFilter;
     let refresh: ProviderModelRefresh;
     try {
-      refresh = await refreshProviderModels(store, provider);
+      refresh = await refreshProviderModels(store, provider, false);
+      saveRefreshedProvider(store, provider);
     } catch (err) {
-      // One unreachable endpoint must not strand the others; a single provider still throws.
-      if (!many) throw err;
+      // One unreachable endpoint must not strand the others; text mode still throws for one.
+      if (!many && !isJson()) throw err;
       warn(t("sync.refreshSkipped", { id, message: (err as Error).message }));
       process.exitCode = 1;
+      failed.push(id);
       reports.push({ provider: id, refreshFailed: true });
       continue;
     }
@@ -1136,7 +1187,17 @@ export async function cmdDiscover(
     if (refresh.missing.length) warn(t("refresh.pinnedMissing", { models: refresh.missing.join(", "), id }));
   }
   if (isJson()) {
-    emitJson(many ? { providers: reports } : (reports[0] ?? {}));
+    if (opts.sync && refreshed.length) {
+      // Collect application results without emitting or fetching the discovered lists again.
+      const synced = await syncProviders({ provider: refreshed.join(","), apps: opts.apps, refresh: false });
+      failed.push(...synced.failed);
+      for (const report of reports) Object.assign(report, synced.reports.find((entry) => entry.provider === report.provider));
+    }
+    const files = [...new Set(reports.flatMap((report) => report.files ?? []))];
+    emitJson(many
+      ? { providers: reports, ...(opts.sync ? { files, dryRun: false } : {}) }
+      : { ...(reports[0] ?? {}), ...(opts.sync ? { dryRun: false } : {}) },
+      failed.length ? t("discover.failed", { ids: failed.join(", ") }) : undefined);
     return;
   }
   if (many) printMultiSummary(selected.length, selected.length - refreshed.length, "discover");

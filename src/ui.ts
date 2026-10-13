@@ -62,11 +62,13 @@ export function warn(message: string): void {
 }
 
 function emitJsonError(message: string): void {
-  process.stdout.write(JSON.stringify({ ok: false, command, version, error: { message } }) + "\n");
+  emitJson(undefined, message);
 }
 
-export function emitJson(data: unknown): void {
-  process.stdout.write(JSON.stringify({ ok: true, command, version, data }) + "\n");
+export function emitJson(data: unknown, errorMessage?: string): void {
+  process.stdout.write(JSON.stringify({ ok: errorMessage === undefined, command, version, data,
+    ...(errorMessage === undefined ? {} : { error: { message: errorMessage } }),
+  }) + "\n");
 }
 
 /** Fatal error. In machine mode the failure becomes the single stdout document, so pipes stay parseable. */

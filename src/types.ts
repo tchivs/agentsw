@@ -115,4 +115,6 @@ export interface ApplyResult {
   notes: string[];
   /** app skipped (unsupported protocol, not installed, ...) */
   skipped?: string;
+  /** An exception, rather than a normal unsupported/undetected/nonwinner skip. */
+  failed?: true;
 }
