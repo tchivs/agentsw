@@ -110,6 +110,66 @@ function backupNames(): string[] {
 }
 
 for (const target of [pi, prime]) {
+  test(`${target.id} keep-default updates only models and never backs up settings`, async () => {
+    const files = fixture(target.id, modelsSource, settingsSource);
+    const beforeSettings = fs.statSync(files.settingsFile);
+    const result = await target.apply(provider, { keepDefault: true });
+    assert.deepEqual(result.changed, [files.modelsFile]);
+    assert.equal(read(files.settingsFile), settingsSource);
+    assert.equal(fs.statSync(files.settingsFile).ino, beforeSettings.ino);
+    assert.equal(fs.statSync(files.settingsFile).mtimeMs, beforeSettings.mtimeMs);
+    assert.equal(target.current(), "keep · keep-m");
+    const backup = result.notes.find((note) => note.startsWith("backup: "))!.slice(8);
+    const manifest = JSON.parse(read(path.join(backup, "manifest.json"))) as Array<{ file: string }>;
+    assert.deepEqual(manifest.map((entry) => entry.file), [files.modelsFile]);
+    const entry = parsed(read(files.modelsFile)).providers.jsonc;
+    assert.equal(entry.baseUrl, provider.baseUrl);
+    assert.equal(entry.apiKey, provider.apiKey);
+    assert.deepEqual(entry.headers, parsed(modelsSource).providers.jsonc.headers);
+    assert.deepEqual(entry.oauth, { enabled: true });
+    assert.deepEqual(entry.models[0].compat, { supportsStore: false });
+  });
+
+  test(`${target.id} keep-default never creates settings, including in a dry-run`, async () => {
+    const files = fixture(target.id);
+    const beforeBackups = backupNames();
+    setDryRun(true);
+    try {
+      await target.apply(provider, { keepDefault: true });
+      assert.deepEqual(drainPendingWrites().map((item) => item.file), [files.modelsFile]);
+      assert.equal(fs.existsSync(files.modelsFile), false);
+      assert.equal(fs.existsSync(files.settingsFile), false);
+      assert.deepEqual(backupNames(), beforeBackups);
+    } finally {
+      setDryRun(false);
+    }
+    await target.apply(provider, { keepDefault: true });
+    assert.equal(parsed(read(files.modelsFile)).providers.jsonc.apiKey, provider.apiKey);
+    assert.equal(fs.existsSync(files.settingsFile), false);
+    // The existing apply contract remains a deliberate switch when no flag is supplied.
+    await target.apply(provider);
+    assert.equal(parsed(read(files.settingsFile)).defaultModel, provider.defaultModel);
+  });
+
+  test(`${target.id} keep-default rejects a dropped local default or malformed settings before writes`, async () => {
+    for (const settings of [
+      '{ "defaultProvider": "jsonc", "defaultModel": "stale", "thinkingLevel": "high" }',
+      '{ "defaultProvider": "jsonc"',
+      '{ "defaultModel": [] }',
+    ]) {
+      const files = fixture(target.id, modelsSource, settings);
+      const beforeBackups = backupNames();
+      await assert.rejects(target.apply(provider, { keepDefault: true }), /missing.*pinned|invalid JSONC|expected/);
+      assert.equal(read(files.modelsFile), modelsSource);
+      assert.equal(read(files.settingsFile), settings);
+      assert.deepEqual(backupNames(), beforeBackups);
+      assert.deepEqual(drainPendingWrites(), []);
+    }
+    const files = fixture(target.id, undefined, '{ "defaultModel": false }');
+    await assert.rejects(target.apply(provider, { keepDefault: true }), /expected/);
+    assert.equal(fs.existsSync(files.modelsFile), false);
+  });
+
   test(`${target.id} reads JSONC defaults and import candidates without touching files`, () => {
     const files = fixture(target.id, modelsSource, settingsSource);
     assert.equal(target.current(), "keep · keep-m");

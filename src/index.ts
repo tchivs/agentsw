@@ -170,6 +170,7 @@ program
   .option("--all", t("opt.syncAll"))
   .option("-n, --dry-run", t("opt.dryRun"))
   .option("--no-refresh", t("opt.noRefresh"))
+  .option("--keep-default", t("opt.keepDefault"))
   .action(cmdSync);
 
 program.command("status").description(t("cmd.status")).action(cmdStatus);
@@ -190,6 +191,8 @@ program
   .option("--all", t("opt.refreshAll"))
   .option("-s, --sync", t("opt.syncAfter"))
   .option("-a, --apps <apps>", t("opt.appsSync"))
+  .option("--keep-default", t("opt.keepDefault"))
+  .option("-n, --dry-run", t("opt.dryRun"))
   .option("--include <globs>", t("opt.setInclude"))
   .option("--exclude <globs>", t("opt.setExclude"))
   .option("--dedup", t("opt.dedup"))

@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { parse as parseJsonc } from "jsonc-parser";
 import type { Provider, Protocol } from "../src/types.js";
 import type { AppPackage } from "../src/apps.js";
 import type { TargetApp } from "../src/targets/types.js";
@@ -130,6 +132,192 @@ function recordingTarget(id: string, seen: string[], singleProvider = false, pro
   const apply: TargetApp["apply"] = async (p) => { seen.push(p.id); return { app: id, changed: [], notes: [] }; };
   return transactionalTarget({ id, name: id, protocols, configPaths: [], detect: () => true, current: () => undefined, singleProvider, apply, prune: apply });
 }
+
+function primeFixture() {
+  const alpha = provider({ id: "alpha", openaiApi: undefined, baseUrl: "https://alpha.example/tenant/v1", defaultModel: "keep-base", smallModel: undefined, modelFilter: undefined, gatewayMetadata: false, models: [{ id: "keep-base" }, { id: "retired" }] });
+  const beta = provider({ ...alpha, id: "beta", baseUrl: "https://beta.example/tenant/v1", apiKey: "fixture-beta-secret" });
+  seed(alpha, beta);
+  const dir = path.join(sandbox, ".prime", "agent");
+  fs.mkdirSync(dir, { recursive: true });
+  const modelsFile = path.join(dir, "models.json");
+  const settingsFile = path.join(dir, "settings.json");
+  const settings = '\uFEFF// user settings stay byte-identical\r\n{\r\n  "defaultProvider": "alpha", "defaultModel": "deepseek-v4-pro",\r\n  "thinkingLevel": "high", "theme": "dark", "extra": { "keep": true },\r\n}\r\n';
+  fs.writeFileSync(settingsFile, settings);
+  fs.writeFileSync(modelsFile, JSON.stringify({ rootExtra: true, providers: {
+    alpha: { api: "openai-responses", apiKey: "fixture-old-secret", baseUrl: "https://old.example/v1", headers: { "X-User": "keep" }, oauth: { enabled: true }, models: [{ id: "keep-base" }, { id: "deepseek-v4-pro", userExtra: true, compat: { supportsStore: false } }, { id: "retired" }] },
+    beta: { api: "openai-responses", apiKey: "fixture-old-beta-secret", baseUrl: "https://old-beta.example/v1", headers: { "X-User": "beta" }, models: [{ id: "keep-base" }, { id: "retired" }] },
+  } }));
+  return { alpha, beta, modelsFile, settingsFile, settings };
+}
+
+test("CLI discover --sync --keep-default updates two real Prime providers without touching selection", () => {
+  const fixture = primeFixture();
+  const script = `
+    let requests = 0;
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (!['alpha.example', 'beta.example'].includes(url.hostname) || url.pathname !== '/tenant/v1/models') throw new Error('unexpected fixture fetch');
+      if (++requests > 2) throw new Error('duplicate discovery');
+      return Response.json({ data: ['keep-base', 'deepseek-v4-pro', 'fresh'].map(id => ({ id })) });
+    };
+    process.on('exit', () => { if (requests !== 2) throw new Error('expected exactly two fixture requests'); });
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--import", `data:text/javascript,${encodeURIComponent(script)}`, new URL("../src/index.ts", import.meta.url).pathname, "--lang", "en", "--json", "discover", "--all", "--sync", "--apps", "prime", "--keep-default"], { env: { ...process.env, HOME: sandbox, AGENTSW_HOME: sandbox }, encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const documents = result.stdout.trim().split("\n");
+  assert.equal(documents.length, 1);
+  const envelope = JSON.parse(documents[0]!) as { ok: boolean; data: { providers: Array<{ provider: string; added: string[]; removed: string[]; missing: string[]; files: string[] }>; files: string[] } };
+  assert.equal(envelope.ok, true);
+  assert.deepEqual(envelope.data.providers.map((entry) => entry.provider), ["alpha", "beta"]);
+  for (const report of envelope.data.providers) {
+    assert.deepEqual(report.added, ["deepseek-v4-pro", "fresh"]);
+    assert.deepEqual(report.removed, ["retired"]);
+    assert.deepEqual(report.missing, []);
+    assert.deepEqual(report.files, [fixture.modelsFile]);
+  }
+  assert.deepEqual(envelope.data.files, [fixture.modelsFile]);
+  assert.equal(fs.readFileSync(fixture.settingsFile, "utf8"), fixture.settings);
+  const models = JSON.parse(fs.readFileSync(fixture.modelsFile, "utf8"));
+  assert.equal(models.rootExtra, true);
+  for (const p of [fixture.alpha, fixture.beta]) {
+    const entry = models.providers[p.id];
+    assert.equal(entry.baseUrl, p.baseUrl);
+    assert.equal(entry.apiKey, p.apiKey);
+    assert.equal(entry.api, "openai-responses");
+    assert.deepEqual(entry.models.map((m: { id: string }) => m.id), ["deepseek-v4-pro", "fresh", "keep-base"]);
+    assert.ok(!result.stdout.includes(p.apiKey!));
+  }
+  assert.deepEqual(models.providers.alpha.headers, { "X-User": "keep" });
+  assert.deepEqual(models.providers.alpha.oauth, { enabled: true });
+  const deepseek = models.providers.alpha.models.find((m: { id: string }) => m.id === "deepseek-v4-pro");
+  assert.equal(deepseek.userExtra, true);
+  assert.equal(deepseek.compat.supportsStore, false);
+  assert.equal(deepseek.compat.requiresReasoningContentOnAssistantMessages, true);
+  assert.equal(deepseek.compat.thinkingFormat, "deepseek");
+});
+
+for (const command of ["sync", "discover"] as const) {
+  test(`${command} keep-default dry-run leaves the complete Prime sandbox and caches untouched`, async (t) => {
+    const fixture = primeFixture();
+    fs.rmSync(path.join(configDir, "models-dev.json"));
+    fs.rmSync(path.join(configDir, "ai-gateway.json"));
+    const listings: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.hostname === "models.dev") return Response.json({});
+      assert.ok(["alpha.example", "beta.example"].includes(url.hostname));
+      listings.push(url.hostname);
+      return Response.json({ data: ["keep-base", "deepseek-v4-pro", "fresh"].map((id) => ({ id })) });
+    });
+    const documents = captureJson(t);
+    configureOutput({ json: command === "discover" });
+    t.after(() => configureOutput({ json: false }));
+    const before = snapshot();
+    const opts = { all: true, apps: "prime", keepDefault: true, dryRun: true };
+    if (command === "discover") await cmdDiscover(undefined, { ...opts, sync: true });
+    else await cmdSync(opts);
+    assert.deepEqual(listings.sort(), ["alpha.example", "beta.example"]);
+    assert.deepEqual(snapshot(), before);
+    assert.equal(fs.readFileSync(fixture.settingsFile, "utf8"), fixture.settings);
+    assert.deepEqual(drainPendingWrites(), []);
+    assert.equal(isDryRun(), false);
+    assert.ok(!messages.join("\n").includes("settings.json"));
+    assert.ok(!messages.join("\n").includes(fixture.alpha.apiKey!));
+    if (command === "discover") {
+      assert.equal(documents.length, 1);
+      const data = jsonData<{ dryRun: boolean; files: string[] }>(documents);
+      assert.equal(data.dryRun, true);
+      assert.deepEqual(data.files, [fixture.modelsFile]);
+      assert.ok(!documents[0]!.includes(fixture.beta.apiKey!));
+    }
+  });
+}
+
+test("discover keep-default sync reports failed providers without saving their metadata or filter choices", async (t) => {
+  const fixture = primeFixture();
+  const beforeBeta = loadStore().providers.beta;
+  const beforeEntry = JSON.parse(fs.readFileSync(fixture.modelsFile, "utf8")).providers.beta;
+  const listings: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const host = new URL(String(input)).hostname;
+    listings.push(host);
+    if (host === "beta.example") throw new Error("fixture failed provider");
+    assert.equal(host, "alpha.example");
+    return Response.json({ data: ["keep-base", "deepseek-v4-pro", "fresh"].map((id) => ({ id })) });
+  });
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdDiscover(undefined, { all: true, sync: true, apps: "prime", keepDefault: true, include: "*", dedup: false, metadataMode: "off" });
+  assert.deepEqual(listings, ["alpha.example", "beta.example"]);
+  assert.equal(documents.length, 1);
+  const envelope = JSON.parse(documents[0]!) as { ok: boolean; data: { providers: Array<{ provider: string; refreshFailed?: boolean; added?: string[]; removed?: string[]; missing?: string[] }>; files: string[] } };
+  assert.equal(envelope.ok, false);
+  assert.deepEqual(envelope.data.providers[1], { provider: "beta", refreshFailed: true });
+  assert.deepEqual(envelope.data.providers[0]!.added, ["deepseek-v4-pro", "fresh"]);
+  assert.deepEqual(envelope.data.providers[0]!.removed, ["retired"]);
+  assert.deepEqual(envelope.data.providers[0]!.missing, []);
+  assert.deepEqual(envelope.data.files, [fixture.modelsFile]);
+  assert.deepEqual(loadStore().providers.beta, beforeBeta);
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.modelsFile, "utf8")).providers.beta, beforeEntry);
+  assert.equal(fs.readFileSync(fixture.settingsFile, "utf8"), fixture.settings);
+  assert.ok(!documents[0]!.includes(fixture.alpha.apiKey!));
+});
+
+test("keep-default reports a target failure rather than deleting a local default missing upstream", async (t) => {
+  const fixture = primeFixture();
+  const beforeModels = fs.readFileSync(fixture.modelsFile, "utf8");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id: "keep-base" }] }));
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  await cmdDiscover("alpha", { sync: true, apps: "prime", keepDefault: true });
+  assert.equal(documents.length, 1);
+  const envelope = JSON.parse(documents[0]!) as { ok: boolean; data: { failed: string[]; files: string[]; skipped: Array<{ reason: string }> } };
+  assert.equal(envelope.ok, false);
+  assert.deepEqual(envelope.data.failed, ["prime"]);
+  assert.deepEqual(envelope.data.files, []);
+  assert.match(envelope.data.skipped[0]!.reason, /deepseek-v4-pro.*missing.*pinned/);
+  assert.equal(fs.readFileSync(fixture.modelsFile, "utf8"), beforeModels);
+  assert.equal(fs.readFileSync(fixture.settingsFile, "utf8"), fixture.settings);
+});
+
+test("keep-default rejects unsupported explicit or implicit targets before network, store, or app writes", async (t) => {
+  primeFixture();
+  let fetches = 0;
+  t.mock.method(globalThis, "fetch", async () => { fetches++; throw new Error("preflight must run first"); });
+  const documents = captureJson(t);
+  configureOutput({ json: true });
+  t.after(() => configureOutput({ json: false }));
+  const before = snapshot();
+  for (const apps of ["codex", "prime,codex", "all", undefined]) {
+    for (const run of [
+      () => cmdSync({ apps, all: true, keepDefault: true }),
+      () => cmdDiscover(undefined, { apps, all: true, sync: true, keepDefault: true }),
+    ]) {
+      await assert.rejects(run(), /process.exit\(1\)/);
+      assert.match(JSON.parse(documents.at(-1)!).error.message, /--keep-default.*not supported.*codex/);
+      assert.deepEqual(snapshot(), before);
+    }
+  }
+  await assert.rejects(cmdDiscover(undefined, { apps: "prime", keepDefault: true }), /process.exit\(1\)/);
+  assert.match(JSON.parse(documents.at(-1)!).error.message, /requires --sync/);
+  assert.equal(fetches, 0);
+  assert.deepEqual(snapshot(), before);
+});
+
+test("ordinary Prime use still switches the app defaults after keep-default sync", async () => {
+  const fixture = primeFixture();
+  seed({ ...fixture.alpha, models: [...fixture.alpha.models, { id: "deepseek-v4-pro" }] }, fixture.beta);
+  await cmdSync({ provider: "alpha,beta", apps: "prime", keepDefault: true, refresh: false });
+  assert.equal(fs.readFileSync(fixture.settingsFile, "utf8"), fixture.settings);
+  await cmdUse("beta", { apps: "prime" });
+  const settings = parseJsonc(fs.readFileSync(fixture.settingsFile, "utf8").replace(/^\uFEFF/, ""));
+  assert.equal(settings.defaultProvider, "beta");
+  assert.equal(settings.defaultModel, "keep-base");
+  assert.equal(settings.thinkingLevel, "high");
+  assert.deepEqual(settings.extra, { keep: true });
+});
 
 test("automatic add and quick reentry retain all user-owned options, IDs, names, and hints", async (t) => {
   const original = { ...provider(), extension: { note: "user metadata" } };

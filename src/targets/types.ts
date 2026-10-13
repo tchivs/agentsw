@@ -27,6 +27,10 @@ export interface ProviderCandidate {
   source: string;
 }
 
+export interface ApplyOptions {
+  keepDefault?: boolean;
+}
+
 export interface TargetApp {
   /** app slug used in --apps filters */
   id: string;
@@ -39,12 +43,14 @@ export interface TargetApp {
    * once, for the active provider, instead of letting each provider overwrite the last.
    */
   singleProvider?: boolean;
+  /** Can update providers/models without writing the app's default selection. */
+  supportsKeepDefault?: boolean;
   /** primary config file(s) this adapter writes */
   configPaths: string[];
   /** true when the app appears installed (config dir exists) */
   detect(): boolean;
   /** write the provider into the app's config; must preserve unrelated settings */
-  apply(provider: Provider): Promise<ApplyResult>;
+  apply(provider: Provider, options?: ApplyOptions): Promise<ApplyResult>;
   /** remove this provider's entries from the app's config; must not touch unrelated settings */
   prune(provider: Provider): Promise<ApplyResult>;
   current(): string | undefined;

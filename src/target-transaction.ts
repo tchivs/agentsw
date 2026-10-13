@@ -1,7 +1,7 @@
 import { commitFileChanges } from "./config-transaction.js";
 import { recordPendingWrites, stageFileWrites } from "./fsutil.js";
 import type { ApplyResult, Provider } from "./types.js";
-import type { TargetApp } from "./targets/types.js";
+import type { ApplyOptions, TargetApp } from "./targets/types.js";
 
 const wrappedTargets = new WeakSet<TargetApp>();
 
@@ -10,9 +10,9 @@ export function transactionalTarget(target: TargetApp): TargetApp {
   if (wrappedTargets.has(target)) return target;
   const wrapped = Object.create(Object.getPrototypeOf(target), Object.getOwnPropertyDescriptors(target)) as TargetApp;
   for (const method of ["apply", "prune"] as const) {
-    const operation = target[method];
-    wrapped[method] = async function (this: TargetApp, provider: Provider): Promise<ApplyResult> {
-      const staged = await stageFileWrites(() => operation.call(this, provider));
+    const operation: TargetApp["apply"] = target[method];
+    wrapped[method] = async function (this: TargetApp, provider: Provider, options?: ApplyOptions): Promise<ApplyResult> {
+      const staged = await stageFileWrites(() => operation.call(this, provider, options));
       const committed = commitFileChanges(staged.changes, { dryRun: staged.dryRun, reads: staged.reads });
       if (staged.dryRun) recordPendingWrites(staged.changes);
       return {

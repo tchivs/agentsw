@@ -29,7 +29,7 @@ import {
   type AppReportRow,
 } from "./report.js";
 import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider, Store } from "./types.js";
-import type { TargetApp } from "./targets/types.js";
+import type { ApplyOptions, TargetApp } from "./targets/types.js";
 
 /** Share successes and failures without fetching until a model actually needs the supplement. */
 function sharedGatewayLoader(refresh = false): () => Promise<GatewayCatalog | null> {
@@ -586,6 +586,7 @@ function reportResults(results: ApplyResult[]): void {
 interface RunTargetsOptions {
   /** Replace adapter error text with a safe message (dry-run previews). */
   redactErrors?: boolean;
+  applyOptions?: ApplyOptions;
   /**
    * Set only while one command syncs several providers: the provider each app that names a single
    * one (`singleProvider`) should receive, by app id. Those apps are written once, for that
@@ -626,7 +627,7 @@ async function runTargets(op: "apply" | "prune", provider: Provider, appsFilter?
         results.push({ app: target.id, changed: [], notes: [], skipped: `${target.name} not detected (pass --apps ${target.id} to force)` });
         continue;
       }
-      results.push(await target[op](provider));
+      results.push(await (op === "apply" ? target.apply(provider, opts.applyOptions) : target.prune(provider)));
     } catch (err) {
       const safe = (opts.redactErrors === true || isJson()) && !(err instanceof SafeConfigError);
       const message = safe ? t(opts.redactErrors ? "preview.failedSafely" : "targets.failedSafely") : (err as Error).message;
@@ -742,6 +743,7 @@ async function runWithOptionalDryRun(
   apps: string | undefined,
   dryRun: boolean | undefined,
   oneSlot?: RunTargetsOptions["oneSlot"],
+  applyOptions?: ApplyOptions,
 ): Promise<SyncOutcome> {
   const summarize = (results: ApplyResult[], files: string[]): SyncOutcome => ({
     ...(results.some((r) => r.failed) ? { failed: results.filter((r) => r.failed).map((r) => r.app) } : {}),
@@ -750,14 +752,14 @@ async function runWithOptionalDryRun(
     skipped: results.filter((r) => r.skipped).map((r) => ({ app: r.app, reason: r.skipped! })),
   });
   if (!dryRun) {
-    const results = await runTargets(op, provider, apps, { oneSlot });
+    const results = await runTargets(op, provider, apps, { oneSlot, applyOptions });
     reportResults(results);
     return summarize(results, results.flatMap((r) => (r.skipped ? [] : r.changed)));
   }
   const wasDryRun = isDryRun();
   setDryRun(true);
   try {
-    const results = await runTargets(op, provider, apps, { redactErrors: true, oneSlot });
+    const results = await runTargets(op, provider, apps, { redactErrors: true, oneSlot, applyOptions });
     const writes = drainPendingWrites();
     for (const r of results) {
       if (r.skipped) out(`${pc.yellow(t("dryRun.skip"))} ${r.app.padEnd(9)} ${pc.dim(r.skipped)}`);
@@ -946,6 +948,16 @@ interface SyncOptions {
   all?: boolean;
   dryRun?: boolean;
   refresh?: boolean;
+  keepDefault?: boolean;
+}
+
+function syncTargets(opts: SyncOptions): TargetApp[] {
+  const selected = resolveTargets(opts.apps);
+  if (opts.keepDefault) {
+    const unsupported = selected.filter((target) => !target.supportsKeepDefault);
+    if (unsupported.length) fail(t("sync.keepDefaultUnsupported", { apps: unsupported.map((target) => target.id).join(", ") }));
+  }
+  return selected;
 }
 
 interface ProviderOperationReport extends Partial<SyncOutcome> {
@@ -959,9 +971,9 @@ interface ProviderOperationReport extends Partial<SyncOutcome> {
   refreshed?: { models: number; added: string[]; removed: string[]; missing: string[]; saved: boolean };
 }
 
-async function syncProviders(opts: SyncOptions): Promise<{ reports: ProviderOperationReport[]; failed: string[] }> {
-  const selectedTargets = resolveTargets(opts.apps);
-  const store = loadStore();
+async function syncProviders(opts: SyncOptions, sourceStore?: Store): Promise<{ reports: ProviderOperationReport[]; failed: string[] }> {
+  const selectedTargets = syncTargets(opts);
+  const store = sourceStore ?? loadStore();
   const ids = activeLast(store, resolveProviderIds(store, opts, "active"));
   const many = ids.length > 1;
   const oneSlot = many ? { winners: oneSlotWinners(selectedTargets, store, ids) } : undefined;
@@ -998,8 +1010,8 @@ async function syncProviders(opts: SyncOptions): Promise<{ reports: ProviderOper
         if (!saveRefresh) note(t("sync.refreshNotSaved"));
       }
     }
-    out(`${t("sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
-    const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot);
+    out(`${t(opts.keepDefault ? "sync.syncingKeepDefault" : "sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
+    const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot, { keepDefault: opts.keepDefault });
     if (outcome.failed?.length) failed.push(id);
     if (refresh?.missing.length) {
       const models = refresh.missing.join(", ");
@@ -1146,9 +1158,10 @@ export async function cmdRefreshMeta(opts: MetadataOptions & { provider?: string
 
 export async function cmdDiscover(
   ids: string | string[] | undefined,
-  opts: MetadataOptions & { sync?: boolean; all?: boolean; provider?: string; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean },
+  opts: MetadataOptions & { sync?: boolean; all?: boolean; provider?: string; apps?: string; include?: string; exclude?: string; dedup?: boolean; filter?: boolean; keepDefault?: boolean; dryRun?: boolean },
 ): Promise<void> {
-  resolveTargets(opts.apps);
+  if (opts.keepDefault && !opts.sync) fail(t("discover.keepDefaultRequiresSync"));
+  syncTargets(opts);
   const store = loadStore();
   // Ids may arrive as positional arguments, as one comma-separated list, or through `-p` for
   // symmetry with sync; all three say the same thing, so accept them together.
@@ -1170,8 +1183,15 @@ export async function cmdDiscover(
     else if (flagFilter) provider.modelFilter = flagFilter;
     let refresh: ProviderModelRefresh;
     try {
-      refresh = await refreshProviderModels(store, provider, false);
-      saveRefreshedProvider(store, provider);
+      const wasDryRun = isDryRun();
+      try {
+        if (opts.dryRun) setDryRun(true);
+        refresh = await refreshProviderModels(store, provider, false);
+        if (opts.dryRun) store.providers[id] = provider;
+        else saveRefreshedProvider(store, provider);
+      } finally {
+        if (opts.dryRun) setDryRun(wasDryRun);
+      }
     } catch (err) {
       // One unreachable endpoint must not strand the others; text mode still throws for one.
       if (!many && !isJson()) throw err;
@@ -1189,14 +1209,14 @@ export async function cmdDiscover(
   if (isJson()) {
     if (opts.sync && refreshed.length) {
       // Collect application results without emitting or fetching the discovered lists again.
-      const synced = await syncProviders({ provider: refreshed.join(","), apps: opts.apps, refresh: false });
+      const synced = await syncProviders({ provider: refreshed.join(","), apps: opts.apps, refresh: false, keepDefault: opts.keepDefault, dryRun: opts.dryRun }, store);
       failed.push(...synced.failed);
       for (const report of reports) Object.assign(report, synced.reports.find((entry) => entry.provider === report.provider));
     }
     const files = [...new Set(reports.flatMap((report) => report.files ?? []))];
     emitJson(many
-      ? { providers: reports, ...(opts.sync ? { files, dryRun: false } : {}) }
-      : { ...(reports[0] ?? {}), ...(opts.sync ? { dryRun: false } : {}) },
+      ? { providers: reports, ...(opts.sync ? { files, dryRun: opts.dryRun === true } : {}) }
+      : { ...(reports[0] ?? {}), ...(opts.sync ? { dryRun: opts.dryRun === true } : {}) },
       failed.length ? t("discover.failed", { ids: failed.join(", ") }) : undefined);
     return;
   }
@@ -1204,7 +1224,7 @@ export async function cmdDiscover(
   if (opts.sync && refreshed.length) {
     out("");
     // The lists are already fresh: write them without a second fetch.
-    await cmdSync({ provider: refreshed.join(","), apps: opts.apps, refresh: false });
+    await syncProviders({ provider: refreshed.join(","), apps: opts.apps, refresh: false, keepDefault: opts.keepDefault, dryRun: opts.dryRun }, store);
   } else if (!opts.sync) {
     note(`\n${t("discover.next")}`);
   }

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { backupFile, writeFileAtomic } from "../fsutil.js";
+import { backupFile, SafeConfigError, writeFileAtomic } from "../fsutil.js";
 import { piDir, piModelsFile, piSettingsFile, type PiId } from "../app-paths.js";
 import { editJsoncObject, isJsonObject, readJsoncObject } from "../jsonc.js";
 import type { JsoncDocument } from "../jsonc.js";
 import type { ApplyResult, Provider } from "../types.js";
 import { looksLikeEnvName } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import { t } from "../i18n.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 import {
   apiValue,
   applyDeepseekCompat,
@@ -75,13 +76,14 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
     id: opts.id,
     name: opts.name,
     protocols: ["openai", "anthropic"],
+    supportsKeepDefault: true,
     get configPaths() {
       return [piModelsFile(id), piSettingsFile(id)];
     },
 
     detect: () => fs.existsSync(path.dirname(resolveDir())),
 
-    async apply(provider: Provider): Promise<ApplyResult> {
+    async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
       const dir = resolveDir();
       const modelsFile = path.join(dir, "models.json");
       const settingsFile = path.join(dir, "settings.json");
@@ -90,6 +92,11 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
       // Validate both files before preparing any writes, including a malformed settings file.
       const modelsDocument = readModels(modelsFile);
       const settingsDocument = readSettings(settingsFile);
+      const current = settingsDocument.value;
+      if (options.keepDefault && current.defaultProvider === provider.id && current.defaultModel &&
+          !provider.models.some((model) => model.id === current.defaultModel)) {
+        throw new SafeConfigError(t("sync.keepDefaultMissing", { file: settingsFile, id: provider.id, model: current.defaultModel }));
+      }
       const modelsConfig = { ...modelsDocument.value };
       const providers = { ...modelsConfig.providers };
       // Keys agentsw does not model (headers, authHeader, oauth, ...) and per-model extras
@@ -125,22 +132,25 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
       };
       modelsConfig.providers = providers;
 
-      const settings: SettingsConfig = {
+      const modelsText = editJsoncObject(modelsDocument, modelsConfig);
+      const settingsText = options.keepDefault ? undefined : editJsoncObject(settingsDocument, {
         ...settingsDocument.value,
         defaultProvider: provider.id,
         defaultModel: provider.defaultModel,
-      };
-      const modelsText = editJsoncObject(modelsDocument, modelsConfig);
-      const settingsText = editJsoncObject(settingsDocument, settings);
+      });
+      const changed = [modelsFile];
       const modelsBackup = backupFile(modelsFile);
       if (modelsBackup) notes.push(`backup: ${modelsBackup}`);
       writeFileAtomic(modelsFile, modelsText);
 
-      const settingsBackup = backupFile(settingsFile);
-      if (settingsBackup) notes.push(`backup: ${settingsBackup}`);
-      writeFileAtomic(settingsFile, settingsText);
+      if (settingsText !== undefined) {
+        const settingsBackup = backupFile(settingsFile);
+        if (settingsBackup) notes.push(`backup: ${settingsBackup}`);
+        writeFileAtomic(settingsFile, settingsText);
+        changed.push(settingsFile);
+      }
 
-      return { app: opts.id, changed: [modelsFile, settingsFile], notes };
+      return { app: opts.id, changed, notes };
     },
 
     async prune(provider: Provider): Promise<ApplyResult> {
