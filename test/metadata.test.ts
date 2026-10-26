@@ -835,3 +835,121 @@ test("a provider hint is not a creator restriction when unique bare Gateway iden
   assert.equal(result?.metadata?.gateway?.modelId, "creator/model");
   assert.equal(gatewayLoader.mock.callCount(), 1);
 });
+
+test("endpoint-declared limits outrank both catalogs and keep their own origin", async (t) => {
+  const primary = catalog({ name: "Primary", limit: { context: 1000, output: 100 }, reasoning: true, attachment: true });
+  const supplement = gateway({ contextWindow: 2000, maxOutput: 200 });
+  const [result] = await enrichProviderModels(primary, ["creator/model"], enabled, {
+    gateway: supplement,
+    endpointLimits: new Map([["creator/model", { contextWindow: 3000, maxOutput: 500 }]]),
+  });
+  assert.equal(result?.contextWindow, 3000, "the route's own window beats the catalog's");
+  assert.equal(result?.maxOutput, 500);
+  assert.equal(result?.metadata?.fields?.contextWindow?.source, "endpoint");
+  assert.equal(result?.metadata?.fields?.contextWindow?.modelId, "creator/model");
+  assert.equal(result?.metadata?.fields?.contextWindow?.fetchedAt, undefined, "an endpoint reading is not a cache snapshot");
+  // Capabilities are not what an endpoint's limit declaration is trusted for.
+  assert.equal(result?.reasoning, true);
+  assert.equal(result?.imageInput, true);
+  assert.equal(result?.metadata?.fields?.reasoning?.source, "models.dev");
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
+    { field: "contextWindow", source: "models.dev", value: 1000, keptValue: 3000 },
+    { field: "maxOutput", source: "models.dev", value: 100, keptValue: 500 },
+    { field: "contextWindow", source: "ai-gateway", value: 2000, keptValue: 3000 },
+    { field: "maxOutput", source: "ai-gateway", value: 200, keptValue: 500 },
+  ], "a catalog that disagrees is reported, not applied");
+});
+
+test("catalogs still fill the limits the endpoint left unsaid", async () => {
+  const [result] = await enrichProviderModels(catalog({ limit: { context: 1000, output: 100 } }), ["creator/model"], enabled, {
+    gateway: gateway({ maxOutput: 200 }),
+    endpointLimits: new Map([["creator/model", { contextWindow: 3000 }]]),
+  });
+  assert.equal(result?.contextWindow, 3000);
+  assert.equal(result?.maxOutput, 100, "models.dev fills the output limit the endpoint did not declare");
+  assert.equal(result?.metadata?.fields?.maxOutput?.source, "models.dev");
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value }) => ({ field, source, value })), [
+    { field: "contextWindow", source: "models.dev", value: 1000 },
+    { field: "maxOutput", source: "ai-gateway", value: 200 },
+  ]);
+});
+
+test("an endpoint limit survives a catalog identity that differs from the local id", async () => {
+  const [result] = await enrichProviderModels(catalog({ limit: { context: 1000 } }), ["alias-id"], {
+    ...enabled, gatewayModelAliases: { "alias-id": "creator/model" },
+  }, {
+    gateway: gateway({ contextWindow: 2000 }),
+    endpointLimits: new Map([["alias-id", { contextWindow: 3000 }]]),
+  });
+  assert.equal(result?.contextWindow, 3000);
+  assert.equal(result?.metadata?.fields?.contextWindow?.source, "endpoint");
+  assert.equal(result?.metadata?.fields?.contextWindow?.modelId, "alias-id", "the endpoint keys its own id, not the catalog row");
+});
+
+test("an endpoint output limit the endpoint's own window cannot hold is refused", async () => {
+  const [result] = await enrichProviderModels(undefined, ["bare"], enabled, {
+    gateway: null,
+    endpointLimits: new Map([["bare", { contextWindow: 1000, maxOutput: 5000 }]]),
+  });
+  assert.equal(result?.contextWindow, 1000);
+  assert.equal(result?.maxOutput, undefined);
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue, blockedBy }) => ({ field, source, value, keptValue, blockedBy })), [
+    { field: "maxOutput", source: "endpoint", value: 5000, keptValue: 1000, blockedBy: "contextWindow" },
+  ]);
+});
+
+test("endpoint limits apply with Gateway metadata off", async () => {
+  const [result] = await enrichProviderModels(undefined, ["bare"], disabled, {
+    endpointLimits: new Map([["bare", { contextWindow: 1000, maxOutput: 100 }]]),
+  });
+  assert.equal(result?.contextWindow, 1000);
+  assert.equal(result?.maxOutput, 100);
+  assert.equal(result?.metadata?.fields?.contextWindow?.source, "endpoint");
+  assert.equal(result?.metadata?.conflicts, undefined);
+});
+
+test("an endpoint limit does not overwrite a hand-set untracked value", async () => {
+  const [result] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", contextWindow: 500 }] }, {
+    endpointLimits: new Map([["bare", { contextWindow: 1000 }]]),
+  });
+  assert.equal(result?.contextWindow, 500, "an untracked value stays a manual override");
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
+    { field: "contextWindow", source: "endpoint", value: 1000, keptValue: 500 },
+  ]);
+  const [repeat] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", contextWindow: 1000 }] }, {
+    endpointLimits: new Map([["bare", { contextWindow: 1000 }]]),
+  });
+  assert.deepEqual(repeat, { id: "bare", contextWindow: 1000 }, "an agreeing value is not tracked, so nothing is rewritten");
+});
+
+test("an endpoint window clears a retained catalog limit it cannot hold", async () => {
+  const at = "2026-08-01T00:00:00.000Z";
+  const stale = { id: "creator/model", contextWindow: 262144, maxOutput: 262144, metadata: { fields: {
+    contextWindow: { source: "ai-gateway" as const, modelId: "creator/model", value: 262144, updatedAt: at },
+    maxOutput: { source: "ai-gateway" as const, modelId: "creator/model", value: 262144, updatedAt: at },
+  } } };
+  const [result] = await enrichProviderModels(catalog({ limit: { context: 262144, output: 262144 } }), ["creator/model"], {
+    ...disabled, models: [stale],
+  }, {
+    endpointLimits: new Map([["creator/model", { contextWindow: 256000 }]]),
+  });
+  assert.equal(result?.contextWindow, 256000);
+  assert.equal(result?.maxOutput, undefined, "an output limit wider than the route's window does not survive");
+  assert.equal(result?.metadata?.fields?.contextWindow?.source, "endpoint");
+  assert.equal(result?.metadata?.fields?.maxOutput, undefined);
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue, blockedBy }) => ({ field, source, value, keptValue, blockedBy })), [
+    { field: "maxOutput", source: "endpoint", value: 262144, keptValue: 256000, blockedBy: "contextWindow" },
+    { field: "contextWindow", source: "models.dev", value: 262144, keptValue: 256000, blockedBy: undefined },
+    { field: "maxOutput", source: "models.dev", value: 262144, keptValue: 256000, blockedBy: "contextWindow" },
+  ]);
+});
+
+test("a weaker source still cannot shrink a window a wider retained limit pins open", async () => {
+  const at = "2026-08-01T00:00:00.000Z";
+  const existing = { id: "creator/model", contextWindow: 4000, maxOutput: 4000, metadata: { fields: {
+    maxOutput: { source: "ai-gateway" as const, modelId: "creator/model", value: 4000, updatedAt: at },
+  } } };
+  const [result] = await enrichProviderModels(catalog({ limit: { context: 1000 } }), ["creator/model"], { ...disabled, models: [existing] });
+  assert.equal(result?.contextWindow, 4000, "models.dev alone does not prove the retained limit wrong");
+  assert.equal(result?.maxOutput, 4000);
+});

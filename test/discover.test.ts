@@ -8,7 +8,7 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "agentsw-discovery-"));
 process.env.HOME = sandbox;
 process.env.AGENTSW_HOME = sandbox;
 for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "DSH_HOME", "PI_CODING_AGENT_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG"]) delete process.env[name];
-const { discoverProviderModels, probeProtocols, MAX_MODEL_PAGES } = await import("../src/discover.js");
+const { discoverProviderCatalog, discoverProviderModels, probeProtocols, MAX_MODEL_PAGES } = await import("../src/discover.js");
 after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 beforeEach((t) => {
   t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network request"); });
@@ -131,4 +131,35 @@ test("probe hooks fire once per attempt, in probe order, before the request", as
   attempts.length = 0;
   assert.deepEqual(await probeProtocols(provider), ["openai", "anthropic"], "hooks are optional");
   assert.deepEqual(attempts, []);
+});
+
+test("endpoint-declared limits fold every alias and survive pagination", async (t) => {
+  const pages = [
+    { data: [
+      { id: "gateway-style", context_window_tokens: 131072, maximum_output_tokens: 32768, supports_tools: true },
+      { id: "bare" },
+      { id: "zero-and-strings", context_window_tokens: 0, max_output_tokens: "64000", maximum_output_tokens: -1 },
+    ], has_more: true, last_id: "cursor-1" },
+    { data: [
+      { id: "openrouter-style", context_length: 200000.9, max_output_tokens: 64000 },
+      { id: "alias-priority", context_length: 100, max_context_length: 200 },
+      { id: "bare" },
+    ], has_more: false },
+  ];
+  let call = 0;
+  t.mock.method(globalThis, "fetch", async () => Response.json(pages[call++]));
+  const catalog = await discoverProviderCatalog(provider);
+  assert.deepEqual(catalog.ids, ["alias-priority", "bare", "gateway-style", "openrouter-style", "zero-and-strings"]);
+  assert.deepEqual([...catalog.limits], [
+    ["gateway-style", { contextWindow: 131072, maxOutput: 32768 }],
+    ["openrouter-style", { contextWindow: 200000, maxOutput: 64000 }],
+    ["alias-priority", { contextWindow: 100 }],
+  ], "only rows that declare a usable limit carry an entry");
+});
+
+test("id-only listings keep the limit map empty, as resellers do", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ models: [{ id: "a" }, { id: "b", name: "B" }] }));
+  const catalog = await discoverProviderCatalog({ ...provider, protocol: "openai" });
+  assert.deepEqual(catalog.ids, ["a", "b"]);
+  assert.equal(catalog.limits.size, 0);
 });

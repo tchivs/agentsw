@@ -35,7 +35,9 @@ without touching the settings you hand-tuned.
 - **Model metadata, not just an id list.** Reseller `/v1/models` endpoints return bare ids.
   agentsw enriches them from [models.dev](https://models.dev), automatically fills meaningful gaps from AI Gateway when needed, and writes what each app
   actually reads: `thinkingLevelMap` for pi/prime, `limit`/`attachment` for opencode,
-  `contextWindow`/`maxTokens` for omp, `reasoningEfforts`/`input` for dsh.
+  `contextWindow`/`maxTokens` for omp, `reasoningEfforts`/`input` for dsh. Limits the endpoint declares for
+  its own models outrank the catalogs, so one model cannot end up with two different context windows
+  depending on which provider lists it.
 - **Adopts what you already have** — including [cc-switch](https://github.com/farion1231/cc-switch).
   `import` scans every installed agent *and* cc-switch's own store, merges duplicates
   (same protocol + normalized endpoint + credentials), and never writes back to either.
@@ -204,8 +206,9 @@ use `--all` explicitly in scripts. Model discovery may update the local metadata
 
 ## Model discovery filters
 
-`--discover` lists model ids from the provider's `/v1/models`, then enriches each id from
-models.dev first, with automatic AI Gateway supplementation when needed. Reseller lists are noisy,
+`--discover` lists model ids from the provider's `/v1/models`, then enriches each id from models.dev first,
+with automatic AI Gateway supplementation when needed. Limits the provider declares for its own models in
+that same listing win over what a catalog claims for them; ids it lists bare are enriched as before. Reseller lists are noisy,
 so filters are persisted per provider and re-applied on every `discover`:
 
 ```bash
@@ -277,9 +280,12 @@ Without `--provider`, `refresh` applies to all providers, including any supplied
 `--gateway-models` replaces the whole alias map (`{}` clears it); aliases do not change the saved mode or override `off`.
 Import still skips already configured accounts.
 
-- **Field-level priority:** manual values > models.dev > Gateway gap filling. Tracked automatic values may
-  refresh; subsequent manual edits are retained. Legacy values without provenance are conservatively treated
-  as manual overrides. Unmodeled extension fields survive enrichment too.
+- **Field-level priority:** manual values > the endpoint's own declaration > models.dev > Gateway gap filling.
+  An endpoint that advertises `context_window_tokens`/`maximum_output_tokens`
+  (or their `context_length`/`max_output_tokens` spellings) for its own list is authoritative for its own
+  route, so those limits are written instead of a catalog's estimate for the same model. Tracked automatic
+  values may refresh; subsequent manual edits are retained. Legacy values without provenance are conservatively
+  treated as manual overrides. Unmodeled extension fields survive enrichment too.
 - **Exact identities:** automatic lookup can map a bare, case-sensitive ID (no `/`) to a unique Gateway
   `creator/model` identity when models.dev evidence is absent or agrees. Ambiguous creator evidence in either
   catalog is rejected; custom or ambiguous names need explicit aliases. Qualified IDs never have their prefixes

@@ -1,4 +1,4 @@
-import type { Protocol } from "./types.js";
+import type { EndpointModelLimits, Protocol } from "./types.js";
 
 /** Append operations to the path, never to a query string or fragment. */
 function modelListUrl(baseUrl: string): URL {
@@ -18,8 +18,37 @@ export const MAX_MODEL_PAGES = 100;
 
 interface ModelPage {
   ids: string[];
+  /** Limits the endpoint declared for a listed id; ids it described with id-only rows have no entry. */
+  limits: Map<string, EndpointModelLimits>;
   hasMore: boolean;
   lastId?: string;
+}
+
+/**
+ * Spellings endpoints use for the same limit, in priority order: the first
+ * declared key wins when a row carries several. Providers do not agree on
+ * names — an OpenAI-compatible gateway publishes context_window_tokens /
+ * maximum_output_tokens, OpenRouter publishes context_length /
+ * max_output_tokens — and a row without the canonical name would otherwise
+ * contribute nothing.
+ */
+const contextWindowKeys = ["context_window_tokens", "context_length", "max_context_length"] as const;
+const maxOutputKeys = ["maximum_output_tokens", "max_output_tokens", "max_completion_tokens"] as const;
+
+function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  }
+  return undefined;
+}
+
+/** Limits a model row advertises, or undefined when it describes nothing but its id. */
+export function parseEndpointLimits(row: Record<string, unknown>): EndpointModelLimits | undefined {
+  const contextWindow = declaredLimit(row, contextWindowKeys);
+  const maxOutput = declaredLimit(row, maxOutputKeys);
+  if (contextWindow === undefined && maxOutput === undefined) return undefined;
+  return { ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxOutput !== undefined ? { maxOutput } : {}) };
 }
 
 function parseModelPage(body: unknown): ModelPage {
@@ -28,33 +57,52 @@ function parseModelPage(body: unknown): ModelPage {
   const rows = page.data ?? page.models;
   if (!Array.isArray(rows)) throw new Error("model-list response has no model array");
   if (page.has_more !== undefined && typeof page.has_more !== "boolean") throw new Error("invalid model-list pagination flag");
-  const ids = rows.flatMap((row: unknown) => {
-    if (!row || typeof row !== "object") return [];
+  const ids: string[] = [];
+  const limits = new Map<string, EndpointModelLimits>();
+  for (const row of rows as unknown[]) {
+    if (!row || typeof row !== "object") continue;
     const id = (row as Record<string, unknown>).id;
-    return typeof id === "string" && id.length > 0 ? [id] : [];
-  });
-  return { ids, hasMore: page.has_more === true, lastId: typeof page.last_id === "string" ? page.last_id : undefined };
+    if (typeof id !== "string" || id.length === 0) continue;
+    ids.push(id);
+    const declared = parseEndpointLimits(row as Record<string, unknown>);
+    if (declared) limits.set(id, declared);
+  }
+  return { ids, limits, hasMore: page.has_more === true, lastId: typeof page.last_id === "string" ? page.last_id : undefined };
+}
+
+export interface DiscoveredModels {
+  ids: string[];
+  /**
+   * Limits the endpoint advertised for its own models, keyed by id. Empty when
+   * it lists ids only, which is the common reseller case: the catalog then
+   * supplies whatever it knows.
+   */
+  limits: Map<string, EndpointModelLimits>;
 }
 
 /**
- * List model ids from the provider's own /v1/models endpoint.
- * Resellers expose the id list here but no metadata (context, thinking, modalities) —
- * metadata is filled from models.dev afterwards (enrichModels).
+ * List the provider's own /v1/models catalog: model ids plus the limits a row
+ * declares for itself. Plenty of resellers expose bare ids — those ids carry no
+ * entry in `limits` and metadata is filled from models.dev afterwards
+ * (enrichModels). An endpoint that does declare limits is authoritative for its
+ * own route, so those numbers outrank the catalogs instead of being replaced by
+ * whatever a third party lists for the same model.
  */
-export async function discoverProviderModels(
+export async function discoverProviderCatalog(
   opts: {
     baseUrl: string;
     apiKey: string;
     protocol: Protocol;
   },
   hooks: { onPage?: (info: { page: number; count: number }) => void } = {},
-): Promise<string[]> {
+): Promise<DiscoveredModels> {
   const url = modelListUrl(opts.baseUrl);
   const headers: Record<string, string> =
     opts.protocol === "anthropic"
       ? { "x-api-key": opts.apiKey, "anthropic-version": "2023-06-01" }
       : { authorization: `Bearer ${opts.apiKey}` };
   const ids = new Set<string>();
+  const limits = new Map<string, EndpointModelLimits>();
   const cursors = new Set<string>();
   const initialCursor = url.searchParams.get("after_id");
   if (initialCursor) cursors.add(initialCursor);
@@ -66,6 +114,7 @@ export async function discoverProviderModels(
     if (!res.ok) throw new Error(`model discovery -> HTTP ${res.status}`);
     const parsed = parseModelPage(await res.json());
     for (const id of parsed.ids) ids.add(id);
+    for (const [id, declared] of parsed.limits) if (ids.has(id)) limits.set(id, declared);
     hooks.onPage?.({ page, count: ids.size });
     if (!parsed.hasMore) break;
     if (!parsed.lastId || !parsed.lastId.trim()) throw new Error("model-list pagination is missing last_id");
@@ -74,7 +123,19 @@ export async function discoverProviderModels(
     url.searchParams.set("after_id", parsed.lastId);
   }
   if (ids.size === 0) throw new Error("provider returned no models");
-  return [...ids].sort();
+  return { ids: [...ids].sort(), limits };
+}
+
+/** The listed ids alone, for callers that only need the model list. */
+export async function discoverProviderModels(
+  opts: {
+    baseUrl: string;
+    apiKey: string;
+    protocol: Protocol;
+  },
+  hooks: { onPage?: (info: { page: number; count: number }) => void } = {},
+): Promise<string[]> {
+  return (await discoverProviderCatalog(opts, hooks)).ids;
 }
 
 /**
