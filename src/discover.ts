@@ -38,7 +38,11 @@ const maxOutputKeys = ["maximum_output_tokens", "max_output_tokens", "max_comple
 function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
   for (const key of keys) {
     const value = row[key];
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    // Floor before the test: a fraction in (0, 1) floors to 0, which every other
+    // reader treats as "no window" while the merge would rank it a declaration.
+    const limit = Math.floor(value);
+    if (limit > 0) return limit;
   }
   return undefined;
 }
@@ -114,7 +118,13 @@ export async function discoverProviderCatalog(
     if (!res.ok) throw new Error(`model discovery -> HTTP ${res.status}`);
     const parsed = parseModelPage(await res.json());
     for (const id of parsed.ids) ids.add(id);
-    for (const [id, declared] of parsed.limits) if (ids.has(id)) limits.set(id, declared);
+    // A repeated id keeps what an earlier page declared: merge per key so a
+    // later partial row cannot drop the other limit.
+    for (const [id, declared] of parsed.limits) {
+      if (!ids.has(id)) continue;
+      const earlier = limits.get(id);
+      limits.set(id, earlier ? { ...earlier, ...declared } : declared);
+    }
     hooks.onPage?.({ page, count: ids.size });
     if (!parsed.hasMore) break;
     if (!parsed.lastId || !parsed.lastId.trim()) throw new Error("model-list pagination is missing last_id");
