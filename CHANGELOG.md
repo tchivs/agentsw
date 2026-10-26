@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-26
+
 ### Added
 
 - The endpoint's own listing now owns prices as well as limits: a route that publishes what it charges for
@@ -585,7 +587,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/tchivs/agentsw/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/tchivs/agentsw/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tchivs/agentsw/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tchivs/agentsw/compare/v0.10.2...v0.11.0
