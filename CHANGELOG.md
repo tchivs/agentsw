@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-26
+
 ### Fixed
 
 - The context window and output limit an endpoint declares for its own models are now what gets
@@ -555,7 +557,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/tchivs/agentsw/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tchivs/agentsw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/tchivs/agentsw/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tchivs/agentsw/compare/v0.10.0...v0.10.1
