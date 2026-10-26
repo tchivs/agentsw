@@ -944,6 +944,18 @@ test("an endpoint window clears a retained catalog limit it cannot hold", async 
   ]);
 });
 
+test("a hand-set limit survives an endpoint window that cannot hold it", async () => {
+  const [result] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", maxInput: 40000, maxOutput: 40000 }] }, {
+    endpointLimits: new Map([["bare", { contextWindow: 32768 }]]),
+  });
+  assert.equal(result?.contextWindow, undefined, "a manual cap the window cannot hold withdraws the window proposal");
+  assert.equal(result?.maxInput, 40000, "the user's own number is not a catalog estimate to clear");
+  assert.equal(result?.maxOutput, 40000);
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue, blockedBy }) => ({ field, source, value, keptValue, blockedBy })), [
+    { field: "contextWindow", source: "endpoint", value: 32768, keptValue: 40000, blockedBy: "maxInput" },
+  ], "the conflict rejects the endpoint's window, and never mislabels the user's value as a declaration");
+});
+
 test("a weaker source still cannot shrink a window a wider retained limit pins open", async () => {
   const at = "2026-08-01T00:00:00.000Z";
   const existing = { id: "creator/model", contextWindow: 4000, maxOutput: 4000, metadata: { fields: {
