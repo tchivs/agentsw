@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parse as parseJsonc } from "jsonc-parser";
 import type { Provider, Protocol } from "../src/types.js";
 import type { AppPackage } from "../src/apps.js";
@@ -162,7 +163,7 @@ test("CLI discover --sync --keep-default updates two real Prime providers withou
     };
     process.on('exit', () => { if (requests !== 2) throw new Error('expected exactly two fixture requests'); });
   `;
-  const result = spawnSync(process.execPath, ["--import", "tsx", "--import", `data:text/javascript,${encodeURIComponent(script)}`, new URL("../src/index.ts", import.meta.url).pathname, "--lang", "en", "--json", "discover", "--all", "--sync", "--apps", "prime", "--keep-default"], { env: { ...process.env, HOME: sandbox, AGENTSW_HOME: sandbox }, encoding: "utf8", timeout: 20_000 });
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--import", `data:text/javascript,${encodeURIComponent(script)}`, fileURLToPath(new URL("../src/index.ts", import.meta.url)), "--lang", "en", "--json", "discover", "--all", "--sync", "--apps", "prime", "--keep-default"], { env: { ...process.env, HOME: sandbox, AGENTSW_HOME: sandbox }, encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stderr);
   const documents = result.stdout.trim().split("\n");
   assert.equal(documents.length, 1);
