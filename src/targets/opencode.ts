@@ -4,7 +4,7 @@ import { isJsonObject, readJsoncObject, editJsoncObject } from "../jsonc.js";
 import { opencodeConfigDirs, opencodeConfigFiles, opencodePrimaryConfigFile } from "../app-paths.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 
 /**
  * opencode: custom providers in the "provider" map of its config document
@@ -25,7 +25,7 @@ export const opencode: TargetApp = transactionalTarget({
     opencodeConfigFiles().some((file) => fs.existsSync(file)) ||
     opencodeConfigDirs().some((dir) => fs.existsSync(dir)),
 
-  async apply(provider: Provider): Promise<ApplyResult> {
+  async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
     const configFile = opencodePrimaryConfigFile();
     const notes: string[] = [];
     const existed = readTextIfExists(configFile) !== undefined;
@@ -101,13 +101,15 @@ export const opencode: TargetApp = transactionalTarget({
       models,
     };
     config.provider = providerMap;
-    config.model = `${provider.id}/${provider.defaultModel}`;
-    if (provider.smallModel) {
-      config.small_model = `${provider.id}/${provider.smallModel}`;
-    } else if (typeof config.small_model === "string" && config.small_model.startsWith(`${provider.id}/`)) {
-      // This provider's own previous small model is obsolete; another provider's
-      // entry stays untouched, exactly as prune scopes its cleanup.
-      delete config.small_model;
+    if (!options.keepSelection) {
+      config.model = `${provider.id}/${provider.defaultModel}`;
+      if (provider.smallModel) {
+        config.small_model = `${provider.id}/${provider.smallModel}`;
+      } else if (typeof config.small_model === "string" && config.small_model.startsWith(`${provider.id}/`)) {
+        // This provider's own previous small model is obsolete; another provider's
+        // entry stays untouched, exactly as prune scopes its cleanup.
+        delete config.small_model;
+      }
     }
 
     const backup = backupFile(configFile);

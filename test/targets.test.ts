@@ -778,3 +778,61 @@ test("dsh prune removes the stored key even when the route is already gone", asy
   assert.equal(creds.refs.KEEP_ME, "sk-keep");
   assert.ok((await dsh.prune({ ...provider, id: "orphan" })).skipped, "second prune has nothing left");
 });
+
+test("keepSelection writes the provider without moving an app's current model", async () => {
+  const home = (relative: string) => path.join(sandbox, relative);
+  const of = (id: string) => targets.find((t) => t.id === id)!;
+
+  const opencode = of("opencode");
+  fs.writeFileSync(home(".config/opencode/opencode.json"),
+    '{"model": "other/keep-model", "provider": {"other": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "https://other/v1", "apiKey": "k"}}}}\n');
+  await opencode.apply(provider, { keepSelection: true });
+  let opencodeJson = JSON.parse(fs.readFileSync(home(".config/opencode/opencode.json"), "utf8"));
+  assert.equal(opencodeJson.model, "other/keep-model", "opencode keeps pointing where it did");
+  assert.equal(opencodeJson.provider.testprov.options.baseURL, provider.baseUrl, "the block is still written");
+  await opencode.apply(provider);
+  opencodeJson = JSON.parse(fs.readFileSync(home(".config/opencode/opencode.json"), "utf8"));
+  assert.equal(opencodeJson.model, "testprov/model-a", "without the option a write still switches");
+  await opencode.prune(provider);
+
+  const dsh = of("dsh");
+  fs.writeFileSync(home(".dsh/settings.yaml"), "agent-default-model:\n  provider: other\n  model: keep-model\n");
+  await dsh.apply(provider, { keepSelection: true });
+  const dshYaml = YAML.parse(fs.readFileSync(home(".dsh/settings.yaml"), "utf8"));
+  assert.deepEqual(dshYaml["agent-default-model"], { provider: "other", model: "keep-model" });
+  assert.equal(dshYaml["llm-pi-ai"].providers.testprov.baseURL, provider.baseUrl);
+  await dsh.prune(provider);
+  assert.deepEqual(YAML.parse(fs.readFileSync(home(".dsh/settings.yaml"), "utf8"))["agent-default-model"],
+    { provider: "other", model: "keep-model" }, "prune only resets a selection that pointed at this provider");
+
+  const codex = of("codex");
+  fs.writeFileSync(home(".codex/config.toml"), 'model_provider = "other"\nmodel = "keep-model"\n');
+  await codex.apply(provider, { keepSelection: true });
+  assert.match(fs.readFileSync(home(".codex/config.toml"), "utf8"), /model_provider = "other"[\s\S]*\[model_providers\.testprov\]/);
+  await codex.apply(provider);
+  assert.match(fs.readFileSync(home(".codex/config.toml"), "utf8"), /model_provider = "testprov"/);
+  await codex.prune(provider);
+
+  const hermes = of("hermes");
+  fs.writeFileSync(home(".hermes/config.yaml"), "model:\n  provider: other\n  default: keep-model\n");
+  await hermes.apply(provider, { keepSelection: true });
+  const hermesYaml = YAML.parse(fs.readFileSync(home(".hermes/config.yaml"), "utf8"));
+  assert.deepEqual(hermesYaml.model, { provider: "other", default: "keep-model" });
+  assert.equal(hermesYaml.providers.testprov.default_model, "model-a", "the route keeps its own default model");
+  await hermes.prune(provider);
+
+  const workbuddy = of("workbuddy");
+  fs.writeFileSync(home(".workbuddy/settings.json"), '{"model": "keep-model"}\n');
+  await workbuddy.apply(provider, { keepSelection: true });
+  assert.equal(JSON.parse(fs.readFileSync(home(".workbuddy/settings.json"), "utf8")).model, "keep-model");
+  assert.ok(fs.readFileSync(home(".workbuddy/models.json"), "utf8").includes("testprov"));
+  await workbuddy.prune(provider);
+
+  const pi = of("pi");
+  fs.writeFileSync(home(".pi/agent/settings.json"), '{"defaultProvider": "other", "defaultModel": "keep-model"}\n');
+  await pi.apply(provider, { keepSelection: true });
+  const piSettings = JSON.parse(fs.readFileSync(home(".pi/agent/settings.json"), "utf8"));
+  assert.equal(piSettings.defaultProvider, "other");
+  assert.equal(piSettings.defaultModel, "keep-model");
+  await pi.prune(provider);
+});

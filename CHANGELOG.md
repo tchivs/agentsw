@@ -6,6 +6,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Refreshing a provider no longer switches an app onto it.** Every app adapter that keeps a
+  "current provider/model" pointer wrote it on each `apply`, so `sync -p other` moved the pointer even
+  when the store's active provider was a different one — the opposite of what the README promises
+  ("syncing is not switching"). Targets now take `keepSelection` and `sync` sets it whenever the
+  provider being written is not the active one: the provider's block and model list are still written,
+  the app keeps pointing where it did. `use` and `add` still switch, since that is their job.
+
 ## [0.12.0] - 2026-10-26
 
 ### Added

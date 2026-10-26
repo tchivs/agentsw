@@ -7,7 +7,7 @@ import { localProviderId } from "../provider-identity.js";
 import { providerIdFromBaseUrl, providerNameFromBaseUrl } from "../slug.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 import { hasModelMetadata } from "./wire.js";
 
 function configDir(): string {
@@ -90,7 +90,7 @@ export const workbuddy: TargetApp = transactionalTarget({
 
   detect: () => fs.existsSync(configDir()),
 
-  async apply(provider: Provider): Promise<ApplyResult> {
+  async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
     const dir = configDir();
     const modelsFile = path.join(dir, "models.json");
     const settingsFile = path.join(dir, "settings.json");
@@ -136,7 +136,7 @@ export const workbuddy: TargetApp = transactionalTarget({
     const availableModels = [...new Set([
       ...existingAvailable.filter((id) => !removedIds.has(id) || keptIds.has(id)), ...ourIds,
     ])];
-    settings.model = provider.defaultModel;
+    if (!options.keepSelection) settings.model = provider.defaultModel;
 
     const modelsBackup = backupFile(modelsFile);
     if (modelsBackup) notes.push(`backup: ${modelsBackup}`);

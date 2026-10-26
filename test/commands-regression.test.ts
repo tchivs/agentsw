@@ -481,6 +481,23 @@ test("a second protocol's failed later page prevents partial quick-add store upd
   assert.deepEqual(snapshot(), before);
 });
 
+test("refreshing a provider that is not active leaves an app's current model where it was", async (t) => {
+  seed(provider({ id: "alpha" }), provider({ id: "beta" })); // alpha is the active provider
+  mockModels(t);
+  const file = path.join(sandbox, ".config", "opencode", "opencode.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const write = (model: string) => fs.writeFileSync(file, JSON.stringify({ model, provider: {} }, null, 2) + "\n");
+  const read = () => JSON.parse(fs.readFileSync(file, "utf8")) as { model: string; provider: Record<string, unknown> };
+
+  write("beta/m-small");
+  await cmdSync({ provider: "alpha", apps: "opencode", refresh: false });
+  assert.equal(read().model, "alpha/z-default", "writing the active provider still moves the pointer");
+
+  await cmdSync({ provider: "beta", apps: "opencode", refresh: false });
+  assert.equal(read().model, "alpha/z-default", "refreshing beta is not switching opencode onto it");
+  assert.ok(read().provider.beta, "beta's block is written either way");
+});
+
 test("invalid targets fail before changing active provider, defaults, filters or app files", async () => {
   const original = provider();
   const second = provider({ id: "second-account", apiKey: "fixture-second-key" });

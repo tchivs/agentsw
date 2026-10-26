@@ -8,7 +8,7 @@ import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, Provider } from "../types.js";
 import { sdkBaseUrl } from "./wire.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 
 function hermesHome(): string {
   return hermesDir();
@@ -58,7 +58,7 @@ export const hermes: TargetApp = transactionalTarget({
 
   detect: () => fs.existsSync(hermesHome()),
 
-  async apply(provider: Provider): Promise<ApplyResult> {
+  async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
     const configFile = hermesConfigFile();
     const envFile = hermesEnvFile();
     const notes: string[] = [];
@@ -100,8 +100,10 @@ export const hermes: TargetApp = transactionalTarget({
       if (model.contextWindow) doc.setIn([...modelAt, "context_length"], model.contextWindow);
       else doc.deleteIn([...modelAt, "context_length"]);
     }
-    doc.setIn(["model", "provider"], provider.id);
-    doc.setIn(["model", "default"], provider.defaultModel);
+    if (!options.keepSelection) {
+      doc.setIn(["model", "provider"], provider.id);
+      doc.setIn(["model", "default"], provider.defaultModel);
+    }
 
     const envText = readTextIfExists(envFile) ?? "";
     const assignments = envAssignments(envFile, envText);
