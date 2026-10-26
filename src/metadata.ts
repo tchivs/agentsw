@@ -337,12 +337,12 @@ function mergeSource(
         ? supplementalGateway[field] : undefined;
       if (!primaryFits && typeof next === "number" && next <= context) retained = next;
       if (typeof retained === "number" && retained > context) {
-        // The endpoint's own window is authoritative for its route: a retained
+        // The endpoint's own window is authoritative for its route: a *tracked*
         // limit it cannot hold is a catalog estimate that would otherwise pin
-        // the window open, so the limit goes and the window wins. A weaker
-        // source keeps the old outcome — the wider window stays, the proposal
-        // is reported, because nothing here proves the retained limit wrong.
-        if (source === "endpoint") {
+        // the window open, so the limit goes and the window wins. A hand-set
+        // limit keeps the old outcome — it stays, and the window proposal is
+        // withdrawn, because a manual value outranks every source.
+        if (source === "endpoint" && spec.metadata?.fields?.[field]) {
           conflict(field, retained, context, "contextWindow");
           setField(spec, field, undefined);
           if (spec.metadata?.fields) delete spec.metadata.fields[field];
