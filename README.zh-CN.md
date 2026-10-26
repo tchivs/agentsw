@@ -265,7 +265,9 @@ asw sync --provider myproxy,backup-proxy
   端点在 `/v1/models` 中为自家模型声明了 `context_window_tokens`/`maximum_output_tokens`（或
   `context_length`/`max_output_tokens` 写法）时，以它为准而不是目录对同一模型的估算；自家发布的
   价格（`input_cost_per_million_tokens_usd`、`output_cost_per_million_tokens_usd`、
-  `cached_input_cost_per_million_tokens_usd`、`cache_write_cost_per_million_tokens_usd`，单位就是每百万 token 美元）同理。已记录来源的自动值可以刷新，
+  `cached_input_cost_per_million_tokens_usd`、`cache_write_cost_per_million_tokens_usd`，或 `pricing` 下的
+  `*_nano_usd_per_million_tokens` 纳美元写法；一律按每百万 token 美元存储）同理。按图片/秒/字符计费的不是 token 价格，
+  基础价之外的档位价也不是基础价，两者都不写。已记录来源的自动值可以刷新，
   手动修改后会保留；旧版本中没有来源记录的已有值保守视为手动值，不强制覆盖。未知扩展字段也保留。
 - **精确匹配：** 不含 `/` 的裸 ID 可按大小写精确匹配唯一的 Gateway `creator/model` 身份，
   前提是 models.dev 没有身份线索或线索一致。任一目录中的创建者身份有歧义时拒绝自动匹配；

@@ -182,6 +182,26 @@ test("endpoint-declared prices keep their fraction and their own spelling", asyn
   ], "a per-million price keeps its fraction, 0 is a real price, and an unusable one declares nothing");
 });
 
+test("nano-USD prices under pricing convert; tier and per-image rates stay out", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { id: "nano", pricing: {
+      input_nano_usd_per_million_tokens: 800000000, output_nano_usd_per_million_tokens: 1600000000,
+      cached_input_nano_usd_per_million_tokens: 200000000, cache_write_nano_usd_per_million_tokens: 300000000,
+      cache_creation_1h_input_nano_usd_per_million_tokens: 1234567890, long_context: null,
+    } },
+    { id: "creation-only", pricing: {
+      input_nano_usd_per_million_tokens: 250000000, cache_creation_input_nano_usd_per_million_tokens: 312500000,
+    } },
+    { id: "per-image", pricing: { units: { kind: "image", rates: { "": 20000000 } },
+      input_nano_usd_per_million_tokens: null, output_nano_usd_per_million_tokens: null } },
+  ] }));
+  const catalog = await discoverProviderCatalog(provider);
+  assert.deepEqual([...catalog.facts], [
+    ["nano", { cost: { input: 0.8, output: 1.6, cacheRead: 0.2, cacheWrite: 0.3 } }],
+    ["creation-only", { cost: { input: 0.25, cacheWrite: 0.3125 } }],
+  ], "nano-USD becomes per-million USD, a tier rate beside the base one is not the base price, and a per-image rate is not a token price");
+});
+
 test("a later page's partial row keeps the limits an earlier page declared", async (t) => {
   const pages = [
     { data: [{ id: "split", context_window_tokens: 200000, maximum_output_tokens: 32000 }], has_more: true, last_id: "cursor-1" },
