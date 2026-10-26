@@ -1,6 +1,6 @@
 import { findModelMeta, getCatalogFetchedAt, toModelSpec, type Catalog, type CatalogModel } from "./modelsdev.js";
 import { loadGatewayCatalog, type GatewayCatalog, type GatewayModelMetadata } from "./gateway.js";
-import type { ModelMetadataConflict, ModelMetadataField, ModelMetadataOrigin, ModelMetadataValue, ModelSpec, Provider } from "./types.js";
+import type { EndpointModelLimits, ModelMetadataConflict, ModelMetadataField, ModelMetadataOrigin, ModelMetadataValue, ModelSpec, Provider } from "./types.js";
 
 export interface MetadataOptions {
   gatewayMetadata?: boolean;
@@ -78,6 +78,15 @@ const fields: ModelMetadataField[] = [
   "cost.input", "cost.output", "cost.cacheRead", "cost.cacheWrite",
 ];
 const gatewayFields = fields.filter((field) => !field.startsWith("cost."));
+/** Limits are all an endpoint is trusted for: its listing describes its own wire, not capabilities. */
+const endpointFields = ["contextWindow", "maxOutput"] as const;
+/**
+ * Which source owns a field it proposes. An endpoint that declares its own
+ * limits outranks both catalogs — models.dev describes the model, the public
+ * Gateway describes *that* gateway, and neither is the route serving the
+ * request. models.dev outranks Gateway, which only fills what it is given.
+ */
+const sourceRank: Record<ModelMetadataOrigin["source"], number> = { endpoint: 3, "models.dev": 2, "ai-gateway": 1 };
 const limits = ["maxInput", "maxOutput"] as const;
 const coreFields = ["contextWindow", "maxOutput", "reasoning", "imageInput"] as const;
 
@@ -278,12 +287,16 @@ function clearStaleIdentity(spec: ModelSpec, modelId: string): void {
   if (!metadata) return;
   for (const field of fields) {
     const origin = metadata.fields?.[field];
-    if (!origin || origin.modelId === modelId) continue;
+    // Endpoint limits are keyed by the provider's own id, not by a catalog row:
+    // a catalog id that differs says nothing about the route's own numbers.
+    if (!origin || origin.source === "endpoint" || origin.modelId === modelId) continue;
     if (equalValue(fieldValue(spec, field), origin.value)) setField(spec, field, undefined);
     delete metadata.fields![field];
   }
   if (metadata.gateway && metadata.gateway.modelId !== modelId) delete metadata.gateway;
-  if (metadata.conflicts) metadata.conflicts = metadata.conflicts.filter((conflict) => conflict.modelId === modelId);
+  if (metadata.conflicts) {
+    metadata.conflicts = metadata.conflicts.filter((conflict) => conflict.source === "endpoint" || conflict.modelId === modelId);
+  }
 }
 
 /** Apply a source as a set of field proposals, checking bounds against retained values first. */
@@ -291,7 +304,7 @@ function mergeSource(
   spec: ModelSpec, incoming: ModelSpec, source: ModelMetadataOrigin["source"], modelId: string,
   now: string, fetchedAt?: string, supplementalGateway?: ModelSpec,
 ): void {
-  const sourceFields = source === "ai-gateway" ? gatewayFields : fields;
+  const sourceFields = source === "endpoint" ? [...endpointFields] : source === "ai-gateway" ? gatewayFields : fields;
   const proposals = new Map<ModelMetadataField, ModelMetadataValue>();
   const conflicts: ModelMetadataConflict[] = [];
   const conflict = (field: ModelMetadataField, value: ModelMetadataValue, keptValue: ModelMetadataValue, blockedBy?: ModelMetadataField): void => {
@@ -304,7 +317,7 @@ function mergeSource(
     if (field === "name" && (value === incoming.id || value === modelId)) continue;
     const current = fieldValue(spec, field);
     const origin = spec.metadata?.fields?.[field];
-    if (current === undefined || (origin && (source === "models.dev" || origin.source === source))) {
+    if (current === undefined || (origin && sourceRank[source] >= sourceRank[origin.source])) {
       proposals.set(field, value);
     } else if (!equalValue(current, value)) {
       conflict(field, value, current);
@@ -324,6 +337,17 @@ function mergeSource(
         ? supplementalGateway[field] : undefined;
       if (!primaryFits && typeof next === "number" && next <= context) retained = next;
       if (typeof retained === "number" && retained > context) {
+        // The endpoint's own window is authoritative for its route: a retained
+        // limit it cannot hold is a catalog estimate that would otherwise pin
+        // the window open, so the limit goes and the window wins. A weaker
+        // source keeps the old outcome — the wider window stays, the proposal
+        // is reported, because nothing here proves the retained limit wrong.
+        if (source === "endpoint") {
+          conflict(field, retained, context, "contextWindow");
+          setField(spec, field, undefined);
+          if (spec.metadata?.fields) delete spec.metadata.fields[field];
+          continue;
+        }
         conflict("contextWindow", context, retained, field);
         proposals.delete("contextWindow");
         context = spec.contextWindow;
@@ -376,7 +400,12 @@ export async function enrichProviderModels(
   catalog: Catalog | undefined,
   ids: string[],
   settings: Pick<Provider, "modelsDevId" | "gatewayMetadata" | "gatewayModelAliases"> & { models?: ModelSpec[] },
-  options: { gateway?: GatewayCatalog | null; gatewayLoader?: () => Promise<GatewayCatalog | null> } = {},
+  options: {
+    gateway?: GatewayCatalog | null;
+    gatewayLoader?: () => Promise<GatewayCatalog | null>;
+    /** Limits the endpoint advertised for these ids, from `discoverProviderCatalog`. */
+    endpointLimits?: Map<string, EndpointModelLimits>;
+  } = {},
 ): Promise<ModelSpec[]> {
   const validated = validateSettings(settings);
   const mode = getMetadataMode(validated);
@@ -395,6 +424,11 @@ export async function enrichProviderModels(
         const origin = spec.metadata?.fields?.[field];
         if (origin && !equalValue(fieldValue(spec, field), origin.value)) delete spec.metadata!.fields![field];
       }
+      // The endpoint's own numbers go in first so the catalogs can only fill
+      // what it left unsaid; a catalog that disagrees is reported as a conflict
+      // instead of overwriting the limits the route actually enforces.
+      const declared = options.endpointLimits?.get(id);
+      if (declared) mergeSource(spec, { id, ...declared }, "endpoint", id, now);
       let primary: { spec: ModelSpec; modelId: string } | undefined;
       let supplement: GatewayModelMetadata | undefined;
       let match: ExactMatch | undefined;

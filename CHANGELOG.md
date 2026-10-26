@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The context window and output limit an endpoint declares for its own models are now what gets
+  written, instead of whatever a catalog claims for the same id. Reseller listings were assumed to
+  carry ids only, so a provider publishing `context_window_tokens` / `maximum_output_tokens` was
+  still filled in from models.dev or the public AI Gateway — which is how one model ended up with a
+  1M window under a gateway provider and a 200K window under the provider that actually serves it,
+  and how models no catalog lists (aion, clef, most zoo models) ended up with no window at all and
+  quietly inherited each app's default. `discover` now reads the limits a listing declares, folding
+  the spellings providers use for them (`context_window_tokens`, `context_length`,
+  `max_context_length`, `maximum_output_tokens`, `max_output_tokens`, `max_completion_tokens`), and
+  merges them as an `endpoint` source that outranks both catalogs. It owns limits only: capabilities
+  stay with the catalogs, a disagreement is recorded in `metadata.conflicts` instead of overwritten,
+  and a hand-set value still wins. A stale catalog limit wider than the window an endpoint declares
+  is now dropped rather than pinning the old, wider window open.
+
 ## [0.11.0] - 2026-10-08
 
 ### Added

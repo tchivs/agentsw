@@ -11,7 +11,7 @@ import { loadCatalog, searchCatalog, type Catalog } from "./modelsdev.js";
 import { classifyUnresolved, enrichProviderModels, getMetadataMode, resolveMetadataOptions, type MetadataOptions } from "./metadata.js";
 import { loadGatewayCatalog, type GatewayCatalog } from "./gateway.js";
 import { resolveTargets, supportsProtocol, targets } from "./targets/index.js";
-import { discoverProviderModels, probeProtocols } from "./discover.js";
+import { discoverProviderCatalog, probeProtocols, type DiscoveredModels } from "./discover.js";
 import { appCommand, appPackages, installedVersion, isNewer, latestVersion, normalizeAppVersion, runShell } from "./apps.js";
 import { SafeConfigError, drainPendingWrites, isDryRun, readTextIfExists, setDryRun } from "./fsutil.js";
 import { applyModelFilter, type ModelFilter } from "./filter.js";
@@ -28,7 +28,7 @@ import {
   statusReport,
   type AppReportRow,
 } from "./report.js";
-import type { ApplyResult, ModelSpec, OpenAIApi, Protocol, Provider, Store } from "./types.js";
+import type { ApplyResult, EndpointModelLimits, ModelSpec, OpenAIApi, Protocol, Provider, Store } from "./types.js";
 import type { ApplyOptions, TargetApp } from "./targets/types.js";
 
 /** Share successes and failures without fetching until a model actually needs the supplement. */
@@ -231,18 +231,20 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const metadataOptions = resolveMetadataOptions(opts, existing);
   const manualIds = (answers.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   let modelIds = manualIds;
+  // Limits the endpoint declares for its own models, kept from the discovery pass.
+  let endpointLimits: Map<string, EndpointModelLimits> = new Map();
   const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
   const shouldDiscover = opts.discover || manualIds.length === 0;
   if (shouldDiscover) {
     if (!opts.discover) {
       note(t("add.autoDiscover"));
     }
-    const discover = (): Promise<string[]> =>
+    const discover = (): Promise<DiscoveredModels> =>
       withProgress(t("add.discovering", { url: baseUrl }), (progress) =>
-        discoverProviderModels({ baseUrl, apiKey: answers.apiKey!, protocol }, {
+        discoverProviderCatalog({ baseUrl, apiKey: answers.apiKey!, protocol }, {
           onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: baseUrl, page, count })),
         }));
-    let discovered: string[] = [];
+    let discovered: DiscoveredModels = { ids: [], limits: new Map() };
     for (let attempt = 0; ; attempt++) {
       try {
         discovered = await discover();
@@ -258,8 +260,9 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
         if (!retry) break;
       }
     }
-    if (discovered.length) out(t("add.providerLists", { count: discovered.length }));
-    modelIds = [...new Set([...manualIds, ...discovered])];
+    if (discovered.ids.length) out(t("add.providerLists", { count: discovered.ids.length }));
+    modelIds = [...new Set([...manualIds, ...discovered.ids])];
+    endpointLimits = discovered.limits;
   }
   const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
   modelIds = [...new Set([...modelIds, ...retained])];
@@ -272,7 +275,7 @@ export async function cmdAdd(opts: AddOptions): Promise<void> {
   const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   const hint = opts.modelsDev ?? existing?.modelsDevId ?? guessProviderHint(catalog, answers.baseUrl!);
   const models = await withProgress(t("progress.metadata"), () =>
-    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: existing?.models }));
+    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: existing?.models }, { endpointLimits }));
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
 
   const defaultModel = opts.defaultModel ?? existing?.defaultModel ?? modelIds[0]!;
@@ -333,13 +336,18 @@ async function createProvider(opts: {
   gatewayModels?: string;
   metadataMode?: string;
   gatewayLoader?: () => Promise<GatewayCatalog | null>;
+  /** Limits the endpoint declared when its model list was fetched. */
+  endpointLimits?: Map<string, EndpointModelLimits>;
 }): Promise<Provider> {
   const { store, id, name, protocol, openaiApi, baseUrl, apiKey, modelIds, modelFilter } = opts;
   const metadataOptions = resolveMetadataOptions(opts, opts.existing);
   const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   const hint = opts.modelsDev ?? opts.existing?.modelsDevId ?? guessProviderHint(catalog, baseUrl);
   const models = await withProgress(t("progress.metadata"), () =>
-    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: opts.existing?.models }, { gatewayLoader: opts.gatewayLoader }));
+    enrichProviderModels(catalog, modelIds, { ...metadataOptions, modelsDevId: hint, models: opts.existing?.models }, {
+      gatewayLoader: opts.gatewayLoader,
+      endpointLimits: opts.endpointLimits,
+    }));
   const matched = models.filter((m) => m.contextWindow !== undefined).length;
   const defaultModel = opts.defaultModel ?? opts.existing?.defaultModel ?? modelIds[0]!;
   if (!modelIds.includes(defaultModel)) fail(t("add.defaultMissing", { model: defaultModel }));
@@ -472,13 +480,13 @@ export async function cmdQuickAdd(opts: {
     const modelFilter = parseFilterOpts(opts, existing?.modelFilter);
 
     const discovered = await withProgress(`${t("add.discovering", { url: baseUrl })} [${protocol}]`, (progress) =>
-      discoverProviderModels({ baseUrl, apiKey, protocol }, {
+      discoverProviderCatalog({ baseUrl, apiKey, protocol }, {
         onPage: ({ page, count }) => progress.update(`${t("progress.discoverPage", { url: baseUrl, page, count })} [${protocol}]`),
       }));
-    out(t("add.providerLists", { count: discovered.length }));
+    out(t("add.providerLists", { count: discovered.ids.length }));
 
     const retained = [opts.defaultModel === undefined ? existing?.defaultModel : undefined, opts.smallModel === undefined ? existing?.smallModel : undefined].filter((id): id is string => !!id);
-    let modelIds = [...new Set([...discovered, ...retained])];
+    let modelIds = [...new Set([...discovered.ids, ...retained])];
     const pinned = [...retained, ...(opts.defaultModel ? [opts.defaultModel] : []), ...(opts.smallModel ? [opts.smallModel] : [])];
     const outcome = applyModelFilter(modelIds, modelFilter, pinned);
     reportDropped(outcome.dropped);
@@ -507,6 +515,7 @@ export async function cmdQuickAdd(opts: {
       gatewayModels: opts.gatewayModels,
       metadataMode: opts.metadataMode,
       gatewayLoader,
+      endpointLimits: discovered.limits,
     });
     createdIds.push(provider.id);
     note(`\n${t("add.next", { id: provider.id })}`);
@@ -840,11 +849,11 @@ function saveRefreshedProvider(store: Store, provider: Provider): void {
  */
 async function refreshProviderModels(store: Store, provider: Provider, save = true): Promise<ProviderModelRefresh> {
   const listed = await withProgress(t("add.discovering", { url: provider.baseUrl }), (progress) =>
-    discoverProviderModels(provider, {
+    discoverProviderCatalog(provider, {
       onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: provider.baseUrl, page, count })),
     }));
   const pinned = [provider.defaultModel, provider.smallModel].filter((model): model is string => !!model);
-  const outcome = applyModelFilter(listed, provider.modelFilter, pinned);
+  const outcome = applyModelFilter(listed.ids, provider.modelFilter, pinned);
   reportDropped(outcome.dropped);
   const ids = outcome.kept;
   const retained = new Set([...ids, ...pinned]);
@@ -853,7 +862,8 @@ async function refreshProviderModels(store: Store, provider: Provider, save = tr
   const removed = known.filter((m) => !retained.has(m));
   const catalog = await withProgress(t("progress.catalog"), () => loadCatalog());
   provider.models = await withProgress(t("progress.metadata"), () =>
-    enrichProviderModels(catalog, [...retained], { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) }));
+    enrichProviderModels(catalog, [...retained], { ...provider, modelsDevId: provider.modelsDevId ?? guessProviderHint(catalog, provider.baseUrl) },
+      { endpointLimits: listed.limits }));
   // Reported by the caller, where it reads after the table or the per-app results instead of
   // scrolling away above them.
   const missing = [...new Set(pinned)].filter((model) => !ids.includes(model));
@@ -1515,13 +1525,14 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     }
 
     let ids = [...c.models];
+    let endpointLimits: Map<string, EndpointModelLimits> = new Map();
     if (ids.length === 0) {
-      const discover = (): Promise<string[]> =>
+      const discover = (): Promise<DiscoveredModels> =>
         withProgress(t("import.discovering", { id: c.id }), (progress) =>
-          discoverProviderModels({ baseUrl: c.baseUrl, apiKey: apiKey!, protocol: c.protocol }, {
+          discoverProviderCatalog({ baseUrl: c.baseUrl, apiKey: apiKey!, protocol: c.protocol }, {
             onPage: ({ page, count }) => progress.update(t("progress.discoverPage", { url: c.baseUrl, page, count })),
           }));
-      let listed: string[] | undefined;
+      let listed: DiscoveredModels | undefined;
       for (let attempt = 0; ; attempt++) {
         try {
           listed = await discover();
@@ -1541,7 +1552,8 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
         out(pc.yellow(t("import.skippedAfterFailure", { id: c.id })));
         continue;
       }
-      ids = listed;
+      ids = listed.ids;
+      endpointLimits = listed.limits;
       ids = applyModelFilter(ids, undefined, []).kept;
     }
     if (ids.length === 0) fail(t("import.noModelsImport", { id: c.id }));
@@ -1549,7 +1561,7 @@ export async function cmdImport(opts: ImportOptions): Promise<void> {
     const id = availableProviderId(c.id, store.providers);
     const hint = guessProviderHint(catalog, c.baseUrl);
     const models = await withProgress(t("progress.metadata"), () =>
-      enrichProviderModels(catalog, ids, { ...metadataOptions, modelsDevId: hint }, { gatewayLoader }));
+      enrichProviderModels(catalog, ids, { ...metadataOptions, modelsDevId: hint }, { gatewayLoader, endpointLimits }));
     const defaultModel = c.defaultModel && ids.includes(c.defaultModel) ? c.defaultModel : ids[0]!;
     const existed = store.providers[id] !== undefined;
     store.providers[id] = {

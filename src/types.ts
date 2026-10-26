@@ -10,12 +10,25 @@ export type ModelMetadataField = "name" | "contextWindow" | "maxInput" | "maxOut
 export type ModelMetadataValue = string | number | boolean | string[];
 
 export interface ModelMetadataOrigin {
-  source: "models.dev" | "ai-gateway";
+  /** Origin of a tracked field: the endpoint's own listing, models.dev, or the public Gateway catalog. */
+  source: "endpoint" | "models.dev" | "ai-gateway";
   modelId: string;
   /** Snapshot used to detect and preserve subsequent manual overrides. */
   value: ModelMetadataValue;
   updatedAt: string;
   fetchedAt?: string;
+}
+
+/**
+ * Limits an endpoint advertises for a model in its own /v1/models listing.
+ * Endpoints that declare them are authoritative for their own wire: the numbers
+ * a third-party catalog carries are about the model, not about this route.
+ */
+export interface EndpointModelLimits {
+  /** total context window (tokens) */
+  contextWindow?: number;
+  /** max output tokens */
+  maxOutput?: number;
 }
 
 export interface ModelMetadataConflict {

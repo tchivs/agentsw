@@ -613,6 +613,38 @@ test("a dry-run sync reports the unsaved refresh in its JSON payload", async (t)
   assert.deepEqual(snapshot(), before);
 });
 
+test("a refresh keeps the limits the endpoint declared for its own models", async (t) => {
+  seed(provider({ gatewayMetadata: false }));
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    assert.equal(new URL(String(input)).pathname, "/tenant/v1/models");
+    return Response.json({ data: [
+      { id: "keep-base", context_window_tokens: 3000, maximum_output_tokens: 500 },
+      { id: "m-small", context_window_tokens: 131072 },
+      { id: "z-default", maximum_output_tokens: 900 },
+    ] });
+  });
+  const expected: Array<[string, number | undefined, number | undefined]> = [
+    ["keep-base", 3000, 500],
+    ["m-small", 131072, undefined],
+    ["z-default", undefined, 900],
+  ];
+  useTargets(t, fakeTarget("fixture", async (p) => {
+    assert.deepEqual(p.models.map((m) => [m.id, m.contextWindow, m.maxOutput]), expected,
+      "the app receives the endpoint's own limits, with the decimals the catalog claimed");
+    return { app: "fixture", changed: [], notes: [] };
+  }));
+  await cmdSync({ apps: "fixture" });
+  const stored = loadStore().providers["user-owned-id"]?.models ?? [];
+  assert.deepEqual(stored.map((m) => [m.id, m.contextWindow, m.maxOutput]), expected);
+  const kept = stored.find((m) => m.id === "keep-base");
+  assert.equal(kept?.metadata?.fields?.contextWindow?.source, "endpoint");
+  // The catalog row for keep-base says 111 (see the fixture catalog): it is recorded as a conflict,
+  // not written, which is what kept the same model from showing two different windows per provider.
+  assert.deepEqual(kept?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
+    { field: "contextWindow", source: "models.dev", value: 111, keptValue: 3000 },
+  ]);
+});
+
 for (const cacheState of ["missing", "expired"]) {
   test(`dry-run sync fetches ${cacheState} metadata caches without writing or previewing them`, async (t) => {
     const original = provider({ gatewayMetadata: true });
