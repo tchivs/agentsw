@@ -157,6 +157,28 @@ test("endpoint-declared limits fold every alias and survive pagination", async (
   ], "only rows that declare a usable limit carry an entry");
 });
 
+test("a declared limit that floors to zero is no declaration at all", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { id: "fraction", context_window_tokens: 0.5, context_length: 4096 },
+    { id: "tiny-output", maximum_output_tokens: 0.4 },
+  ] }));
+  const catalog = await discoverProviderCatalog(provider);
+  assert.deepEqual([...catalog.limits], [["fraction", { contextWindow: 4096 }]],
+    "a fraction falls through to the next spelling, and declares nothing when it is the last one");
+});
+
+test("a later page's partial row keeps the limits an earlier page declared", async (t) => {
+  const pages = [
+    { data: [{ id: "split", context_window_tokens: 200000, maximum_output_tokens: 32000 }], has_more: true, last_id: "cursor-1" },
+    { data: [{ id: "split", max_output_tokens: 8192 }, { id: "plain" }], has_more: false },
+  ];
+  let call = 0;
+  t.mock.method(globalThis, "fetch", async () => Response.json(pages[call++]));
+  const catalog = await discoverProviderCatalog(provider);
+  assert.deepEqual([...catalog.limits], [["split", { contextWindow: 200000, maxOutput: 8192 }]],
+    "only the key the later row declares is replaced");
+});
+
 test("id-only listings keep the limit map empty, as resellers do", async (t) => {
   t.mock.method(globalThis, "fetch", async () => Response.json({ models: [{ id: "a" }, { id: "b", name: "B" }] }));
   const catalog = await discoverProviderCatalog({ ...provider, protocol: "openai" });
