@@ -6,6 +6,22 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-26
+
+### Fixed
+
+- A hand-set `maxInput`/`maxOutput` is no longer deleted when the endpoint's own window cannot
+  hold it. The clearing step now asks where a value came from: only a tracked catalog estimate
+  goes, while a manual value keeps the old outcome (the window proposal is withdrawn and the
+  conflict names it), matching what the same contradiction already did for a manual window.
+- A declared limit that floors to zero is treated as no declaration at all. A fractional row
+  (`context_window_tokens: 0.5`) used to be written as `0`, which every app reads as "no limit",
+  which the merge ranked as the endpoint's own declaration, and which no later refresh could
+  correct; it now falls through to the next spelling like any other unusable value.
+- A model id listed again on a later page merges per key instead of replacing the whole entry, so
+  a later row that declares only one limit keeps the other limit an earlier page declared for the
+  same id.
+
 ## [0.11.1] - 2026-10-26
 
 ### Fixed
@@ -557,7 +573,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   and offline fallback.
 - Test suite (`node:test`): filter semantics and adapter apply/prune roundtrips.
 
-[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/tchivs/agentsw/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/tchivs/agentsw/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tchivs/agentsw/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tchivs/agentsw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/tchivs/agentsw/compare/v0.10.1...v0.10.2
