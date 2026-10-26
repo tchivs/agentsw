@@ -150,7 +150,7 @@ test("endpoint-declared limits fold every alias and survive pagination", async (
   t.mock.method(globalThis, "fetch", async () => Response.json(pages[call++]));
   const catalog = await discoverProviderCatalog(provider);
   assert.deepEqual(catalog.ids, ["alias-priority", "bare", "gateway-style", "openrouter-style", "zero-and-strings"]);
-  assert.deepEqual([...catalog.limits], [
+  assert.deepEqual([...catalog.facts], [
     ["gateway-style", { contextWindow: 131072, maxOutput: 32768 }],
     ["openrouter-style", { contextWindow: 200000, maxOutput: 64000 }],
     ["alias-priority", { contextWindow: 100 }],
@@ -163,8 +163,23 @@ test("a declared limit that floors to zero is no declaration at all", async (t) 
     { id: "tiny-output", maximum_output_tokens: 0.4 },
   ] }));
   const catalog = await discoverProviderCatalog(provider);
-  assert.deepEqual([...catalog.limits], [["fraction", { contextWindow: 4096 }]],
+  assert.deepEqual([...catalog.facts], [["fraction", { contextWindow: 4096 }]],
     "a fraction falls through to the next spelling, and declares nothing when it is the last one");
+});
+
+test("endpoint-declared prices keep their fraction and their own spelling", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { id: "priced", maximum_output_tokens: 64000, input_cost_per_million_tokens_usd: 0.15,
+      output_cost_per_million_tokens_usd: 1.5, cached_input_cost_per_million_tokens_usd: 0.075,
+      cache_write_cost_per_million_tokens_usd: 0.3 },
+    { id: "free", input_cost_per_million_tokens_usd: 0, output_cost_per_million_tokens_usd: 0 },
+    { id: "bad-price", input_cost_per_million_tokens_usd: -1, output_cost_per_million_tokens_usd: "1.5" },
+  ] }));
+  const catalog = await discoverProviderCatalog(provider);
+  assert.deepEqual([...catalog.facts], [
+    ["priced", { maxOutput: 64000, cost: { input: 0.15, output: 1.5, cacheRead: 0.075, cacheWrite: 0.3 } }],
+    ["free", { cost: { input: 0, output: 0 } }],
+  ], "a per-million price keeps its fraction, 0 is a real price, and an unusable one declares nothing");
 });
 
 test("a later page's partial row keeps the limits an earlier page declared", async (t) => {
@@ -175,7 +190,7 @@ test("a later page's partial row keeps the limits an earlier page declared", asy
   let call = 0;
   t.mock.method(globalThis, "fetch", async () => Response.json(pages[call++]));
   const catalog = await discoverProviderCatalog(provider);
-  assert.deepEqual([...catalog.limits], [["split", { contextWindow: 200000, maxOutput: 8192 }]],
+  assert.deepEqual([...catalog.facts], [["split", { contextWindow: 200000, maxOutput: 8192 }]],
     "only the key the later row declares is replaced");
 });
 
@@ -183,5 +198,5 @@ test("id-only listings keep the limit map empty, as resellers do", async (t) => 
   t.mock.method(globalThis, "fetch", async () => Response.json({ models: [{ id: "a" }, { id: "b", name: "B" }] }));
   const catalog = await discoverProviderCatalog({ ...provider, protocol: "openai" });
   assert.deepEqual(catalog.ids, ["a", "b"]);
-  assert.equal(catalog.limits.size, 0);
+  assert.equal(catalog.facts.size, 0);
 });

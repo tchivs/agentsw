@@ -1,4 +1,4 @@
-import type { EndpointModelLimits, Protocol } from "./types.js";
+import type { EndpointModelFacts, Protocol } from "./types.js";
 
 /** Append operations to the path, never to a query string or fragment. */
 function modelListUrl(baseUrl: string): URL {
@@ -18,14 +18,14 @@ export const MAX_MODEL_PAGES = 100;
 
 interface ModelPage {
   ids: string[];
-  /** Limits the endpoint declared for a listed id; ids it described with id-only rows have no entry. */
-  limits: Map<string, EndpointModelLimits>;
+  /** Facts the endpoint declared for a listed id; ids it described with id-only rows have no entry. */
+  facts: Map<string, EndpointModelFacts>;
   hasMore: boolean;
   lastId?: string;
 }
 
 /**
- * Spellings endpoints use for the same limit, in priority order: the first
+ * Spellings endpoints use for the same fact, in priority order: the first
  * declared key wins when a row carries several. Providers do not agree on
  * names — an OpenAI-compatible gateway publishes context_window_tokens /
  * maximum_output_tokens, OpenRouter publishes context_length /
@@ -34,6 +34,15 @@ interface ModelPage {
  */
 const contextWindowKeys = ["context_window_tokens", "context_length", "max_context_length"] as const;
 const maxOutputKeys = ["maximum_output_tokens", "max_output_tokens", "max_completion_tokens"] as const;
+/**
+ * Spellings of the prices a route charges for its own models, already in the
+ * per-million-token unit this tool stores. A route that prices separately for
+ * cache reads and writes says so in its own keys.
+ */
+const inputCostKeys = ["input_cost_per_million_tokens_usd"] as const;
+const outputCostKeys = ["output_cost_per_million_tokens_usd"] as const;
+const cacheReadCostKeys = ["cached_input_cost_per_million_tokens_usd"] as const;
+const cacheWriteCostKeys = ["cache_write_cost_per_million_tokens_usd"] as const;
 
 function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
   for (const key of keys) {
@@ -47,12 +56,36 @@ function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): n
   return undefined;
 }
 
-/** Limits a model row advertises, or undefined when it describes nothing but its id. */
-export function parseEndpointLimits(row: Record<string, unknown>): EndpointModelLimits | undefined {
+/** Prices keep their fraction — a route charging 0.15 per million says so — and 0 is a real price. */
+function declaredCost(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+/** What a model row declares about its own route, or undefined when it describes nothing but its id. */
+export function parseEndpointFacts(row: Record<string, unknown>): EndpointModelFacts | undefined {
   const contextWindow = declaredLimit(row, contextWindowKeys);
   const maxOutput = declaredLimit(row, maxOutputKeys);
-  if (contextWindow === undefined && maxOutput === undefined) return undefined;
-  return { ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxOutput !== undefined ? { maxOutput } : {}) };
+  const input = declaredCost(row, inputCostKeys);
+  const output = declaredCost(row, outputCostKeys);
+  const cacheRead = declaredCost(row, cacheReadCostKeys);
+  const cacheWrite = declaredCost(row, cacheWriteCostKeys);
+  const costs: NonNullable<EndpointModelFacts["cost"]> = {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+  };
+  const hasCost = Object.keys(costs).length > 0;
+  if (contextWindow === undefined && maxOutput === undefined && !hasCost) return undefined;
+  return {
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(maxOutput !== undefined ? { maxOutput } : {}),
+    ...(hasCost ? { cost: costs } : {}),
+  };
 }
 
 function parseModelPage(body: unknown): ModelPage {
@@ -62,35 +95,35 @@ function parseModelPage(body: unknown): ModelPage {
   if (!Array.isArray(rows)) throw new Error("model-list response has no model array");
   if (page.has_more !== undefined && typeof page.has_more !== "boolean") throw new Error("invalid model-list pagination flag");
   const ids: string[] = [];
-  const limits = new Map<string, EndpointModelLimits>();
+  const facts = new Map<string, EndpointModelFacts>();
   for (const row of rows as unknown[]) {
     if (!row || typeof row !== "object") continue;
     const id = (row as Record<string, unknown>).id;
     if (typeof id !== "string" || id.length === 0) continue;
     ids.push(id);
-    const declared = parseEndpointLimits(row as Record<string, unknown>);
-    if (declared) limits.set(id, declared);
+    const declared = parseEndpointFacts(row as Record<string, unknown>);
+    if (declared) facts.set(id, declared);
   }
-  return { ids, limits, hasMore: page.has_more === true, lastId: typeof page.last_id === "string" ? page.last_id : undefined };
+  return { ids, facts, hasMore: page.has_more === true, lastId: typeof page.last_id === "string" ? page.last_id : undefined };
 }
 
 export interface DiscoveredModels {
   ids: string[];
   /**
-   * Limits the endpoint advertised for its own models, keyed by id. Empty when
-   * it lists ids only, which is the common reseller case: the catalog then
-   * supplies whatever it knows.
+   * What the endpoint declared for its own models, keyed by id: limits, and
+   * prices when it publishes them. Empty when it lists ids only, which is the
+   * common reseller case: the catalog then supplies whatever it knows.
    */
-  limits: Map<string, EndpointModelLimits>;
+  facts: Map<string, EndpointModelFacts>;
 }
 
 /**
- * List the provider's own /v1/models catalog: model ids plus the limits a row
- * declares for itself. Plenty of resellers expose bare ids — those ids carry no
- * entry in `limits` and metadata is filled from models.dev afterwards
- * (enrichModels). An endpoint that does declare limits is authoritative for its
- * own route, so those numbers outrank the catalogs instead of being replaced by
- * whatever a third party lists for the same model.
+ * List the provider's own /v1/models catalog: model ids plus the limits and
+ * prices a row declares for itself. Plenty of resellers expose bare ids — those
+ * ids carry no entry in `facts` and metadata is filled from models.dev
+ * afterwards (enrichModels). An endpoint that declares its own numbers is
+ * authoritative for its own route, so they outrank the catalogs instead of
+ * being replaced by whatever a third party lists for the same model.
  */
 export async function discoverProviderCatalog(
   opts: {
@@ -106,7 +139,7 @@ export async function discoverProviderCatalog(
       ? { "x-api-key": opts.apiKey, "anthropic-version": "2023-06-01" }
       : { authorization: `Bearer ${opts.apiKey}` };
   const ids = new Set<string>();
-  const limits = new Map<string, EndpointModelLimits>();
+  const facts = new Map<string, EndpointModelFacts>();
   const cursors = new Set<string>();
   const initialCursor = url.searchParams.get("after_id");
   if (initialCursor) cursors.add(initialCursor);
@@ -120,10 +153,10 @@ export async function discoverProviderCatalog(
     for (const id of parsed.ids) ids.add(id);
     // A repeated id keeps what an earlier page declared: merge per key so a
     // later partial row cannot drop the other limit.
-    for (const [id, declared] of parsed.limits) {
+    for (const [id, declared] of parsed.facts) {
       if (!ids.has(id)) continue;
-      const earlier = limits.get(id);
-      limits.set(id, earlier ? { ...earlier, ...declared } : declared);
+      const earlier = facts.get(id);
+      facts.set(id, earlier ? { ...earlier, ...declared } : declared);
     }
     hooks.onPage?.({ page, count: ids.size });
     if (!parsed.hasMore) break;
@@ -133,7 +166,7 @@ export async function discoverProviderCatalog(
     url.searchParams.set("after_id", parsed.lastId);
   }
   if (ids.size === 0) throw new Error("provider returned no models");
-  return { ids: [...ids].sort(), limits };
+  return { ids: [...ids].sort(), facts };
 }
 
 /** The listed ids alone, for callers that only need the model list. */

@@ -841,7 +841,7 @@ test("endpoint-declared limits outrank both catalogs and keep their own origin",
   const supplement = gateway({ contextWindow: 2000, maxOutput: 200 });
   const [result] = await enrichProviderModels(primary, ["creator/model"], enabled, {
     gateway: supplement,
-    endpointLimits: new Map([["creator/model", { contextWindow: 3000, maxOutput: 500 }]]),
+    endpointFacts: new Map([["creator/model", { contextWindow: 3000, maxOutput: 500 }]]),
   });
   assert.equal(result?.contextWindow, 3000, "the route's own window beats the catalog's");
   assert.equal(result?.maxOutput, 500);
@@ -863,7 +863,7 @@ test("endpoint-declared limits outrank both catalogs and keep their own origin",
 test("catalogs still fill the limits the endpoint left unsaid", async () => {
   const [result] = await enrichProviderModels(catalog({ limit: { context: 1000, output: 100 } }), ["creator/model"], enabled, {
     gateway: gateway({ maxOutput: 200 }),
-    endpointLimits: new Map([["creator/model", { contextWindow: 3000 }]]),
+    endpointFacts: new Map([["creator/model", { contextWindow: 3000 }]]),
   });
   assert.equal(result?.contextWindow, 3000);
   assert.equal(result?.maxOutput, 100, "models.dev fills the output limit the endpoint did not declare");
@@ -879,7 +879,7 @@ test("an endpoint limit survives a catalog identity that differs from the local 
     ...enabled, gatewayModelAliases: { "alias-id": "creator/model" },
   }, {
     gateway: gateway({ contextWindow: 2000 }),
-    endpointLimits: new Map([["alias-id", { contextWindow: 3000 }]]),
+    endpointFacts: new Map([["alias-id", { contextWindow: 3000 }]]),
   });
   assert.equal(result?.contextWindow, 3000);
   assert.equal(result?.metadata?.fields?.contextWindow?.source, "endpoint");
@@ -889,7 +889,7 @@ test("an endpoint limit survives a catalog identity that differs from the local 
 test("an endpoint output limit the endpoint's own window cannot hold is refused", async () => {
   const [result] = await enrichProviderModels(undefined, ["bare"], enabled, {
     gateway: null,
-    endpointLimits: new Map([["bare", { contextWindow: 1000, maxOutput: 5000 }]]),
+    endpointFacts: new Map([["bare", { contextWindow: 1000, maxOutput: 5000 }]]),
   });
   assert.equal(result?.contextWindow, 1000);
   assert.equal(result?.maxOutput, undefined);
@@ -900,7 +900,7 @@ test("an endpoint output limit the endpoint's own window cannot hold is refused"
 
 test("endpoint limits apply with Gateway metadata off", async () => {
   const [result] = await enrichProviderModels(undefined, ["bare"], disabled, {
-    endpointLimits: new Map([["bare", { contextWindow: 1000, maxOutput: 100 }]]),
+    endpointFacts: new Map([["bare", { contextWindow: 1000, maxOutput: 100 }]]),
   });
   assert.equal(result?.contextWindow, 1000);
   assert.equal(result?.maxOutput, 100);
@@ -910,14 +910,14 @@ test("endpoint limits apply with Gateway metadata off", async () => {
 
 test("an endpoint limit does not overwrite a hand-set untracked value", async () => {
   const [result] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", contextWindow: 500 }] }, {
-    endpointLimits: new Map([["bare", { contextWindow: 1000 }]]),
+    endpointFacts: new Map([["bare", { contextWindow: 1000 }]]),
   });
   assert.equal(result?.contextWindow, 500, "an untracked value stays a manual override");
   assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
     { field: "contextWindow", source: "endpoint", value: 1000, keptValue: 500 },
   ]);
   const [repeat] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", contextWindow: 1000 }] }, {
-    endpointLimits: new Map([["bare", { contextWindow: 1000 }]]),
+    endpointFacts: new Map([["bare", { contextWindow: 1000 }]]),
   });
   assert.deepEqual(repeat, { id: "bare", contextWindow: 1000 }, "an agreeing value is not tracked, so nothing is rewritten");
 });
@@ -931,7 +931,7 @@ test("an endpoint window clears a retained catalog limit it cannot hold", async 
   const [result] = await enrichProviderModels(catalog({ limit: { context: 262144, output: 262144 } }), ["creator/model"], {
     ...disabled, models: [stale],
   }, {
-    endpointLimits: new Map([["creator/model", { contextWindow: 256000 }]]),
+    endpointFacts: new Map([["creator/model", { contextWindow: 256000 }]]),
   });
   assert.equal(result?.contextWindow, 256000);
   assert.equal(result?.maxOutput, undefined, "an output limit wider than the route's window does not survive");
@@ -946,7 +946,7 @@ test("an endpoint window clears a retained catalog limit it cannot hold", async 
 
 test("a hand-set limit survives an endpoint window that cannot hold it", async () => {
   const [result] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", maxInput: 40000, maxOutput: 40000 }] }, {
-    endpointLimits: new Map([["bare", { contextWindow: 32768 }]]),
+    endpointFacts: new Map([["bare", { contextWindow: 32768 }]]),
   });
   assert.equal(result?.contextWindow, undefined, "a manual cap the window cannot hold withdraws the window proposal");
   assert.equal(result?.maxInput, 40000, "the user's own number is not a catalog estimate to clear");
@@ -954,6 +954,35 @@ test("a hand-set limit survives an endpoint window that cannot hold it", async (
   assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue, blockedBy }) => ({ field, source, value, keptValue, blockedBy })), [
     { field: "contextWindow", source: "endpoint", value: 32768, keptValue: 40000, blockedBy: "maxInput" },
   ], "the conflict rejects the endpoint's window, and never mislabels the user's value as a declaration");
+});
+
+test("endpoint-declared prices outrank both catalogs and keep their own origin", async () => {
+  const primary = catalog({ name: "Primary", limit: { context: 1000, output: 100 }, cost: { input: 3, output: 15, cache_read: 1, cache_write: 2 } });
+  const supplement = gateway({ contextWindow: 2000, cost: { input: 9, output: 90 } });
+  const [result] = await enrichProviderModels(primary, ["creator/model"], enabled, {
+    gateway: supplement,
+    endpointFacts: new Map([["creator/model", { cost: { input: 0.15, output: 1.5, cacheRead: 0.075 } }]]),
+  });
+  assert.deepEqual(result?.cost, { input: 0.15, output: 1.5, cacheRead: 0.075, cacheWrite: 2 },
+    "the route's own prices win, and the catalog fills the price it left unsaid");
+  assert.deepEqual(["cost.input", "cost.output", "cost.cacheRead", "cost.cacheWrite"]
+    .map((field) => result?.metadata?.fields?.[field as "cost.input"]?.source), ["endpoint", "endpoint", "endpoint", "models.dev"]);
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
+    { field: "cost.input", source: "models.dev", value: 3, keptValue: 0.15 },
+    { field: "cost.output", source: "models.dev", value: 15, keptValue: 1.5 },
+    { field: "cost.cacheRead", source: "models.dev", value: 1, keptValue: 0.075 },
+    { field: "contextWindow", source: "ai-gateway", value: 2000, keptValue: 1000 },
+  ], "a catalog that prices the model differently is reported, not applied");
+});
+
+test("an endpoint price does not overwrite a hand-set one", async () => {
+  const [result] = await enrichProviderModels(undefined, ["bare"], { ...disabled, models: [{ id: "bare", cost: { input: 7 } }] }, {
+    endpointFacts: new Map([["bare", { cost: { input: 0.15, output: 1.5 } }]]),
+  });
+  assert.deepEqual(result?.cost, { input: 7, output: 1.5 }, "an untracked price stays a manual override");
+  assert.deepEqual(result?.metadata?.conflicts?.map(({ field, source, value, keptValue }) => ({ field, source, value, keptValue })), [
+    { field: "cost.input", source: "endpoint", value: 0.15, keptValue: 7 },
+  ]);
 });
 
 test("a weaker source still cannot shrink a window a wider retained limit pins open", async () => {

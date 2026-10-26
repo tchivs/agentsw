@@ -1,6 +1,6 @@
 import { findModelMeta, getCatalogFetchedAt, toModelSpec, type Catalog, type CatalogModel } from "./modelsdev.js";
 import { loadGatewayCatalog, type GatewayCatalog, type GatewayModelMetadata } from "./gateway.js";
-import type { EndpointModelLimits, ModelMetadataConflict, ModelMetadataField, ModelMetadataOrigin, ModelMetadataValue, ModelSpec, Provider } from "./types.js";
+import type { EndpointModelFacts, ModelMetadataConflict, ModelMetadataField, ModelMetadataOrigin, ModelMetadataValue, ModelSpec, Provider } from "./types.js";
 
 export interface MetadataOptions {
   gatewayMetadata?: boolean;
@@ -78,13 +78,13 @@ const fields: ModelMetadataField[] = [
   "cost.input", "cost.output", "cost.cacheRead", "cost.cacheWrite",
 ];
 const gatewayFields = fields.filter((field) => !field.startsWith("cost."));
-/** Limits are all an endpoint is trusted for: its listing describes its own wire, not capabilities. */
-const endpointFields = ["contextWindow", "maxOutput"] as const;
+/** What a wire is trusted for: the limits it enforces and the prices it charges, not capabilities. */
+const endpointFields = ["contextWindow", "maxOutput", "cost.input", "cost.output", "cost.cacheRead", "cost.cacheWrite"] as const;
 /**
  * Which source owns a field it proposes. An endpoint that declares its own
- * limits outranks both catalogs — models.dev describes the model, the public
- * Gateway describes *that* gateway, and neither is the route serving the
- * request. models.dev outranks Gateway, which only fills what it is given.
+ * limits and prices outranks both catalogs — models.dev describes the model,
+ * the public Gateway describes *that* gateway, and neither is the route serving
+ * the request. models.dev outranks Gateway, which only fills what it is given.
  */
 const sourceRank: Record<ModelMetadataOrigin["source"], number> = { endpoint: 3, "models.dev": 2, "ai-gateway": 1 };
 const limits = ["maxInput", "maxOutput"] as const;
@@ -403,8 +403,8 @@ export async function enrichProviderModels(
   options: {
     gateway?: GatewayCatalog | null;
     gatewayLoader?: () => Promise<GatewayCatalog | null>;
-    /** Limits the endpoint advertised for these ids, from `discoverProviderCatalog`. */
-    endpointLimits?: Map<string, EndpointModelLimits>;
+    /** What the endpoint declared for these ids, from `discoverProviderCatalog`. */
+    endpointFacts?: Map<string, EndpointModelFacts>;
   } = {},
 ): Promise<ModelSpec[]> {
   const validated = validateSettings(settings);
@@ -426,8 +426,8 @@ export async function enrichProviderModels(
       }
       // The endpoint's own numbers go in first so the catalogs can only fill
       // what it left unsaid; a catalog that disagrees is reported as a conflict
-      // instead of overwriting the limits the route actually enforces.
-      const declared = options.endpointLimits?.get(id);
+      // instead of overwriting the numbers the route actually enforces.
+      const declared = options.endpointFacts?.get(id);
       if (declared) mergeSource(spec, { id, ...declared }, "endpoint", id, now);
       let primary: { spec: ModelSpec; modelId: string } | undefined;
       let supplement: GatewayModelMetadata | undefined;

@@ -20,15 +20,18 @@ export interface ModelMetadataOrigin {
 }
 
 /**
- * Limits an endpoint advertises for a model in its own /v1/models listing.
- * Endpoints that declare them are authoritative for their own wire: the numbers
- * a third-party catalog carries are about the model, not about this route.
+ * What a model row in an endpoint's own /v1/models listing declares about the
+ * route it serves: its limits, and the prices it charges when it publishes
+ * them. Endpoints that declare them are authoritative for their own wire: the
+ * numbers a third-party catalog carries describe the model, not this route.
  */
-export interface EndpointModelLimits {
+export interface EndpointModelFacts {
   /** total context window (tokens) */
   contextWindow?: number;
   /** max output tokens */
   maxOutput?: number;
+  /** USD per million tokens, as the route itself prices them */
+  cost?: ModelSpec["cost"];
 }
 
 export interface ModelMetadataConflict {
