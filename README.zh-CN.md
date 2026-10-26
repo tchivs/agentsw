@@ -33,7 +33,7 @@
 - **写的是元数据，不只是模型 id。** 转售商 `/v1/models` 只返回裸 id；agentsw 从
   [models.dev](https://models.dev) 优先补全，并在有实际缺口时自动查询 AI Gateway，按各应用真正读取的字段下发：pi/prime 的
   `thinkingLevelMap`、opencode 的 `limit`/`attachment`、omp 的 `contextWindow`/`maxTokens`、
-  dsh 的 `reasoningEfforts`/`input`。端点自己声明的上下文/输出上限优先于目录，避免同一模型在不同供应商下被写成不同窗口。
+  dsh 的 `reasoningEfforts`/`input`。端点自己声明的上下文/输出上限与价格优先于目录，避免同一模型在不同供应商下被写成不同窗口。
 - **接管你已有的配置——包括 [cc-switch](https://github.com/farion1231/cc-switch)。**
   `import` 会扫描所有已安装的智能体**以及 cc-switch 自己的存储**，合并重复项
   （相同协议 + 归一化端点 + 凭据），并且对两者都只读不写。
@@ -191,7 +191,7 @@ imported zhipu-glm · anthropic · https://open.bigmodel.cn/api/anthropic · 1 m
 ## 模型发现过滤
 
 `--discover` 从供应商 `/v1/models` 拉取模型 id，优先从 models.dev 补全元数据，必要时自动查询 AI Gateway。
-同一份列表里供应商为自家模型声明的上下文/输出上限优先于目录的估算，只给出裸 id 的模型仍按原逻辑补全。
+同一份列表里供应商为自家模型声明的上下文/输出上限与价格优先于目录的估算，只给出裸 id 的模型仍按原逻辑补全。
 转售商列表噪音大，过滤规则持久化在供应商上，每次 `discover` 自动复用：
 
 ```bash
@@ -263,7 +263,9 @@ asw sync --provider myproxy,backup-proxy
 
 - **按字段合并：** 用户手动值优先，其次端点自己声明的值，然后 models.dev，最后 Gateway 补缺。
   端点在 `/v1/models` 中为自家模型声明了 `context_window_tokens`/`maximum_output_tokens`（或
-  `context_length`/`max_output_tokens` 写法）时，以它为准而不是目录对同一模型的估算。已记录来源的自动值可以刷新，
+  `context_length`/`max_output_tokens` 写法）时，以它为准而不是目录对同一模型的估算；自家发布的
+  价格（`input_cost_per_million_tokens_usd`、`output_cost_per_million_tokens_usd`、
+  `cached_input_cost_per_million_tokens_usd`、`cache_write_cost_per_million_tokens_usd`，单位就是每百万 token 美元）同理。已记录来源的自动值可以刷新，
   手动修改后会保留；旧版本中没有来源记录的已有值保守视为手动值，不强制覆盖。未知扩展字段也保留。
 - **精确匹配：** 不含 `/` 的裸 ID 可按大小写精确匹配唯一的 Gateway `creator/model` 身份，
   前提是 models.dev 没有身份线索或线索一致。任一目录中的创建者身份有歧义时拒绝自动匹配；
