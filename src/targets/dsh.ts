@@ -6,7 +6,7 @@ import { isManagedCredentialRef, legacyManagedCredentialRef, managedCredentialRe
 import { transactionalTarget } from "../target-transaction.js";
 import { parseYamlMapping, serializeYamlMapping } from "../yaml.js";
 import type { ApplyResult, ModelSpec, Provider } from "../types.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 import { apiValue, classifyApi, entryApi, hasModelMetadata, mergeModels, sdkBaseUrl } from "./wire.js";
 
 /** Layout version of `.credentials.yaml` this build reads and writes. */
@@ -77,7 +77,7 @@ export const dsh: TargetApp = transactionalTarget({
 
   detect: () => fs.existsSync(dshDir()),
 
-  async apply(provider: Provider): Promise<ApplyResult> {
+  async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
     const notes: string[] = [];
     const file = dshSettingsFile();
     const doc = parseSettings(file);
@@ -122,7 +122,9 @@ export const dsh: TargetApp = transactionalTarget({
       notes.push("dropped modelOverrides (llm-pi-ai refuses it beside an explicit models list)");
     }
     // The picker writes this section whole; a partial write would keep a stale reasoningEffort.
-    doc.set("agent-default-model", doc.createNode({ provider: provider.id, model: provider.defaultModel }));
+    if (!options.keepSelection) {
+      doc.set("agent-default-model", doc.createNode({ provider: provider.id, model: provider.defaultModel }));
+    }
     const referenced = credentialReferences(doc, provider.id);
     const oldRef = typeof prev?.apiKeyEnv === "string" && isManagedCredentialRef(prev.apiKeyEnv, provider.id) && !referenced.has(prev.apiKeyEnv)
       ? prev.apiKeyEnv : undefined;

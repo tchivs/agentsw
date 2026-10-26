@@ -133,7 +133,7 @@ export function piStyleTarget(opts: { id: PiId; name: string }): TargetApp {
       modelsConfig.providers = providers;
 
       const modelsText = editJsoncObject(modelsDocument, modelsConfig);
-      const settingsText = options.keepDefault ? undefined : editJsoncObject(settingsDocument, {
+      const settingsText = options.keepDefault || options.keepSelection ? undefined : editJsoncObject(settingsDocument, {
         ...settingsDocument.value,
         defaultProvider: provider.id,
         defaultModel: provider.defaultModel,

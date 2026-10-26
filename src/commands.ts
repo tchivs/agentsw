@@ -914,9 +914,10 @@ function resolveProviderIds(store: Store, opts: { provider?: string; all?: boole
 }
 
 /**
- * Apps that name a single provider are written once (see `RunTargetsOptions.oneSlot`); for the rest
- * the last writer owns whatever "current" pointer the app keeps, so a multi-provider sync finishes
- * on the active provider and leaves the agents where the store says they already are.
+ * Apps that name a single provider are written once (see `RunTargetsOptions.oneSlot`); every other
+ * app only lets the store's active provider move its "current" pointer (see `ApplyOptions.keepSelection`),
+ * so a multi-provider sync finishes on the active provider and a run that does not include it leaves
+ * the pointer where the app already had it.
  */
 function activeLast(store: Store, ids: string[]): string[] {
   const active = store.active;
@@ -1021,7 +1022,8 @@ async function syncProviders(opts: SyncOptions, sourceStore?: Store): Promise<{ 
       }
     }
     out(`${t(opts.keepDefault ? "sync.syncingKeepDefault" : "sync.syncing", { id: pc.bold(id), model: provider.defaultModel })}\n`);
-    const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot, { keepDefault: opts.keepDefault });
+    const outcome = await runWithOptionalDryRun("apply", provider, opts.apps, opts.dryRun, oneSlot,
+      { keepDefault: opts.keepDefault, keepSelection: provider.id !== store.active });
     if (outcome.failed?.length) failed.push(id);
     if (refresh?.missing.length) {
       const models = refresh.missing.join(", ");

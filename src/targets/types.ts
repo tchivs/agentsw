@@ -29,6 +29,13 @@ export interface ProviderCandidate {
 
 export interface ApplyOptions {
   keepDefault?: boolean;
+  /**
+   * Write this provider's own block and model list, but leave the app's current
+   * provider/model pointer where it is. `sync` sets it whenever the provider being written is
+   * not the store's active one — refreshing a provider is not switching to it — while `use`
+   * and `add` call targets without it, which is how a switch happens.
+   */
+  keepSelection?: boolean;
 }
 
 export interface TargetApp {

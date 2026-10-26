@@ -5,7 +5,7 @@ import { isJsonObject } from "../jsonc.js";
 import { codexAuthFile, codexConfigFile, codexDir } from "../app-paths.js";
 import { transactionalTarget } from "../target-transaction.js";
 import type { ApplyResult, Provider } from "../types.js";
-import type { ProviderCandidate, TargetApp } from "./types.js";
+import type { ApplyOptions, ProviderCandidate, TargetApp } from "./types.js";
 
 /** smol-toml quotes the offending source line, which may hold a key: report only the position. */
 function parseConfigToml(file: string, text: string): Record<string, unknown> {
@@ -34,7 +34,7 @@ export const codex: TargetApp = transactionalTarget({
 
   detect: () => fs.existsSync(codexDir()),
 
-  async apply(provider: Provider): Promise<ApplyResult> {
+  async apply(provider: Provider, options: ApplyOptions = {}): Promise<ApplyResult> {
     const configFile = codexConfigFile();
     const authFile = codexAuthFile();
     const notes: string[] = [];
@@ -47,15 +47,17 @@ export const codex: TargetApp = transactionalTarget({
       throw new Error(`${configFile}: expected model_providers to be a table`);
     }
 
-    config.model_provider = provider.id;
-    config.model = provider.defaultModel;
-    const model = provider.models.find((m) => m.id === provider.defaultModel);
-    if (provider.reasoningEffort && model?.reasoning !== false) {
-      config.model_reasoning_effort = provider.reasoningEffort;
-    } else {
-      // The effort belongs to the active model: switching providers must not
-      // inherit the previous provider's level (prune treats it as owned too).
-      delete config.model_reasoning_effort;
+    if (!options.keepSelection) {
+      config.model_provider = provider.id;
+      config.model = provider.defaultModel;
+      const model = provider.models.find((m) => m.id === provider.defaultModel);
+      if (provider.reasoningEffort && model?.reasoning !== false) {
+        config.model_reasoning_effort = provider.reasoningEffort;
+      } else {
+        // The effort belongs to the active model: switching providers must not
+        // inherit the previous provider's level (prune treats it as owned too).
+        delete config.model_reasoning_effort;
+      }
     }
 
     // Codex only speaks the OpenAI Responses API (wire_api = "chat" was removed Feb 2026).
