@@ -35,14 +35,42 @@ interface ModelPage {
 const contextWindowKeys = ["context_window_tokens", "context_length", "max_context_length"] as const;
 const maxOutputKeys = ["maximum_output_tokens", "max_output_tokens", "max_completion_tokens"] as const;
 /**
- * Spellings of the prices a route charges for its own models, already in the
- * per-million-token unit this tool stores. A route that prices separately for
- * cache reads and writes says so in its own keys.
+ * Spellings of the prices a route charges for its own models, in priority order
+ * with the divisor that turns each into USD per million tokens — the unit this
+ * tool stores. Providers publish plain dollars, but a gateway that prices
+ * precisely keeps nano-USD per million under `pricing`; per-image or per-second
+ * rates are not a token price and stay out of it.
  */
-const inputCostKeys = ["input_cost_per_million_tokens_usd"] as const;
-const outputCostKeys = ["output_cost_per_million_tokens_usd"] as const;
-const cacheReadCostKeys = ["cached_input_cost_per_million_tokens_usd"] as const;
-const cacheWriteCostKeys = ["cache_write_cost_per_million_tokens_usd"] as const;
+type CostSpelling = readonly [path: string, divisor: number];
+const costSpellings: Record<"input" | "output" | "cacheRead" | "cacheWrite", readonly CostSpelling[]> = {
+  input: [["input_cost_per_million_tokens_usd", 1], ["pricing.input_nano_usd_per_million_tokens", 1e9]],
+  output: [["output_cost_per_million_tokens_usd", 1], ["pricing.output_nano_usd_per_million_tokens", 1e9]],
+  cacheRead: [["cached_input_cost_per_million_tokens_usd", 1], ["pricing.cached_input_nano_usd_per_million_tokens", 1e9]],
+  cacheWrite: [
+    ["cache_write_cost_per_million_tokens_usd", 1],
+    ["pricing.cache_write_nano_usd_per_million_tokens", 1e9],
+    ["pricing.cache_creation_input_nano_usd_per_million_tokens", 1e9],
+  ],
+};
+
+/** Read a dotted path, stopping at the first value that is not an object. */
+function readPath(row: Record<string, unknown>, path: string): unknown {
+  let node: unknown = row;
+  for (const key of path.split(".")) {
+    if (!node || typeof node !== "object") return undefined;
+    node = (node as Record<string, unknown>)[key];
+  }
+  return node;
+}
+
+/** A price keeps its fraction — a route charging 0.15 per million says so — and 0 is a real price. */
+function declaredCost(row: Record<string, unknown>, spellings: readonly CostSpelling[]): number | undefined {
+  for (const [path, divisor] of spellings) {
+    const value = readPath(row, path);
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value / divisor;
+  }
+  return undefined;
+}
 
 function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
   for (const key of keys) {
@@ -56,23 +84,14 @@ function declaredLimit(row: Record<string, unknown>, keys: readonly string[]): n
   return undefined;
 }
 
-/** Prices keep their fraction — a route charging 0.15 per million says so — and 0 is a real price. */
-function declaredCost(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
-  for (const key of keys) {
-    const value = row[key];
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-  }
-  return undefined;
-}
-
 /** What a model row declares about its own route, or undefined when it describes nothing but its id. */
 export function parseEndpointFacts(row: Record<string, unknown>): EndpointModelFacts | undefined {
   const contextWindow = declaredLimit(row, contextWindowKeys);
   const maxOutput = declaredLimit(row, maxOutputKeys);
-  const input = declaredCost(row, inputCostKeys);
-  const output = declaredCost(row, outputCostKeys);
-  const cacheRead = declaredCost(row, cacheReadCostKeys);
-  const cacheWrite = declaredCost(row, cacheWriteCostKeys);
+  const input = declaredCost(row, costSpellings.input);
+  const output = declaredCost(row, costSpellings.output);
+  const cacheRead = declaredCost(row, costSpellings.cacheRead);
+  const cacheWrite = declaredCost(row, costSpellings.cacheWrite);
   const costs: NonNullable<EndpointModelFacts["cost"]> = {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),

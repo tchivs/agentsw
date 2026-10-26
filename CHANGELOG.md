@@ -9,11 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - The endpoint's own listing now owns prices as well as limits: a route that publishes what it charges for
-  its own models (`input_cost_per_million_tokens_usd`, `output_cost_per_million_tokens_usd`,
-  `cached_input_cost_per_million_tokens_usd`, `cache_write_cost_per_million_tokens_usd`, already in USD per
-  million tokens) has those prices written instead of a catalog's estimate for the same model. A catalog that
-  prices the model differently is recorded as a conflict, the route's own number is kept, and any price the
-  route leaves unsaid is still filled from models.dev. A hand-set price stays a manual override.
+  its own models has those prices written instead of a catalog's estimate for the same model. Both spellings
+  are read — `input_cost_per_million_tokens_usd`/`output_cost_per_million_tokens_usd`/
+  `cached_input_cost_per_million_tokens_usd`/`cache_write_cost_per_million_tokens_usd`, and the nano-USD
+  `pricing.<leaf>_nano_usd_per_million_tokens` form — and stored as USD per million tokens. Rates priced per
+  image, second or character are not token prices, and a tier rate beside the base one is not the base price,
+  so neither is written. A catalog that prices the model differently is recorded as a conflict, the route's
+  own number is kept, and any price the route leaves unsaid is still filled from models.dev. A hand-set price
+  stays a manual override.
 
 ## [0.11.2] - 2026-10-26
 

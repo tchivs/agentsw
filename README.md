@@ -284,9 +284,11 @@ Import still skips already configured accounts.
   An endpoint that advertises `context_window_tokens`/`maximum_output_tokens`
   (or their `context_length`/`max_output_tokens` spellings) for its own list is authoritative for its own
   route, so those limits are written instead of a catalog's estimate for the same model. The same applies
-  to prices a route publishes for its own models (`input_cost_per_million_tokens_usd`,
+  to prices a route publishes for its own models — `input_cost_per_million_tokens_usd`,
   `output_cost_per_million_tokens_usd`, `cached_input_cost_per_million_tokens_usd`,
-  `cache_write_cost_per_million_tokens_usd`), which are already in USD per million tokens. Tracked automatic
+  `cache_write_cost_per_million_tokens_usd`, or the nano-USD `pricing.*_nano_usd_per_million_tokens`
+  form — which are stored as USD per million tokens. Rates priced per image, second or character are
+  not token prices, and a tier rate beside the base one is not the base price, so neither is written. Tracked automatic
   values may refresh; subsequent manual edits are retained. Legacy values without provenance are conservatively
   treated as manual overrides. Unmodeled extension fields survive enrichment too.
 - **Exact identities:** automatic lookup can map a bare, case-sensitive ID (no `/`) to a unique Gateway
